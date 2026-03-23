@@ -560,12 +560,23 @@ function parseSheet(values) {
 }
 
 function extractLine(remarks) {
-  // Try "Line from script - TEXT"
-  const m = remarks.match(/[Ll]ine\s+from\s+script\s*[-–:]\s*["""«]?(.+)/s);
-  if (m) return m[1].replace(/["""»]/g,'').split('\n')[0].trim();
-  // Take everything before " - "
+  if (!remarks) return '';
+
+  // PRIMARY: Find "Line from script" then grab text inside quotes " " or « »
+  const lfMatch = remarks.match(/[Ll]ine\s+from\s+script\s*[-–:]*\s*["""«]([^"""»]+)["""»]/);
+  if (lfMatch) return lfMatch[1].trim();
+
+  // SECONDARY: "Line from script - TEXT" without quotes — take till end of line
+  const lfNoQuote = remarks.match(/[Ll]ine\s+from\s+script\s*[-–:]+\s*(.+)/);
+  if (lfNoQuote) return lfNoQuote[1].replace(/["""»]/g,'').split('\n')[0].trim();
+
+  // FALLBACK: first quoted string in remarks
+  const quoted = remarks.match(/["""«]([^"""»]{10,})["""»]/);
+  if (quoted) return quoted[1].trim();
+
+  // LAST RESORT: text before " - "
   const idx = remarks.indexOf(' - ');
-  if (idx > 8) return remarks.substring(0, idx).replace(/^["""«]|["""»]$/g,'').trim();
+  if (idx > 8) return remarks.substring(0, idx).trim();
   return remarks.substring(0, 150).trim();
 }
 
