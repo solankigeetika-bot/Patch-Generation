@@ -597,17 +597,23 @@ async function generateAudio(text, apiKey, voiceId) {
   if (!tr.ok) throw new Error('AudioStack TTS error: ' + tr.status + ' ' + trText);
   const td = JSON.parse(trText);
 
-  let audioUrl = td.url || td.audioUrl || td.speechUrl || td.audio_url;
+  // Extract URL from response - AudioStack returns it in data.sections[0].url
+  let audioUrl = td.url || td.audioUrl || td.audio_url ||
+                 (td.data && td.data.url) ||
+                 (td.data && td.data.sections && td.data.sections[0] && td.data.sections[0].url) ||
+                 (td.sections && td.sections[0] && td.sections[0].url);
 
-  // Step 3: Poll if no direct URL
-  const speechId = td.speechId || td.speech_id;
+  // Poll if no direct URL
+  const speechId = td.speechId || td.speech_id || (td.data && td.data.speechId);
   if (!audioUrl && speechId) {
     for (let i = 0; i < 20; i++) {
       await sleep(3000);
       const pr = await fetch(`${AS_BASE}/speech/tts/${speechId}`, { headers: h });
       if (pr.ok) {
         const pd = await pr.json();
-        audioUrl = pd.url || pd.audioUrl || pd.audio_url;
+        audioUrl = pd.url || pd.audioUrl ||
+                   (pd.data && pd.data.url) ||
+                   (pd.data && pd.data.sections && pd.data.sections[0] && pd.data.sections[0].url);
         if (audioUrl) break;
       }
     }
