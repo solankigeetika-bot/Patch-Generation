@@ -573,37 +573,47 @@ function extractLine(remarks) {
 async function generateAudio(text, apiKey, voiceId) {
   const h = { 'x-api-key': apiKey, 'Content-Type': 'application/json' };
 
-  // Create script
+  // Step 1: Create script
   const sr = await fetch(`${AS_BASE}/content/script`, {
     method: 'POST', headers: h,
     body: JSON.stringify({ scriptText: text, projectName: 'PatchGen' })
   });
-  if (!sr.ok) throw new Error('AudioStack script error: ' + sr.status + ' ' + await sr.text());
-  const sd = await sr.json();
+  const srText = await sr.text();
+  if (!sr.ok) throw new Error('AudioStack script error: ' + sr.status + ' ' + srText);
+  const sd = JSON.parse(srText);
+  
+  // Try all possible field names AudioStack might return
+  const scriptId = sd.scriptId || sd.script_id || sd.id || 
+                   (sd.data && (sd.data.scriptId || sd.data.script_id || sd.data.id)) ||
+                   (sd.response && (sd.response.scriptId || sd.response.script_id));
+  if (!scriptId) throw new Error('No scriptId in response. Keys: ' + Object.keys(sd).join(', ') + ' | Full: ' + srText.substring(0,300));
 
-  // TTS
+  // Step 2: TTS using scriptId
   const tr = await fetch(`${AS_BASE}/speech/tts`, {
     method: 'POST', headers: h,
-    body: JSON.stringify({ scriptId: sd.scriptId, voice: voiceId, sync: true })
+    body: JSON.stringify({ scriptId: scriptId, voice: voiceId, sync: true })
   });
-  if (!tr.ok) throw new Error('AudioStack TTS error: ' + tr.status + ' ' + await tr.text());
-  const td = await tr.json();
+  const trText = await tr.text();
+  if (!tr.ok) throw new Error('AudioStack TTS error: ' + tr.status + ' ' + trText);
+  const td = JSON.parse(trText);
 
-  let audioUrl = td.url || td.audioUrl || td.speechUrl;
+  let audioUrl = td.url || td.audioUrl || td.speechUrl || td.audio_url;
 
-  // Poll if needed
-  if (!audioUrl && td.speechId) {
-    for (let i = 0; i < 15; i++) {
-      await sleep(2500);
-      const pr = await fetch(`${AS_BASE}/speech/tts/${td.speechId}`, { headers: h });
+  // Step 3: Poll if no direct URL
+  const speechId = td.speechId || td.speech_id;
+  if (!audioUrl && speechId) {
+    for (let i = 0; i < 20; i++) {
+      await sleep(3000);
+      const pr = await fetch(`${AS_BASE}/speech/tts/${speechId}`, { headers: h });
       if (pr.ok) {
         const pd = await pr.json();
-        audioUrl = pd.url || pd.audioUrl;
+        audioUrl = pd.url || pd.audioUrl || pd.audio_url;
         if (audioUrl) break;
       }
     }
   }
-  if (!audioUrl) throw new Error('No audio URL from AudioStack');
+  
+  if (!audioUrl) throw new Error('No audio URL from AudioStack. Response: ' + trText);
   return audioUrl;
 }
 
