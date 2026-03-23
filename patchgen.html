@@ -686,11 +686,18 @@ async function runAll() {
       const audioUrl = await generateAudio(row.scriptLine, key, voice);
       log('info', '  Audio ready, downloading...');
 
-      // 2. Download
-      const blob = await fetch(audioUrl).then(r => {
-        if (!r.ok) throw new Error('Download failed: ' + r.status);
-        return r.blob();
+      // 2. Download audio with API key auth
+      const dlResp = await fetch(audioUrl, {
+        headers: { 'x-api-key': key }
       });
+      if (!dlResp.ok) {
+        // Try without auth header (some URLs are pre-signed)
+        const dlResp2 = await fetch(audioUrl);
+        if (!dlResp2.ok) throw new Error('Download failed: ' + dlResp2.status);
+        var blob = await dlResp2.blob();
+      } else {
+        var blob = await dlResp.blob();
+      }
 
       // 3. Upload to Drive
       const fname = `patch_row${row.rowIndex}_${Date.now()}.mp3`;
