@@ -612,19 +612,55 @@ function parseSheet(values) {
 function extractLine(remarks) {
   if (!remarks) return '';
 
-  // PRIMARY: Find "Line from script" then grab text inside quotes " " or « »
-  const lfMatch = remarks.match(/[Ll]ine\s+from\s+script\s*[-–:]*\s*["""«]([^"""»]+)["""»]/);
-  if (lfMatch) return lfMatch[1].trim();
+  // Find "Line from script" then grab EVERYTHING between the opening " and closing "
+  // Handles all quote styles: " " " " « »
+  const OPEN_QUOTES  = ['"', '“', '«', '‘'];
+  const CLOSE_QUOTES = ['"', '”', '»', '’'];
 
-  // SECONDARY: "Line from script - TEXT" without quotes — take till end of line
-  const lfNoQuote = remarks.match(/[Ll]ine\s+from\s+script\s*[-–:]+\s*(.+)/);
-  if (lfNoQuote) return lfNoQuote[1].replace(/["""»]/g,'').split('\n')[0].trim();
+  // Find position of "line from script" (case-insensitive)
+  const lfsMatch = remarks.match(/[Ll]ine\s+from\s+script\s*[-–:]*\s*/);
+  if (lfsMatch) {
+    const afterLFS = remarks.slice(lfsMatch.index + lfsMatch[0].length);
 
-  // FALLBACK: first quoted string in remarks
-  const quoted = remarks.match(/["""«]([^"""»]{10,})["""»]/);
-  if (quoted) return quoted[1].trim();
+    // Find the first opening quote character
+    let openIdx = -1;
+    let closeChar = '"';
+    for (let i = 0; i < afterLFS.length; i++) {
+      const qIdx = OPEN_QUOTES.indexOf(afterLFS[i]);
+      if (qIdx !== -1) {
+        openIdx = i;
+        closeChar = CLOSE_QUOTES[qIdx];
+        break;
+      }
+    }
 
-  // LAST RESORT: text before " - "
+    if (openIdx !== -1) {
+      // Find the matching closing quote
+      const searchFrom = openIdx + 1;
+      const closeIdx = afterLFS.indexOf(closeChar, searchFrom);
+      if (closeIdx !== -1) {
+        return afterLFS.slice(searchFrom, closeIdx).trim();
+      } else {
+        // No closing quote found — take everything after opening quote
+        return afterLFS.slice(searchFrom).trim();
+      }
+    }
+
+    // No quotes found after "line from script" — take rest of that line
+    return afterLFS.split('\n')[0].trim();
+  }
+
+  // FALLBACK: first quoted block in entire remarks
+  for (let i = 0; i < OPEN_QUOTES.length; i++) {
+    const oq = OPEN_QUOTES[i], cq = CLOSE_QUOTES[i];
+    const oi = remarks.indexOf(oq);
+    if (oi !== -1) {
+      const ci = remarks.indexOf(cq, oi + 1);
+      if (ci !== -1 && ci - oi > 5) return remarks.slice(oi + 1, ci).trim();
+    }
+  }
+
+  // LAST RESORT
   const idx = remarks.indexOf(' - ');
   if (idx > 8) return remarks.substring(0, idx).trim();
   return remarks.substring(0, 150).trim();
