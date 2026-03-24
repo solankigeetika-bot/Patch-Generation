@@ -235,6 +235,12 @@ tr.tr-running td { background: rgba(129,140,248,0.04); }
       </select>
     </div>
     <div class="mf"><label>Voice ID *</label><input id="m_voice" placeholder="5438303f-36ed-42f7-af4c-..."/><div class="hint" style="font-family:var(--mono);font-size:10px;color:var(--muted);margin-top:4px;">AudioStack Voice ID for this show</div></div>
+    <div class="mf"><label>Voice Type</label>
+      <select id="m_voicetype">
+        <option value="standard">Standard</option>
+        <option value="expressive">Expressive</option>
+      </select>
+    </div>
     <div class="mactions">
       <button class="btn btn-p" onclick="addShow()">Add Show</button>
       <button class="btn btn-g" onclick="closeModal()">Cancel</button>
@@ -373,6 +379,7 @@ window.onload = () => {
       folderId: '1MFtFREKrNawz4xpHlPtPPqzaUHKYTh7v',
       lang: 'fr-FR',
       voiceId: '5438303f-36ed-42f7-af4c-4007453faf26',
+      voiceType: 'standard',
       stats: {}
     });
     saveShows();
@@ -442,6 +449,7 @@ function editShow(id) {
   document.getElementById('m_drive').value = s.folderId;
   document.getElementById('m_lang').value = s.lang;
   document.getElementById('m_voice').value = s.voiceId || '';
+  document.getElementById('m_voicetype').value = s.voiceType || 'standard';
   // Switch add button to save
   document.querySelector('.mactions .btn-p').textContent = 'Save Changes';
   document.querySelector('.mactions .btn-p').onclick = () => saveEdit(id);
@@ -458,6 +466,7 @@ function saveEdit(id) {
   s.folderId = extractId(document.getElementById('m_drive').value.trim(), 'folder');
   s.lang = document.getElementById('m_lang').value;
   s.voiceId = document.getElementById('m_voice').value.trim();
+  s.voiceType = document.getElementById('m_voicetype').value;
   saveShows();
   renderDashboard();
   closeModal();
@@ -475,10 +484,11 @@ function addShow() {
   const lang = document.getElementById('m_lang').value;
   if (!name || !sheetUrl || !driveUrl) { toast('Fill all required fields', 'warn'); return; }
   const voiceId = document.getElementById('m_voice').value.trim();
+  const voiceType = document.getElementById('m_voicetype').value;
   if (!voiceId) { toast('Enter a Voice ID for this show', 'warn'); return; }
   shows.push({
     id: Date.now(),
-    name, sheetUrl, tab: tab || null, lang, voiceId,
+    name, sheetUrl, tab: tab || null, lang, voiceId, voiceType,
     sheetId: extractId(sheetUrl, 'sheet'),
     folderId: extractId(driveUrl, 'folder'),
     stats: {}
@@ -514,7 +524,7 @@ function renderDashboard() {
           <div>
             <div class="card-name">${s.name}</div>
             <div class="card-meta">${s.lang} · ${s.tab || 'first tab'}</div>
-          <div class="card-meta" style="font-size:9px;color:var(--muted);margin-top:2px;">🎙 ${s.voiceId ? s.voiceId.substring(0,18)+'...' : 'No voice set'}</div>
+          <div class="card-meta" style="font-size:9px;color:var(--muted);margin-top:2px;">🎙 ${s.voiceId ? s.voiceId.substring(0,18)+'...' : 'No voice set'} · <span style="color:${s.voiceType==='expressive'?'var(--a3)':'var(--a2)'}">${s.voiceType || 'standard'}</span></div>
           </div>
         </div>
         <div class="card-nums">
@@ -621,7 +631,7 @@ function extractLine(remarks) {
 }
 
 // ── AUDIOSTACK ─────────────────────────────────────────────
-async function generateAudio(text, apiKey, voiceId) {
+async function generateAudio(text, apiKey, voiceId, voiceType) {
   const h = { 'x-api-key': apiKey, 'Content-Type': 'application/json' };
 
   // Step 1: Create script
@@ -640,9 +650,11 @@ async function generateAudio(text, apiKey, voiceId) {
   if (!scriptId) throw new Error('No scriptId in response. Keys: ' + Object.keys(sd).join(', ') + ' | Full: ' + srText.substring(0,300));
 
   // Step 2: TTS using scriptId
+  const ttsBody = { scriptId: scriptId, voice: voiceId, sync: true };
+  if (voiceType === 'expressive') ttsBody.voiceIntelligence = true;
   const tr = await fetch(`${AS_BASE}/speech/tts`, {
     method: 'POST', headers: h,
-    body: JSON.stringify({ scriptId: scriptId, voice: voiceId, sync: true })
+    body: JSON.stringify(ttsBody)
   });
   const trText = await tr.text();
   if (!tr.ok) throw new Error('AudioStack TTS error: ' + tr.status + ' ' + trText);
@@ -736,7 +748,7 @@ async function runAll() {
     try {
       // 1. Generate
       log('info', '  Generating audio...');
-      const audioUrl = await generateAudio(row.scriptLine, key, voice);
+      const audioUrl = await generateAudio(row.scriptLine, key, voice, activeShow.voiceType || 'standard');
       log('info', '  Audio ready, downloading...');
 
       // 2. Download audio with API key auth
