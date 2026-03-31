@@ -1214,9 +1214,10 @@ async function accTake(ri,ti){
   RS[ri].acceptedTake=ti; RS[ri].status='accepted';
   await dbSet('config',`${activeEp.chapter_id}_r${ri}_acc`,ti);
   refreshCard(ri); updateStitchBtn();
-  // Save to SE data
-  updateSEDataForCurrentEp();
-  toast(`Take ${ti+1} accepted ✓`,'ok');
+  // Save to SE data (await to ensure Base64 conversion completes)
+  toast(`Take ${ti+1} accepted — saving audio...`,'ok');
+  await updateSEDataForCurrentEp();
+  toast(`Patch audio saved ✓`,'ok');
 }
 
 async function updateSEDataForCurrentEp(){
