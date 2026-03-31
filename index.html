@@ -1,0 +1,1530 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>PatchStudio — CMS QC Patch Tool</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet"/>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
+<style>
+:root {
+  --bg:#f7f8fa;--surface:#fff;--surface2:#f1f3f6;--surface3:#e8ecf2;
+  --border:#e4e8ef;--border2:#d0d7e3;
+  --accent:#2563eb;--accent-light:#eff4ff;--accent-dark:#1d4ed8;
+  --green:#16a34a;--green-light:#f0fdf4;--green-dark:#15803d;
+  --red:#dc2626;--red-light:#fef2f2;
+  --orange:#ea580c;--orange-light:#fff7ed;
+  --yellow:#ca8a04;--yellow-light:#fefce8;
+  --purple:#7c3aed;--purple-light:#f5f3ff;
+  --text:#0f172a;--text2:#334155;--muted:#64748b;--muted2:#94a3b8;
+  --mono:'JetBrains Mono',monospace;--sans:'Syne',sans-serif;
+  --r:10px;--shadow:0 1px 4px rgba(0,0,0,.08);--shadow-lg:0 4px 20px rgba(0,0,0,.1);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:100vh}
+.app{display:flex;height:100vh;overflow:hidden}
+.sidebar{width:290px;flex-shrink:0;background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden}
+.sb-logo{padding:16px 16px 12px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px}
+.sb-logo-icon{width:30px;height:30px;background:var(--accent);border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0}
+.sb-logo-text{font-size:15px;font-weight:800;letter-spacing:-.3px}
+.sb-logo-text span{color:var(--accent)}
+.sb-section{padding:12px 14px;border-bottom:1px solid var(--border)}
+.fl{font-family:var(--mono);font-size:9px;color:var(--muted);letter-spacing:1.5px;text-transform:uppercase;display:block;margin-bottom:5px}
+.inp{background:var(--surface2);border:1px solid var(--border);border-radius:7px;color:var(--text);font-family:var(--mono);font-size:11px;padding:7px 10px;outline:none;transition:border .15s;width:100%}
+.inp:focus{border-color:var(--accent);background:#fff}
+.inp::placeholder{color:var(--muted2)}
+.row{display:flex;gap:6px;align-items:center}
+.btn{font-family:var(--sans);font-weight:700;font-size:12px;padding:7px 13px;border-radius:7px;border:none;cursor:pointer;transition:all .15s;display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+.btn-p{background:var(--accent);color:#fff}.btn-p:not(:disabled):hover{background:var(--accent-dark)}
+.btn-g{background:var(--surface2);color:var(--text2);border:1px solid var(--border)}.btn-g:not(:disabled):hover{border-color:var(--accent);color:var(--accent)}
+.btn-green{background:var(--green);color:#fff}.btn-green:not(:disabled):hover{background:var(--green-dark)}
+.btn-orange{background:var(--orange);color:#fff}
+.btn-sm{padding:5px 10px;font-size:11px;border-radius:6px}
+.tok-status{font-family:var(--mono);font-size:9px;color:var(--muted2);margin-top:4px}
+.tok-ok{color:var(--green)}
+.show-cfg{background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px;display:flex;flex-direction:column;gap:8px}
+.ep-scroll{flex:1;overflow-y:auto}
+.ep-head{padding:8px 14px 4px;font-family:var(--mono);font-size:9px;color:var(--muted);letter-spacing:1.5px;text-transform:uppercase;display:flex;justify-content:space-between;align-items:center}
+.ep-item{padding:9px 14px;border-bottom:1px solid var(--border);cursor:pointer;transition:background .1s}
+.ep-item:hover{background:var(--surface2)}.ep-item.active{background:var(--accent-light);border-left:3px solid var(--accent)}
+.ep-title{font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:2px}
+.ep-meta{font-family:var(--mono);font-size:10px;color:var(--muted)}
+.ep-badge{display:inline-block;background:var(--orange-light);color:var(--orange);font-family:var(--mono);font-size:9px;padding:1px 5px;border-radius:4px;margin-left:5px;border:1px solid #fed7aa}
+.main{flex:1;display:flex;flex-direction:column;overflow:hidden}
+.topbar{padding:12px 22px;background:var(--surface);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;flex-shrink:0}
+.topbar-title{font-size:15px;font-weight:700;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.status-pill{font-family:var(--mono);font-size:10px;padding:3px 10px;border-radius:20px;border:1px solid;white-space:nowrap}
+.sp-ready{background:var(--green-light);color:var(--green);border-color:#86efac}
+.sp-load{background:var(--yellow-light);color:var(--yellow);border-color:#fde047;animation:blink 1s infinite}
+.sp-err{background:var(--red-light);color:var(--red);border-color:#fca5a5}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.4}}
+.content{flex:1;overflow-y:auto;padding:18px 22px}
+.stitch-ready-bar{background:linear-gradient(135deg,var(--green-light),#dcfce7);border:1.5px solid #86efac;border-radius:var(--r);padding:14px 18px;margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.srb-text{font-size:13px;font-weight:700;color:var(--green)}
+.srb-sub{font-family:var(--mono);font-size:10px;color:var(--muted);margin-top:2px}
+.final-section{background:var(--surface);border:2px solid var(--green);border-radius:var(--r);padding:16px 18px;margin-bottom:18px;box-shadow:var(--shadow-lg)}
+.final-title{font-size:14px;font-weight:700;color:var(--green);margin-bottom:12px;display:flex;align-items:center;gap:8px}
+.final-actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px}
+.upload-status{font-family:var(--mono);font-size:10px;padding:7px 12px;border-radius:6px;margin-top:8px}
+.us-ok{background:var(--green-light);color:var(--green)}.us-err{background:var(--red-light);color:var(--red)}.us-load{background:var(--yellow-light);color:var(--yellow);animation:blink 1s infinite}
+.op-bar{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:12px 16px;margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;gap:12px}
+.op-lbl{font-family:var(--mono);font-size:10px;color:var(--muted)}
+.op-count{font-family:var(--mono);font-size:12px;font-weight:600;color:var(--accent)}
+.remarks-grid{display:flex;flex-direction:column;gap:16px}
+.rc{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);overflow:hidden;box-shadow:var(--shadow);transition:box-shadow .2s}
+.rc:hover{box-shadow:var(--shadow-lg)}.rc.rc-acc{border-color:#86efac}.rc.rc-dis{opacity:.45;border-color:#fca5a5}
+.rc-hdr{padding:11px 16px;background:var(--surface2);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.rc-time{font-family:var(--mono);font-size:11px;font-weight:600;color:var(--accent);background:var(--accent-light);padding:3px 8px;border-radius:5px;border:1px solid #bfdbfe}
+.rc-type{font-family:var(--mono);font-size:10px;padding:3px 8px;border-radius:5px;border:1px solid}
+.t-misp{background:#fef3c7;color:#92400e;border-color:#fde68a}
+.t-mod{background:#ede9fe;color:#5b21b6;border-color:#ddd6fe}
+.t-qual{background:#e0f2fe;color:#075985;border-color:#bae6fd}
+.rc-email{font-family:var(--mono);font-size:9px;color:var(--muted);margin-left:auto}
+.rc-sbadge{font-family:var(--mono);font-size:10px;padding:3px 8px;border-radius:5px}
+.rsb-acc{background:var(--green-light);color:var(--green);border:1px solid #86efac}
+.rsb-dis{background:var(--red-light);color:var(--red);border:1px solid #fca5a5}
+.rc-body{padding:14px 16px}
+.note-box{background:#fffbeb;border:1px solid #fde68a;border-radius:7px;padding:9px 12px;margin-bottom:12px}
+.note-lbl{font-family:var(--mono);font-size:9px;color:#92400e;letter-spacing:1px;margin-bottom:3px}
+.note-txt{font-size:12px;color:#78350f;line-height:1.5}
+.script-lbl{font-family:var(--mono);font-size:9px;color:var(--muted);letter-spacing:1.5px;text-transform:uppercase;margin-bottom:5px;display:flex;align-items:center;gap:8px}
+.edit-hint{font-size:9px;color:var(--muted2);background:var(--surface2);padding:2px 6px;border-radius:4px;border:1px solid var(--border)}
+.script-ta{background:var(--surface2);border:1.5px solid var(--border);border-radius:7px;padding:9px 12px;font-size:13px;color:var(--text);line-height:1.6;outline:none;transition:all .15s;width:100%;resize:vertical;font-family:var(--sans);cursor:text;min-height:60px;-webkit-user-select:text;user-select:text;pointer-events:all}
+.script-ta:focus{border-color:var(--accent);background:#fff;box-shadow:0 0 0 3px rgba(37,99,235,0.1)}
+.script-ta:hover{border-color:var(--border2);background:#fff}
+.no-script{font-family:var(--mono);font-size:11px;color:var(--muted);padding:9px 12px;background:var(--surface2);border-radius:7px;border:1px solid var(--border)}
+.gen-row{display:flex;align-items:center;gap:8px;margin:12px 0}
+.gen-btn{font-family:var(--sans);font-weight:700;font-size:12px;padding:9px 18px;border-radius:8px;border:none;cursor:pointer;background:var(--accent);color:#fff;transition:all .15s;display:flex;align-items:center;gap:6px}
+.gen-btn:not(:disabled):hover{background:var(--accent-dark);transform:translateY(-1px)}.gen-btn:disabled{opacity:.4;cursor:not-allowed}
+.takes-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.tc{background:var(--surface2);border:2px solid var(--border);border-radius:9px;padding:12px;min-height:120px;transition:all .2s}
+.tc.tk-gen{border-color:#93c5fd;background:#eff6ff;animation:blink 1s infinite}
+.tc.tk-acc{border-color:var(--green);background:var(--green-light)}
+.tc.tk-dis{border-color:#fca5a5;background:var(--red-light);opacity:.5}
+.take-num{font-family:var(--mono);font-size:9px;color:var(--muted);letter-spacing:1px;margin-bottom:8px;text-transform:uppercase}
+.take-spin{text-align:center;padding:18px;font-family:var(--mono);font-size:11px;color:var(--accent)}
+.take-empty{text-align:center;padding:18px;font-family:var(--mono);font-size:10px;color:var(--muted2)}
+.take-acts{display:flex;gap:5px;margin-top:8px}
+.ta-acc{flex:1;font-family:var(--sans);font-weight:700;font-size:10px;padding:6px;border-radius:6px;border:none;cursor:pointer;background:var(--green);color:#fff}
+.ta-acc:disabled{opacity:.5;cursor:not-allowed}.ta-acc:not(:disabled):hover{background:var(--green-dark)}
+.ta-dis{flex:1;font-family:var(--sans);font-weight:700;font-size:10px;padding:6px;border-radius:6px;border:1px solid #fca5a5;cursor:pointer;background:var(--surface);color:var(--red)}
+.ta-dis:hover{background:var(--red-light)}
+.empty{text-align:center;padding:70px 30px}
+.empty-icon{font-size:44px;margin-bottom:12px}
+.empty-title{font-size:17px;font-weight:700;color:var(--text2);margin-bottom:5px}
+.empty-sub{font-family:var(--mono);font-size:11px;color:var(--muted)}
+.overlay{position:fixed;inset:0;background:rgba(247,248,250,.88);display:none;align-items:center;justify-content:center;z-index:200;backdrop-filter:blur(3px)}
+.overlay.show{display:flex}
+.ov-box{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:28px 36px;text-align:center;box-shadow:var(--shadow-lg);max-width:300px}
+.ov-icon{font-size:30px;margin-bottom:10px}
+.ov-title{font-size:15px;font-weight:700;margin-bottom:4px}
+.ov-sub{font-family:var(--mono);font-size:10px;color:var(--muted);margin-bottom:12px}
+.prog-bg{height:4px;background:var(--border);border-radius:2px;overflow:hidden}
+.prog-fill{height:100%;background:linear-gradient(90deg,var(--accent),var(--purple));border-radius:2px;transition:width .4s}
+.toasts{position:fixed;bottom:18px;right:18px;z-index:9999;display:flex;flex-direction:column;gap:7px}
+.toast{background:var(--surface);border:1px solid var(--border);border-radius:9px;padding:9px 15px;font-family:var(--mono);font-size:11px;color:var(--text);box-shadow:var(--shadow-lg);display:flex;align-items:center;gap:7px;animation:slideIn .25s ease;max-width:340px}
+@keyframes slideIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+.t-ok{border-color:#86efac}.t-err{border-color:#fca5a5}.t-warn{border-color:#fde68a}
+::-webkit-scrollbar{width:4px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--border2);border-radius:2px}
+
+/* PAGES */
+.pg{display:none}.pg.active{display:block}
+
+/* SLIM SIDEBAR */
+.sidebar{width:220px}
+
+/* SUMMARY BAR */
+.sum-bar{display:flex;gap:10px;margin-bottom:18px;flex-wrap:wrap}
+.sum-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:12px 16px;min-width:120px;box-shadow:var(--shadow)}
+.sum-card .sum-val{font-size:22px;font-weight:800;color:var(--text);font-family:var(--sans)}
+.sum-card .sum-lbl{font-family:var(--mono);font-size:9px;color:var(--muted);letter-spacing:1px;text-transform:uppercase;margin-top:2px}
+.sum-card.sc-accent .sum-val{color:var(--accent)}
+.sum-card.sc-green .sum-val{color:var(--green)}
+.sum-card.sc-orange .sum-val{color:var(--orange)}
+.sum-card.sc-red .sum-val{color:var(--red)}
+.sum-card.sc-purple .sum-val{color:var(--purple)}
+
+/* SHOW CARDS GRID */
+.dash-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px}
+.show-card{background:var(--surface);border:1.5px solid var(--border);border-radius:12px;overflow:hidden;box-shadow:var(--shadow);transition:all .2s}
+.show-card:hover{border-color:var(--accent);box-shadow:var(--shadow-lg);transform:translateY(-2px)}
+.sc-body{padding:16px;cursor:pointer}
+.sc-top{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+.sc-icon{width:38px;height:38px;border-radius:10px;background:var(--accent-light);border:1px solid #bfdbfe;display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0}
+.sc-name{font-size:14px;font-weight:700}
+.sc-meta{font-family:var(--mono);font-size:9px;color:var(--muted);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:180px}
+.sc-stats{display:flex;gap:12px;margin-top:4px}
+.sc-stat{font-family:var(--mono);font-size:10px;color:var(--muted)}
+.sc-stat strong{display:block;font-size:16px;font-family:var(--sans);font-weight:700;color:var(--text)}
+.sc-stat.ss-green strong{color:var(--green)}
+.sc-stat.ss-orange strong{color:var(--orange)}
+.sc-stat.ss-red strong{color:var(--red)}
+.sc-foot{padding:8px 16px;border-top:1px solid var(--border);display:flex;gap:6px}
+.sc-foot .btn{flex:1;justify-content:center}
+.add-card{border:2px dashed var(--border);border-radius:12px;padding:40px 20px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;cursor:pointer;transition:all .2s;min-height:160px;background:transparent}
+.add-card:hover{border-color:var(--accent);background:var(--accent-light)}
+.add-card .plus{font-size:28px;color:var(--muted)}
+.add-card p{font-size:12px;color:var(--muted);font-family:var(--mono)}
+
+/* EPISODE LIST IN MAIN */
+.ep-grid{display:flex;flex-direction:column;gap:6px}
+.ep-card{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 16px;cursor:pointer;transition:all .15s;display:flex;align-items:center;gap:12px}
+.ep-card:hover{border-color:var(--accent);background:var(--accent-light)}
+.ep-card .ep-num{font-family:var(--mono);font-size:10px;color:var(--muted);min-width:30px}
+.ep-card .ep-info{flex:1;min-width:0}
+.ep-card .ep-name{font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ep-card .ep-dur{font-family:var(--mono);font-size:10px;color:var(--muted)}
+
+/* BACK BUTTON */
+.back-btn{display:inline-flex;align-items:center;gap:6px;background:none;border:1px solid var(--border);border-radius:7px;color:var(--muted);font-family:var(--mono);font-size:11px;padding:6px 12px;cursor:pointer;margin-bottom:16px;transition:all .15s}
+.back-btn:hover{color:var(--accent);border-color:var(--accent)}
+
+/* SE PANEL */
+.se-ep{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);margin-bottom:8px;overflow:hidden;box-shadow:var(--shadow)}
+.se-ep.se-yes{border-color:#86efac;background:var(--green-light)}
+.se-ep.se-no{border-color:#fca5a5}
+.se-ep-hdr{padding:12px 16px;display:flex;align-items:center;gap:10px;cursor:pointer;transition:background .1s;flex-wrap:wrap}
+.se-ep-hdr:hover{background:var(--surface2)}
+.se-ep-arrow{font-size:10px;color:var(--muted);transition:transform .2s;width:16px}
+.se-ep-arrow.open{transform:rotate(90deg)}
+.se-ep-name{font-size:13px;font-weight:700;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.se-ep-pills{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.se-pill{font-family:var(--mono);font-size:9px;padding:3px 8px;border-radius:12px;border:1px solid}
+.se-pill-patches{background:var(--accent-light);color:var(--accent);border-color:#bfdbfe}
+.se-pill-stitch{background:var(--green-light);color:var(--green);border-color:#86efac}
+.se-pill-pending{background:var(--surface2);color:var(--muted);border-color:var(--border)}
+.se-ep-body{display:none;border-top:1px solid var(--border);padding:12px 16px}
+.se-ep.expanded .se-ep-body{display:block}
+.se-ep.expanded .se-ep-arrow{transform:rotate(90deg)}
+.se-tbl{width:100%;border-collapse:collapse;font-size:12px}
+.se-tbl th{font-family:var(--mono);font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:1px;padding:6px 8px;text-align:left;border-bottom:1px solid var(--border);background:var(--surface2)}
+.se-tbl td{padding:8px;border-bottom:1px solid rgba(0,0,0,.03);vertical-align:middle}
+.se-tbl tr:last-child td{border-bottom:none}
+.se-dl{font-family:var(--mono);font-size:10px;color:var(--accent);text-decoration:none;padding:3px 8px;border:1px solid #bfdbfe;border-radius:5px;display:inline-block}
+.se-dl:hover{background:var(--accent-light)}
+.se-actions{display:flex;gap:6px;padding:10px 16px;border-top:1px solid var(--border);align-items:center}
+.se-yn{font-family:var(--sans);font-weight:700;font-size:11px;padding:6px 16px;border-radius:6px;border:none;cursor:pointer}
+.se-yn-yes{background:var(--green);color:#fff}.se-yn-yes:hover{background:var(--green-dark)}
+.se-yn-no{background:var(--surface2);color:var(--red);border:1px solid #fca5a5}.se-yn-no:hover{background:var(--red-light)}
+.se-yn.active{box-shadow:0 0 0 3px rgba(0,0,0,.15)}
+.se-status{font-family:var(--mono);font-size:10px;color:var(--muted);margin-left:auto}
+</style>
+</head>
+<body>
+<div class="toasts" id="toasts"></div>
+<div class="overlay" id="overlay">
+  <div class="ov-box">
+    <div class="ov-icon" id="ovIcon">⏳</div>
+    <div class="ov-title" id="ovTitle">Processing...</div>
+    <div class="ov-sub" id="ovSub">Please wait</div>
+    <div class="prog-bg"><div class="prog-fill" id="ovProg" style="width:0%"></div></div>
+  </div>
+</div>
+
+<div class="app">
+<aside class="sidebar">
+  <div class="sb-logo">
+    <div class="sb-logo-icon">🎙</div>
+    <div>
+      <div class="sb-logo-text">Patch<span>Studio</span></div>
+      <div style="font-family:var(--mono);font-size:8px;color:var(--muted);letter-spacing:1px">CMS QC PATCH GENERATOR</div>
+    </div>
+  </div>
+
+  <div class="sb-section">
+    <label class="fl">CMS Credentials</label>
+    <div class="tok-status" id="tokStatus" style="margin-bottom:6px">Not connected</div>
+    <div style="text-align:center;margin-bottom:4px" id="bookmarkletWrap"></div>
+    <div style="font-family:var(--mono);font-size:8px;color:var(--muted2);text-align:center;line-height:1.4">Drag button to bookmarks bar.<br>Click on CMS site to connect.</div>
+    <script>
+    (function(){
+      var b=document.location.href.split('?')[0].split('#')[0];
+      var js="javascript:void((function(){var t=localStorage.getItem('token')||'',u=localStorage.getItem('uid')||'';if(!t||!u){alert('No token/uid in localStorage. Log into cms.pocketfm.com first.');return;}var a=String.fromCharCode(38);window.location='"+b+"?_t='+encodeURIComponent(t)+a+'_u='+encodeURIComponent(u);})())";
+      document.getElementById('bookmarkletWrap').innerHTML='<a href="'+js.replace(/"/g,"&quot;")+'" style="display:inline-block;padding:6px 14px;background:#2563eb;color:#fff;border-radius:6px;font-family:Syne,sans-serif;font-weight:700;font-size:10px;text-decoration:none;cursor:grab" onclick="event.preventDefault();alert(\'Drag this to your bookmarks bar, then click it on the CMS site\')">Connect PatchStudio</a>';
+    })();
+    </script>
+    <input type="hidden" id="tokenInp"/>
+    <input type="hidden" id="uidInp"/>
+  </div>
+
+  <div class="sb-section" style="flex:1;overflow-y:auto;border-bottom:none">
+    <label class="fl">Navigation</label>
+    <button class="btn btn-g btn-sm" onclick="goPage('dashboard')" style="width:100%;margin-bottom:4px;justify-content:flex-start">🏠 Dashboard</button>
+    <button class="btn btn-g btn-sm" onclick="goPage('se')" style="width:100%;margin-bottom:4px;justify-content:flex-start">🎧 SE Panel</button>
+    <div id="sbShowNav"></div>
+  </div>
+
+  <!-- Hidden inputs -->
+  <input type="hidden" id="showInp"/>
+  <input type="hidden" id="asKeyInp" value="a8b654d7-aeed-40dc-8e3b-4f6181c26cb6"/>
+  <input type="hidden" id="asVoiceInp" value="5438303f-36ed-42f7-af4c-4007453faf26"/>
+  <input type="hidden" id="voiceType" value="standard"/>
+</aside>
+
+<!-- ADD SHOW MODAL -->
+<div id="addShowModal" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:300;align-items:center;justify-content:center;backdrop-filter:blur(4px)">
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:24px;width:420px;max-width:95vw;box-shadow:var(--shadow-lg)">
+    <div style="font-size:15px;font-weight:800;margin-bottom:4px" id="addShowTitle">Add New Show</div>
+    <div style="font-family:var(--mono);font-size:10px;color:var(--muted);margin-bottom:18px">Configure show settings for patch generation</div>
+    <input type="hidden" id="editShowId"/>
+    <div style="display:flex;flex-direction:column;gap:12px">
+      <div><label class="fl" style="margin-bottom:3px">Show Name *</label><input class="inp" id="m_name" placeholder="e.g. Mech Touch S2"/></div>
+      <div><label class="fl" style="margin-bottom:3px">Show ID or CMS URL *</label><input class="inp" id="m_showid" placeholder="show_id or full CMS URL..."/></div>
+      <div><label class="fl" style="margin-bottom:3px">AudioStack API Key *</label><input type="password" class="inp" id="m_askey" placeholder="a8b654d7-..." value="a8b654d7-aeed-40dc-8e3b-4f6181c26cb6"/></div>
+      <div><label class="fl" style="margin-bottom:3px">Voice ID</label><input class="inp" id="m_voice" placeholder="Auto-detected from CMS · or paste manually"/></div>
+      <div><label class="fl" style="margin-bottom:3px">Voice Type</label>
+        <select class="inp" id="m_voicetype"><option value="standard">Standard</option><option value="expressive">Expressive</option></select>
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:18px">
+      <button class="btn btn-p" style="flex:1" onclick="saveShow()">Save Show</button>
+      <button class="btn btn-g" onclick="closeAddShow()">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<main class="main">
+  <div class="topbar">
+    <button class="back-btn" id="backBtn" onclick="goBack()" style="display:none">← Back</button>
+    <div class="topbar-title" id="topTitle">PatchStudio</div>
+    <div class="status-pill sp-ready" id="topStatus">Ready</div>
+    <button class="btn btn-g btn-sm" id="genAllBtn" onclick="generateAllPending()" style="display:none">⚡ Gen All</button>
+    <button class="btn btn-orange btn-sm" id="stitchAllBtn" onclick="stitchAll()" style="display:none">🔗 Stitch All &amp; Preview</button>
+  </div>
+  <div class="content">
+    <!-- PAGE: Dashboard -->
+    <div class="pg active" id="page-dashboard">
+      <div id="dashSummary"></div>
+      <div class="dash-grid" id="dashGrid"></div>
+    </div>
+    <!-- PAGE: Show View -->
+    <div class="pg" id="page-show">
+      <div id="showSummary"></div>
+      <div class="ep-grid" id="showEpList"></div>
+    </div>
+    <!-- PAGE: SE Panel -->
+    <div class="pg" id="page-se">
+      <div id="seSummary"></div>
+      <div id="seList"></div>
+    </div>
+    <!-- PAGE: Episode View -->
+    <div class="pg" id="page-episode">
+      <div id="mainContent"></div>
+    </div>
+  </div>
+</main>
+</div>
+
+<script>
+// Bookmarklet href is set inline in the HTML above
+
+// ── Firebase ─────────────────────────────────────────────────
+firebase.initializeApp({
+  apiKey: "AIzaSyCX8ODNHNkIlkIS5qeA6eaSFJe-xl1dwdU",
+  authDomain: "patch-generation.firebaseapp.com",
+  databaseURL: "https://patch-generation-default-rtdb.firebaseio.com",
+  projectId: "patch-generation",
+  storageBucket: "patch-generation.firebasestorage.app",
+  messagingSenderId: "7294441379",
+  appId: "1:7294441379:web:8cd1badbfabf494203ec16"
+});
+const fbDb = firebase.database();
+
+const CMS_BASE = 'https://api.cms.pocketfm.com/v2/content_api';
+const AS_BASE  = 'https://v2.api.audio';
+const DB_NAME  = 'PatchStudioDB';
+
+let authToken='', uid='', asKey='', asVoice='', voiceType='standard', cmsWin=null;
+let episodes=[], activeEp=null, activeShowId='';
+let remarks=[], RS={};
+let db=null, finalAudioUrl=null, finalAudioBlob=null;
+let currentPage='dashboard';
+
+// ── Synchronous credential loading (runs immediately) ────────
+// 1. Check URL params from bookmarklet redirect
+const _urlParams = new URLSearchParams(window.location.search);
+const _paramT = _urlParams.get('_t'), _paramU = _urlParams.get('_u');
+if(_paramT && _paramU){
+  authToken = _paramT; uid = _paramU;
+  localStorage.setItem('ps_token', _paramT);
+  localStorage.setItem('ps_uid', _paramU);
+  history.replaceState(null, '', window.location.pathname);
+}
+// 2. Fall back to localStorage
+if(!authToken) authToken = localStorage.getItem('ps_token') || '';
+if(!uid) uid = localStorage.getItem('ps_uid') || '';
+
+// ── IndexedDB ────────────────────────────────────────────────
+async function initDB() {
+  return new Promise((res,rej)=>{
+    const req = indexedDB.open(DB_NAME,2);
+    req.onupgradeneeded = e => {
+      const d=e.target.result;
+      if(!d.objectStoreNames.contains('patches')) d.createObjectStore('patches',{keyPath:'k'});
+      if(!d.objectStoreNames.contains('config'))  d.createObjectStore('config', {keyPath:'k'});
+    };
+    req.onsuccess = e => { db=e.target.result; res(db); };
+    req.onerror   = e => rej(e);
+  });
+}
+async function dbSet(store,k,v){
+  if(!db){ localStorage.setItem('ps_'+store+'_'+k, JSON.stringify(v)); return; }
+  return new Promise((res,rej)=>{ const tx=db.transaction(store,'readwrite'); tx.objectStore(store).put({k,v}); tx.oncomplete=res; tx.onerror=()=>{ localStorage.setItem('ps_'+store+'_'+k, JSON.stringify(v)); res(); }; });
+}
+async function dbGet(store,k){
+  if(!db){ try{ return JSON.parse(localStorage.getItem('ps_'+store+'_'+k)); }catch(e){ return null; } }
+  return new Promise((res,rej)=>{ const tx=db.transaction(store,'readonly'); const r=tx.objectStore(store).get(k); r.onsuccess=e=>res(e.target.result?.v); r.onerror=()=>{ try{ res(JSON.parse(localStorage.getItem('ps_'+store+'_'+k))); }catch(e){ res(null); } }; });
+}
+async function dbSetBlob(k,blob){
+  if(!db) return;
+  return new Promise((res,rej)=>{ const tx=db.transaction('patches','readwrite'); tx.objectStore('patches').put({k,v:blob}); tx.oncomplete=res; tx.onerror=()=>res(); });
+}
+async function dbGetBlob(k){
+  if(!db) return null;
+  return new Promise((res)=>{ const tx=db.transaction('patches','readonly'); const r=tx.objectStore('patches').get(k); r.onsuccess=e=>res(e.target.result?.v||null); r.onerror=()=>res(null); });
+}
+
+// ── Init ─────────────────────────────────────────────────────
+window.onload = async () => {
+  // Show credential status immediately (creds loaded synchronously above)
+  if(authToken && uid) setTokOk(true);
+
+  try { await initDB(); } catch(e) { console.error('IndexedDB init failed:', e); }
+
+  // Load other settings from IndexedDB
+  try {
+    asKey     = await dbGet('config','asKey') || 'a8b654d7-aeed-40dc-8e3b-4f6181c26cb6';
+    asVoice   = await dbGet('config','asVoice') || '5438303f-36ed-42f7-af4c-4007453faf26';
+    voiceType = await dbGet('config','voiceType') || 'standard';
+  } catch(e) { console.error('DB read failed:', e); }
+  const savedShow = (db ? await dbGet('config','showInput').catch(()=>'') : '') || '';
+
+  if(authToken){ document.getElementById('tokenInp').value=authToken; }
+  if(uid){ document.getElementById('uidInp').value=uid; }
+  if(authToken && uid) setTokOk(true);
+  document.getElementById('asKeyInp').value=asKey;
+  document.getElementById('asVoiceInp').value=asVoice;
+  document.getElementById('voiceType').value=voiceType;
+  if(savedShow) document.getElementById('showInp').value=savedShow;
+  await initShows();
+  initSESync();
+
+  if(_paramT && _paramU) toast('CMS credentials received automatically!','ok');
+};
+
+async function pasteCredentials(){
+  try{
+    const text=await navigator.clipboard.readText();
+    if(!text){ toast('Clipboard is empty','warn'); return; }
+    // Expect format: token|uid
+    const parts=text.split('|');
+    if(parts.length===2 && parts[0].length>20 && parts[1].length>20){
+      authToken=parts[0].trim(); uid=parts[1].trim();
+      localStorage.setItem('ps_token', authToken);
+      localStorage.setItem('ps_uid', uid);
+      document.getElementById('tokenInp').value=authToken;
+      document.getElementById('uidInp').value=uid;
+      setTokOk(true);
+      toast('Credentials pasted and saved!','ok');
+    } else {
+      toast('Invalid format. Expected token|uid from bookmarklet.','warn');
+    }
+  }catch(e){
+    toast('Clipboard access denied. Allow clipboard permission.','warn');
+  }
+}
+
+async function saveToken(){
+  authToken=document.getElementById('tokenInp').value.trim();
+  uid=document.getElementById('uidInp').value.trim();
+  localStorage.setItem('ps_token', authToken);
+  localStorage.setItem('ps_uid', uid);
+  setTokOk(!!(authToken && uid));
+  toast(authToken?'Credentials saved ✓':'Cleared', authToken?'ok':'warn');
+}
+function setTokOk(ok){
+  const e=document.getElementById('tokStatus');
+  e.textContent=ok?'Connected ✓':'Not connected';
+  e.className='tok-status'+(ok?' tok-ok':'');
+  const btn=document.getElementById('cmsConnBtn');
+  if(btn) btn.textContent=ok?'Re-import from CMS':'Import from CMS';
+}
+// grabFromCMS removed — bookmarklet handles this now
+function hdrs(){
+  return {
+    'Content-Type':'application/json',
+    'access-token': authToken,
+    'uid': uid,
+    'app-client': 'consumer-web',
+    'app-version': '180',
+    'auth-token': 'web-auth',
+    'source': 'cms',
+  };
+}
+
+// ── Load Show ────────────────────────────────────────────────
+// ── Show Management ──────────────────────────────────────────
+let shows = [];
+let activeShowConfig = null;
+
+async function initShows(){
+  // Real-time listener: whenever any client writes shows, everyone gets updated
+  fbDb.ref('shows').on('value', snapshot => {
+    shows = snapshot.val() ? Object.values(snapshot.val()) : [];
+    renderDashboard();
+    renderSidebarNav();
+  });
+
+  // One-time migration: push local shows to Firebase if Firebase is empty
+  const localShows = await dbGet('config','shows') || [];
+  if(localShows.length){
+    const snap = await fbDb.ref('shows').once('value');
+    if(!snap.val()){
+      const obj = {};
+      localShows.forEach(s => obj[s.id] = s);
+      await fbDb.ref('shows').set(obj);
+    }
+  }
+}
+
+// ── Page Navigation ───────────────────────────────────────────
+function goPage(name){
+  currentPage=name;
+  document.querySelectorAll('.pg').forEach(p=>p.classList.remove('active'));
+  document.getElementById('page-'+name)?.classList.add('active');
+  const back=document.getElementById('backBtn');
+  const genBtn=document.getElementById('genAllBtn');
+  const stitchBtn=document.getElementById('stitchAllBtn');
+  if(name==='dashboard'){
+    back.style.display='none';
+    document.getElementById('topTitle').textContent='PatchStudio';
+    genBtn.style.display='none';
+    stitchBtn.style.display='none';
+  } else if(name==='show'){
+    back.style.display='inline-flex';
+    document.getElementById('topTitle').textContent=activeShowConfig?.name||'Show';
+    genBtn.style.display='none';
+    stitchBtn.style.display='none';
+  } else if(name==='se'){
+    back.style.display='inline-flex';
+    document.getElementById('topTitle').textContent='Sound Engineer Panel';
+    genBtn.style.display='none';
+    stitchBtn.style.display='none';
+    renderSEPanel();
+  } else if(name==='episode'){
+    back.style.display='inline-flex';
+    genBtn.style.display='inline-flex';
+    updateStitchBtn();
+  }
+}
+
+function goBack(){
+  if(currentPage==='episode') goPage('show');
+  else if(currentPage==='show') goPage('dashboard');
+  else if(currentPage==='se') goPage('dashboard');
+}
+
+// ── Sidebar Nav ─────────────────────────────────────────────
+function renderSidebarNav(){
+  const el=document.getElementById('sbShowNav');
+  el.innerHTML=shows.map(s=>{
+    const isActive=activeShowConfig?.id===s.id;
+    return '<button class="btn btn-g btn-sm" onclick="selectShow('+s.id+')" style="width:100%;margin-bottom:3px;justify-content:flex-start;font-size:10px;'+(isActive?'border-color:var(--accent);color:var(--accent);background:var(--accent-light)':'')+'">🎬 '+esc(s.name)+'</button>';
+  }).join('');
+}
+
+// ── Dashboard ───────────────────────────────────────────────
+function renderDashboard(){
+  // Summary
+  const totalShows=shows.length;
+  const totalEps=shows.reduce((s,x)=>(x.stats?.total||0)+s,0);
+  const totalQC=shows.reduce((s,x)=>(x.stats?.qc||0)+s,0);
+  const totalDone=shows.reduce((s,x)=>(x.stats?.done||0)+s,0);
+
+  document.getElementById('dashSummary').innerHTML=`
+    <div class="sum-bar">
+      <div class="sum-card sc-accent"><div class="sum-val">${totalShows}</div><div class="sum-lbl">Shows</div></div>
+      <div class="sum-card"><div class="sum-val">${totalEps||'—'}</div><div class="sum-lbl">Episodes</div></div>
+      <div class="sum-card sc-orange"><div class="sum-val">${totalQC||'—'}</div><div class="sum-lbl">QC Issues</div></div>
+      <div class="sum-card sc-green"><div class="sum-val">${totalDone||'—'}</div><div class="sum-lbl">Patches Done</div></div>
+    </div>`;
+
+  // Show cards
+  let html=shows.map(s=>{
+    const st=s.stats||{};
+    return `<div class="show-card">
+      <div class="sc-body" onclick="selectShow(${s.id})">
+        <div class="sc-top">
+          <div class="sc-icon">🎬</div>
+          <div>
+            <div class="sc-name">${esc(s.name)}</div>
+            <div class="sc-meta">${(s.showInput||'').substring(0,30)}</div>
+          </div>
+        </div>
+        <div class="sc-stats">
+          <div class="sc-stat"><strong>${st.total||'—'}</strong>Episodes</div>
+          <div class="sc-stat ss-orange"><strong>${st.qc||'—'}</strong>QC</div>
+          <div class="sc-stat ss-green"><strong>${st.done||'—'}</strong>Done</div>
+        </div>
+      </div>
+      <div class="sc-foot">
+        <button class="btn btn-p btn-sm" onclick="selectShow(${s.id})">▶ Open</button>
+        <button class="btn btn-g btn-sm" onclick="editShow(${s.id})">✏ Edit</button>
+        <button class="btn btn-g btn-sm" style="color:var(--red)" onclick="deleteShow(${s.id})">✕</button>
+      </div>
+    </div>`;
+  }).join('');
+  html+=`<div class="add-card" onclick="openAddShow()"><div class="plus">＋</div><p>Add a new show</p></div>`;
+  document.getElementById('dashGrid').innerHTML=html;
+  renderSidebarNav();
+}
+
+// ── Show View (episodes list) ───────────────────────────────
+let epFilter='', epFilterMode='all';
+function renderShowView(){
+  if(!activeShowConfig) return;
+  const st=activeShowConfig.stats||{};
+  document.getElementById('showSummary').innerHTML=`
+    <div class="sum-bar">
+      <div class="sum-card"><div class="sum-val">${st.total||episodes.length||'—'}</div><div class="sum-lbl">Episodes</div></div>
+      <div class="sum-card sc-orange"><div class="sum-val">${st.qc||'—'}</div><div class="sum-lbl">QC Issues</div></div>
+      <div class="sum-card sc-green"><div class="sum-val">${st.done||'—'}</div><div class="sum-lbl">Patches Done</div></div>
+      <div class="sum-card sc-purple"><div class="sum-val">${st.stitched||'—'}</div><div class="sum-lbl">Stitched</div></div>
+    </div>
+    <div style="display:flex;gap:8px;margin-bottom:14px;align-items:center;flex-wrap:wrap">
+      <input class="inp" id="epSearch" placeholder="Search episodes..." style="max-width:260px;font-size:11px" oninput="epFilter=this.value.toLowerCase();renderEpCards()" value="${esc(epFilter)}"/>
+      <button class="btn btn-sm ${epFilterMode==='all'?'btn-p':'btn-g'}" onclick="epFilterMode='all';renderShowView()">All</button>
+      <button class="btn btn-sm ${epFilterMode==='qc'?'btn-orange':'btn-g'}" onclick="epFilterMode='qc';renderShowView()">QC Only</button>
+      <span style="font-family:var(--mono);font-size:10px;color:var(--muted);margin-left:auto" id="epFilterCount"></span>
+    </div>`;
+
+  renderEpCards();
+}
+
+function renderEpCards(){
+  const el=document.getElementById('showEpList');
+  if(!episodes.length){
+    el.innerHTML='<div class="empty"><div class="empty-icon">📂</div><div class="empty-title">No episodes loaded</div></div>';
+    return;
+  }
+
+  // Sort by sequence number (ascending)
+  const sorted=[...episodes].sort((a,b)=>{
+    const seqA=a.natural_sequence_number||(a.chapter_details?.seq_number)||999;
+    const seqB=b.natural_sequence_number||(b.chapter_details?.seq_number)||999;
+    return seqA-seqB;
+  });
+
+  // Filter
+  const filtered=sorted.filter((ep,i)=>{
+    const cd=ep.chapter_details||ep;
+    const title=(cd.chapter_title||ep.chapter_title||'').toLowerCase();
+    const st2=String(cd.audio_status||ep.audio_available||'').toLowerCase();
+    const qc=st2.includes('issue')||st2.includes('qc');
+    if(epFilterMode==='qc'&&!qc) return false;
+    if(epFilter&&!title.includes(epFilter)&&!String(ep.natural_sequence_number).includes(epFilter)) return false;
+    return true;
+  });
+
+  const countEl=document.getElementById('epFilterCount');
+  if(countEl) countEl.textContent=`${filtered.length} of ${episodes.length} episodes`;
+
+  el.innerHTML=filtered.map((ep)=>{
+    const cd=ep.chapter_details||ep;
+    const st2=cd.audio_status||ep.audio_available||'';
+    const qc=String(st2).includes('issue')||String(st2).includes('qc');
+    const cid=cd.chapter_id||ep.chapter_id||'';
+    const title=cd.chapter_title||ep.chapter_title||'Episode';
+    const dur=ep.audio_duration||cd.audio_duration||0;
+    const seq=ep.natural_sequence_number||(cd.seq_number)||'';
+    return `<div class="ep-card" onclick="loadChapter('${cid}',0)">
+      <div class="ep-num">${seq?'#'+seq:''}</div>
+      <div class="ep-info">
+        <div class="ep-name">${esc(title)}${qc?'<span class="ep-badge">QC</span>':''}</div>
+        <div class="ep-dur">${dur?fmtDur(dur):''} ${String(st2).replace(/_/g,' ')}</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// ── SE Panel ────────────────────────────────────────────────
+// Data shape in localStorage ps_se_data:
+// { chapterId: { title, patches: [{time, remark, scriptLine, blobUrl, stitched:'yes'|'no'|''}], stitchedUrl, qcDone:bool, uploadedCMS:bool } }
+
+// In-memory cache, synced with Firebase in real-time
+let _seDataCache = {};
+function getSEData(){ return _seDataCache; }
+function saveSEDataRaw(d){ _seDataCache=d; fbDb.ref('seData').set(d); }
+
+function initSESync(){
+  fbDb.ref('seData').on('value', snapshot => {
+    _seDataCache = snapshot.val() || {};
+    if(currentPage === 'se') renderSEPanel();
+  });
+}
+
+function setPatchStitch(chapId, patchIdx, val){
+  fbDb.ref('seData/'+chapId+'/patches/'+patchIdx+'/stitched').set(val);
+}
+function setEpQCDone(chapId, val){
+  fbDb.ref('seData/'+chapId+'/qcDone').set(val);
+}
+function setEpUploaded(chapId, val){
+  fbDb.ref('seData/'+chapId+'/uploadedCMS').set(val);
+}
+function toggleSEEp(chapId){
+  const el=document.getElementById('se-ep-'+chapId);
+  if(el) el.classList.toggle('expanded');
+}
+
+function renderSEPanel(){
+  const seData=getSEData();
+  const epIds=Object.keys(seData);
+
+  // Pipeline counts
+  let totalPatches=0, reviewedPatches=0, stitchedPatches=0, qcDoneEps=0, uploadedEps=0;
+  epIds.forEach(id=>{
+    const ep=seData[id];
+    const patches=ep.patches||[];
+    totalPatches+=patches.length;
+    reviewedPatches+=patches.length; // all patches in SE are already accepted/reviewed
+    stitchedPatches+=patches.filter(p=>p.stitched==='yes').length;
+    if(ep.qcDone) qcDoneEps++;
+    if(ep.uploadedCMS) uploadedEps++;
+  });
+
+  document.getElementById('seSummary').innerHTML=`
+    <div class="sum-bar">
+      <div class="sum-card"><div class="sum-val">${totalPatches}</div><div class="sum-lbl">Patches Required</div></div>
+      <div class="sum-card sc-accent"><div class="sum-val">${reviewedPatches}</div><div class="sum-lbl">Reviewed</div></div>
+      <div class="sum-card sc-green"><div class="sum-val">${stitchedPatches}</div><div class="sum-lbl">Stitched</div></div>
+      <div class="sum-card sc-purple"><div class="sum-val">${qcDoneEps}</div><div class="sum-lbl">Episodes QC Done</div></div>
+      <div class="sum-card sc-orange"><div class="sum-val">${uploadedEps}</div><div class="sum-lbl">Uploaded to CMS</div></div>
+    </div>
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:10px 16px;margin-bottom:14px;display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+      <div style="font-family:var(--mono);font-size:10px;color:var(--muted)">Pipeline:</div>
+      <div style="display:flex;align-items:center;gap:4px;font-family:var(--mono);font-size:10px">
+        <span style="color:var(--text);font-weight:700">${totalPatches}</span> Required
+        <span style="color:var(--muted)">→</span>
+        <span style="color:var(--accent);font-weight:700">${reviewedPatches}</span> Reviewed
+        <span style="color:var(--muted)">→</span>
+        <span style="color:var(--green);font-weight:700">${stitchedPatches}</span> Stitched
+        <span style="color:var(--muted)">→</span>
+        <span style="color:var(--purple);font-weight:700">${qcDoneEps}</span> Eps QC'd
+        <span style="color:var(--muted)">→</span>
+        <span style="color:var(--orange);font-weight:700">${uploadedEps}</span> Uploaded
+      </div>
+    </div>`;
+
+  if(!epIds.length){
+    document.getElementById('seList').innerHTML=`<div class="empty"><div class="empty-icon">🎧</div><div class="empty-title">No episodes processed yet</div><div class="empty-sub">Load a show → open an episode → generate & accept patches → they'll appear here</div></div>`;
+    return;
+  }
+
+  document.getElementById('seList').innerHTML=epIds.map(chapId=>{
+    const ep=seData[chapId];
+    const patches=ep.patches||[];
+    const stitchedCount=patches.filter(p=>p.stitched==='yes').length;
+    const allStitched=patches.length>0&&stitchedCount===patches.length;
+    const epCls=ep.uploadedCMS?'se-yes':ep.qcDone?'se-yes':'';
+
+    return `<div class="se-ep ${epCls}" id="se-ep-${chapId}">
+      <div class="se-ep-hdr" onclick="toggleSEEp('${chapId}')">
+        <span class="se-ep-arrow">▶</span>
+        <div class="se-ep-name">${esc(ep.title||'Episode')}</div>
+        <div class="se-ep-pills">
+          <span class="se-pill se-pill-patches">${stitchedCount}/${patches.length} stitched</span>
+          ${ep.stitchedUrl?'<span class="se-pill se-pill-stitch">Auto-stitched</span>':''}
+          ${ep.qcDone?'<span class="se-pill se-pill-stitch">✓ QC Done</span>':''}
+          ${ep.uploadedCMS?'<span class="se-pill se-pill-stitch">✓ Uploaded</span>':''}
+        </div>
+      </div>
+      <div class="se-ep-body">
+        <table class="se-tbl">
+          <thead><tr><th>Time</th><th>Remark</th><th>Script Line</th><th>Raw Patch</th><th>Stitched?</th></tr></thead>
+          <tbody>${patches.map((p,pi)=>{
+            const pSt=p.stitched||'';
+            return `<tr style="${pSt==='yes'?'background:var(--green-light)':pSt==='no'?'background:var(--red-light)':''}">
+              <td style="white-space:nowrap;font-family:var(--mono);font-size:11px;color:var(--accent)">${esc(p.time)}</td>
+              <td style="font-size:11px;color:var(--text2);max-width:180px">${esc(p.remark||p.issueType||'')}</td>
+              <td style="font-size:11px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(p.scriptLine)}">${esc((p.scriptLine||'').substring(0,50))}${(p.scriptLine||'').length>50?'...':''}</td>
+              <td>${p.blobUrl?'<a class="se-dl" href="'+p.blobUrl+'" download="patch_'+chapId+'_'+(pi+1)+'.mp3">⬇ MP3</a>':'—'}</td>
+              <td style="white-space:nowrap">
+                <button class="se-yn se-yn-yes ${pSt==='yes'?'active':''}" onclick="event.stopPropagation();setPatchStitch('${chapId}',${pi},'yes')" style="padding:3px 8px;font-size:10px">Yes</button>
+                <button class="se-yn se-yn-no ${pSt==='no'?'active':''}" onclick="event.stopPropagation();setPatchStitch('${chapId}',${pi},'no')" style="padding:3px 8px;font-size:10px">No</button>
+              </td>
+            </tr>`;
+          }).join('')}</tbody>
+        </table>
+      </div>
+      <div class="se-actions">
+        ${ep.stitchedUrl?'<a class="se-dl" href="'+ep.stitchedUrl+'" download="stitched_'+chapId+'.wav">⬇ Stitched WAV</a>':''}
+        <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
+          <label style="font-family:var(--mono);font-size:10px;display:flex;align-items:center;gap:4px;cursor:pointer">
+            <input type="checkbox" ${ep.qcDone?'checked':''} onchange="event.stopPropagation();setEpQCDone('${chapId}',this.checked)" style="accent-color:var(--green)"/>
+            QC Done
+          </label>
+          <label style="font-family:var(--mono);font-size:10px;display:flex;align-items:center;gap:4px;cursor:pointer">
+            <input type="checkbox" ${ep.uploadedCMS?'checked':''} onchange="event.stopPropagation();setEpUploaded('${chapId}',this.checked)" style="accent-color:var(--orange)"/>
+            Uploaded to CMS
+          </label>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function saveSEData(chapId, title, patchesData, stitchedUrl){
+  const seData=getSEData();
+  const existing=seData[chapId]?.patches||[];
+  // Strip blobUrl (local blob, meaningless to other users) before saving to Firebase
+  const mergedPatches=(patchesData||[]).map((p,i)=>{
+    const {blobUrl, ...rest} = p;
+    return {...rest, stitched: existing[i]?.stitched||p.stitched||''};
+  });
+  const epData={
+    title,
+    patches:mergedPatches,
+    stitchedUrl: stitchedUrl||seData[chapId]?.stitchedUrl||null,
+    qcDone: seData[chapId]?.qcDone||false,
+    uploadedCMS: seData[chapId]?.uploadedCMS||false,
+    updatedAt:Date.now()
+  };
+  fbDb.ref('seData/'+chapId).set(epData);
+}
+
+function openAddShow(){
+  document.getElementById('editShowId').value = '';
+  document.getElementById('addShowTitle').textContent = 'Add New Show';
+  document.getElementById('m_name').value = '';
+  document.getElementById('m_showid').value = '';
+  document.getElementById('m_askey').value = asKey || 'a8b654d7-aeed-40dc-8e3b-4f6181c26cb6';
+  document.getElementById('m_voice').value = '';
+  document.getElementById('m_voicetype').value = 'standard';
+  document.getElementById('addShowModal').style.display = 'flex'; 
+}
+function closeAddShow(){ document.getElementById('addShowModal').style.display = 'none'; }
+
+function editShow(id){
+  const s = shows.find(x=>x.id===id);
+  if(!s) return;
+  document.getElementById('editShowId').value = id;
+  document.getElementById('addShowTitle').textContent = 'Edit Show';
+  document.getElementById('m_name').value = s.name;
+  document.getElementById('m_showid').value = s.showInput;
+  document.getElementById('m_askey').value = s.asKey||'';
+  document.getElementById('m_voice').value = s.voiceId||'';
+  document.getElementById('m_voicetype').value = s.voiceType||'standard';
+  document.getElementById('addShowModal').style.display = 'flex';
+}
+
+async function saveShow(){
+  const editId = document.getElementById('editShowId').value;
+  const name = document.getElementById('m_name').value.trim();
+  const showInput = document.getElementById('m_showid').value.trim();
+  const asKeyVal = document.getElementById('m_askey').value.trim();
+  const voiceId = document.getElementById('m_voice').value.trim();
+  const voiceType = document.getElementById('m_voicetype').value;
+  if(!name||!showInput){ toast('Name and Show ID are required','warn'); return; }
+  if(editId){
+    const show = shows.find(x=>x.id==editId) || {};
+    const updated = {...show, name, showInput, asKey:asKeyVal, voiceId, voiceType};
+    await fbDb.ref('shows/'+editId).set(updated);
+  } else {
+    const id = Date.now();
+    await fbDb.ref('shows/'+id).set({ id, name, showInput, asKey:asKeyVal, voiceId, voiceType });
+  }
+  closeAddShow();
+  toast(editId ? 'Show updated ✓' : 'Show added ✓','ok');
+}
+
+async function deleteShow(id){
+  await fbDb.ref('shows/'+id).remove();
+  if(activeShowConfig?.id===id){ activeShowConfig=null; goPage('dashboard'); }
+  toast('Show removed','ok');
+}
+
+async function selectShow(id){
+  const s = shows.find(x=>x.id===id);
+  if(!s) return;
+  activeShowConfig = s;
+  asKey = s.asKey || asKey;
+  asVoice = s.voiceId || asVoice;
+  voiceType = s.voiceType || 'standard';
+  goPage('show');
+  renderSidebarNav();
+  await loadShow(s.showInput);
+}
+
+async function loadShow(directInput){
+  let input=directInput||document.getElementById('showInp').value.trim();
+  asKey=document.getElementById('asKeyInp').value.trim();
+  asVoice=document.getElementById('asVoiceInp').value.trim();
+  voiceType=document.getElementById('voiceType').value;
+  await dbSet('config','asKey',asKey); await dbSet('config','asVoice',asVoice);
+  await dbSet('config','voiceType',voiceType); await dbSet('config','showInput',input);
+
+  const m=input.match(/show_id=([a-f0-9]+)/i)||input.match(/id=([a-f0-9]{30,})/i);
+  activeShowId=m?m[1]:input;
+  if(!activeShowId){toast('Enter a valid show ID or URL','warn');return;}
+  if(!authToken||!uid){toast('Save your CMS access-token and uid first','warn');return;}
+
+  setStatus('load','Loading...');
+  document.getElementById('showEpList').innerHTML='<div class="empty"><div class="empty-icon">⏳</div><div class="empty-title">Loading episodes...</div></div>';
+
+  try{
+    const r=await fetch(`${CMS_BASE}/book.show_episodes?show_id=${activeShowId}&view=cms&is_novel=0&paginate_chapters=true&page_no=1`,{headers:hdrs()});
+    if(!r.ok) throw new Error(`HTTP ${r.status} — check token`);
+    const d=await r.json(), res=d.result;
+    const showTitle = res.show_title || activeShowId;
+    document.getElementById('topTitle').textContent = showTitle;
+    let eps = res.episodes || [];
+
+    let page = 2, keepGoing = true;
+    while(keepGoing && page <= 100){
+      try{
+        const rp = await fetch(`${CMS_BASE}/book.show_episodes?show_id=${activeShowId}&view=cms&is_novel=0&paginate_chapters=true&page_no=${page}`, {headers:hdrs()});
+        if(!rp.ok){ keepGoing=false; break; }
+        const dp = await rp.json();
+        const pageEps = dp.result?.episodes || [];
+        if(!pageEps.length){ keepGoing=false; break; }
+        eps = [...eps, ...pageEps];
+        page++;
+        if(pageEps.length < 5) break;
+      } catch(e){ break; }
+    }
+
+    episodes = eps;
+    // Count QC episodes
+    const qcCount = eps.filter(ep=>{const cd=ep.chapter_details||ep;const st=cd.audio_status||ep.audio_available||'';return String(st).includes('issue')||String(st).includes('qc');}).length;
+    // Save stats
+    if(activeShowConfig){
+      activeShowConfig.stats = {...(activeShowConfig.stats||{}), total: eps.length, qc: qcCount};
+      await fbDb.ref('shows/'+activeShowConfig.id+'/stats').set(activeShowConfig.stats);
+    }
+    renderShowView();
+    setStatus('ready', `${episodes.length} eps loaded`);
+    toast(`Loaded: ${showTitle} — ${episodes.length} episodes`, 'ok');
+  }catch(e){
+    setStatus('err','Error'); toast('Load failed: '+e.message,'err');
+    document.getElementById('showEpList').innerHTML=`<div class="empty"><div class="empty-icon">⚠️</div><div class="empty-title">${esc(e.message)}</div></div>`;
+  }
+}
+
+// ── Load Episode ─────────────────────────────────────────────
+async function loadChapter(chapId, idx){
+  if(!chapId){ return; }
+  if(!authToken||!uid){toast('No credentials — save access-token and uid first','warn');return;}
+  console.log('loadChapter START', chapId);
+  goPage('episode');
+  setStatus('load','Loading...'); showOv('⏳','Loading Episode','Fetching QC remarks...',0);
+
+  try{
+    console.log('Fetching episode details...');
+    const r=await fetch(`${CMS_BASE}/book.episode_details?chapter_id=${chapId}&is_novel=0`,{headers:hdrs()});
+    console.log('Fetch status:', r.status);
+    if(!r.ok) throw new Error(`HTTP ${r.status}`);
+    const d=await r.json(), ch=d.result?.chapter_details;
+    if(!ch) throw new Error('No chapter_details');
+    activeEp=ch; activeEp.book_id = ch.book_id || ''; finalAudioUrl=null; finalAudioBlob=null; RS={};
+
+    // Auto-detect voice from CMS episode data
+    const cmsVoice = ch.text_to_speech_details?.assigned_voice_id || '';
+    if(cmsVoice && cmsVoice !== asVoice){
+      asVoice = cmsVoice;
+      document.getElementById('asVoiceInp').value = cmsVoice;
+      await dbSet('config','asVoice', cmsVoice);
+      // Also update the active show config
+      if(activeShowConfig){
+        activeShowConfig.voiceId = cmsVoice;
+        const idx = shows.findIndex(x=>x.id===activeShowConfig.id);
+        if(idx>=0){ shows[idx].voiceId = cmsVoice; await dbSet('config','shows', shows); }
+      }
+      toast('Voice auto-set from CMS: ' + cmsVoice, 'ok');
+    }
+
+    // Store tts job details for later use
+    activeEp._ttsJobDetails = ch.text_to_speech_details || null;
+    activeEp._bookId = ch.book_id || '';
+
+    remarks=(ch.qc_details||[]).map((qc,i)=>({
+      idx:i, time:qc.time, issueType:qc.issue_type||'',
+      userEmail:qc.user_email||'', timestamp:qc.timestamp||'',
+      audioStatus:qc.audio_status||'', cmsStatus:qc.status||'pending',
+      scriptLine:extractLine(qc.remarks), note:extractNote(qc.remarks),
+      rawRemarks:qc.remarks, needsPatch:!!extractLine(qc.remarks),
+    }));
+
+    for(const r2 of remarks){
+      RS[r2.idx]={scriptLine:r2.scriptLine,takes:[null,null,null],acceptedTake:-1,discarded:[],status:'idle'};
+      for(let t=0;t<3;t++){
+        const blob=await dbGetBlob(`${chapId}_r${r2.idx}_t${t}`);
+        if(blob) RS[r2.idx].takes[t]=URL.createObjectURL(blob);
+        if(RS[r2.idx].takes[t]) RS[r2.idx].status='done';
+      }
+      const acc=await dbGet('config',`${chapId}_r${r2.idx}_acc`);
+      if(acc!=null && acc>=0){ RS[r2.idx].acceptedTake=acc; RS[r2.idx].status='accepted'; }
+    }
+
+    document.getElementById('topTitle').textContent=ch.chapter_title||'Episode';
+    document.getElementById('genAllBtn').style.display='inline-flex';
+    updateStitchBtn(); renderContent();
+    setStatus('ready',`${remarks.filter(r2=>r2.needsPatch).length} patches needed`);
+    hideOv(); toast(`Loaded: ${ch.chapter_title}`,'ok');
+  }catch(e){
+    setStatus('err','Error'); hideOv(); toast('Load failed: '+e.message,'err');
+  }
+}
+
+// ── Extract Helpers ──────────────────────────────────────────
+function extractLine(remarks){
+  if(!remarks) return '';
+  const OPEN=['"','\u201c','\u00ab','\u2018','\u201e'];
+  const CLOSE=['"','\u201d','\u00bb','\u2019','\u201d'];
+  // Handle all variants: "Line from script", "Line from Script" with -, --, em-dash, colon
+  const m=remarks.match(/[Ll]ine\s+from\s+[Ss]cript\s*[\-\u2013\u2014:]+\s*/);
+  if(m){
+    const after=remarks.slice(m.index+m[0].length);
+    for(let i=0;i<OPEN.length;i++){
+      const oi=after.indexOf(OPEN[i]);
+      if(oi!==-1){
+        const ci=after.indexOf(CLOSE[i],oi+1);
+        if(ci!==-1) return after.slice(oi+1,ci).trim();
+        // No closing quote - stop at ; or QC Note or newline
+        const stops=[after.indexOf(';',oi+1),after.search(/QC\s*[Nn]ote/i),after.indexOf('\n',oi+1)].filter(x=>x>oi).sort((a,b)=>a-b);
+        const stop=stops[0]||after.length;
+        return after.slice(oi+1,stop).trim();
+      }
+    }
+    // No quotes at all
+    const stops=[after.indexOf(';'),after.indexOf('\n'),after.search(/QC\s*[Nn]ote/i)].filter(x=>x>0).sort((a,b)=>a-b);
+    return after.slice(0,stops[0]||after.length).trim();
+  }
+  return '';
+}
+function extractNote(remarks){
+  if(!remarks) return '';
+  const m=remarks.match(/(?:QC\s*)?[Nn]ote\s*[\-\u2013\u2014:]+\s*["\u201c\u00ab]?(.+)/s);
+  if(!m) return '';
+  let note=m[1].replace(/^["\u201c\u00ab]|["\u201d\u00bb]$/g,'').trim();
+  const stop=note.search(/[Ll]ine\s+from\s+[Ss]cript/i);
+  if(stop>-1) note=note.slice(0,stop).trim();
+  return note.split('\n')[0].replace(/["\u201d\u00bb]$/g,'').trim();
+}
+
+// ── Render ───────────────────────────────────────────────────
+function renderContent(){
+  const mc=document.getElementById('mainContent');
+  if(!remarks.length){ mc.innerHTML=`<div class="empty"><div class="empty-icon">✅</div><div class="empty-title">No QC remarks</div><div class="empty-sub">This episode has no pending QC notes</div></div>`; return; }
+
+  const needed=remarks.filter(r=>r.needsPatch);
+  const accepted=needed.filter(r=>RS[r.idx].acceptedTake>=0);
+  let html='';
+
+  html+=`<div class="op-bar">
+    <div class="op-lbl">Accepted: <strong style="color:var(--green)">${accepted.length}</strong> / ${needed.length} patches</div>
+    <div class="op-count">${accepted.length===needed.length&&needed.length>0?'✓ All accepted — stitch ready!':accepted.length>0?`${needed.length-accepted.length} remaining`:'Generate and accept patches'}</div>
+  </div>`;
+
+  if(finalAudioUrl){
+    html+=`<div class="final-section">
+      <div class="final-title">🎵 Final Stitched Episode — Ready to Approve</div>
+      <audio controls src="${finalAudioUrl}" style="width:100%" preload="metadata"></audio>
+      <div class="final-actions">
+        <a href="${finalAudioUrl}" download="stitched_${activeEp.chapter_id}.wav" class="btn btn-g btn-sm">⬇ Download WAV</a>
+        <button class="btn btn-green btn-sm" onclick="uploadToCMS()">⬆ Approve &amp; Upload to CMS</button>
+      </div>
+      <div id="uploadStatus"></div>
+    </div>`;
+  }
+
+  html+=`<div class="remarks-grid">${remarks.map(r=>mkCard(r)).join('')}</div>`;
+  mc.innerHTML=html;
+}
+
+function mkCard(r){
+  const st=RS[r.idx];
+  const tc=r.issueType.toLowerCase().includes('misp')?'t-misp':r.issueType.toLowerCase().includes('mod')?'t-mod':'t-qual';
+  const cc=st.status==='accepted'?'rc-acc':st.status==='discarded'?'rc-dis':'';
+  return `<div class="rc ${cc}" id="rc-${r.idx}">
+    <div class="rc-hdr">
+      <span class="rc-time">⏱ ${r.time}</span>
+      <span class="rc-type ${tc}">${r.issueType||'QC'}</span>
+      ${st.status==='accepted'?`<span class="rc-sbadge rsb-acc">✓ Take ${st.acceptedTake+1} Accepted</span>`:''}
+      ${st.status==='discarded'?`<span class="rc-sbadge rsb-dis">✗ Discarded</span>`:''}
+      <span class="rc-email">${r.userEmail}</span>
+    </div>
+    <div class="rc-body">
+      ${r.rawRemarks?`<div style="background:var(--surface2);border:1px solid var(--border);border-radius:7px;padding:9px 12px;margin-bottom:12px">
+        <div style="font-family:var(--mono);font-size:9px;color:var(--muted);letter-spacing:1px;margin-bottom:4px">QC REMARKS</div>
+        <div style="font-size:12px;color:var(--text2);line-height:1.6;white-space:pre-wrap">${esc(r.rawRemarks)}</div>
+      </div>`:''}
+      ${r.note?`<div class="note-box"><div class="note-lbl">📝 QC Direction</div><div class="note-txt">${esc(r.note)}</div></div>`:''}
+      <div style="margin-bottom:12px">
+        <div class="script-lbl">Script Line <span class="edit-hint">✏ Click to edit</span></div>
+        ${r.needsPatch
+          ?`<textarea class="script-ta" id="sl-${r.idx}" rows="2" oninput="RS[${r.idx}].scriptLine=this.value">${esc(st.scriptLine)}</textarea>`
+          :`<div class="no-script">No "Line from script" found — not eligible for patch generation</div>`}
+      </div>
+      ${r.needsPatch?`
+        <div class="gen-row">
+          <button class="gen-btn" onclick="genTakes(${r.idx})" id="gb-${r.idx}" ${st.status==='generating'?'disabled':''}>
+            ${st.status==='generating'?'⏳ Generating 3 takes...':'▶ Generate 3 Takes'}
+          </button>
+          ${st.takes.some(t=>t)?`<button class="btn btn-g btn-sm" onclick="genTakes(${r.idx})">↺ Regen</button>`:''}
+        </div>
+        <div class="takes-grid" id="tg-${r.idx}">${[0,1,2].map(ti=>mkTake(r.idx,ti)).join('')}</div>
+      `:''}
+    </div>
+  </div>`;
+}
+
+function mkTake(ri,ti){
+  const st=RS[ri], take=st.takes[ti];
+  const isGen=st.status==='generating'&&!take;
+  const isAcc=st.acceptedTake===ti, isDis=(st.discarded||[]).includes(ti);
+  const cls=isGen?'tk-gen':take?(isAcc?'tk-acc':isDis?'tk-dis':''):'';
+  return `<div class="tc ${cls}" id="tc-${ri}-${ti}">
+    <div class="take-num">Take ${ti+1}${isAcc?' ✓':''}</div>
+    ${isGen?`<div class="take-spin">🎙 Generating...</div>`
+    :take?`<audio controls src="${take}" style="width:100%;height:28px;margin-bottom:8px" preload="metadata"></audio>
+           <div class="take-acts"><button class="ta-acc" onclick="accTake(${ri},${ti})" ${isAcc?'disabled':''}>✓ Accept</button>
+           <button class="ta-dis" onclick="disTake(${ri},${ti})">✗</button></div>`
+    :`<div class="take-empty">Not generated</div>`}
+  </div>`;
+}
+
+// ── Generate Takes ───────────────────────────────────────────
+async function genTakes(ri){
+  const st=RS[ri], line=st.scriptLine||remarks[ri].scriptLine;
+  if(!line.trim()){toast('Script line is empty — edit it first','warn');return;}
+  asKey=document.getElementById('asKeyInp').value.trim();
+  asVoice=document.getElementById('asVoiceInp').value.trim();
+  voiceType=document.getElementById('voiceType').value;
+  st.status='generating'; st.takes=[null,null,null]; st.acceptedTake=-1; st.discarded=[];
+  refreshCard(ri);
+  const chapId=activeEp.chapter_id;
+  await Promise.allSettled([0,1,2].map(ti=>genOneTake(line,ri,ti,chapId)));
+  st.status=st.takes.some(t=>t)?'done':'error';
+  refreshCard(ri); updateStitchBtn();
+  toast(`3 takes generated for remark ${ri+1}`,'ok');
+}
+
+async function genOneTake(text,ri,ti,chapId){
+  const st=RS[ri], h={'x-api-key':asKey,'Content-Type':'application/json'};
+  try{
+    const sr=await fetch(`${AS_BASE}/content/script`,{method:'POST',headers:h,body:JSON.stringify({scriptText:text,projectName:'PatchStudio'})});
+    const sd=JSON.parse(await sr.text());
+    const scriptId=sd.scriptId||sd.script_id||sd.data?.scriptId;
+    if(!scriptId) throw new Error('No scriptId returned');
+
+    const ttsBody={scriptId,voice:asVoice,sync:true};
+    if(voiceType==='expressive') ttsBody.voiceIntelligence=true;
+    const tr=await fetch(`${AS_BASE}/speech/tts`,{method:'POST',headers:h,body:JSON.stringify(ttsBody)});
+    const td=JSON.parse(await tr.text());
+    let audioUrl=td.url||td.audioUrl||td.data?.url||td.data?.sections?.[0]?.url||td.sections?.[0]?.url;
+    const speechId=td.speechId||td.speech_id||td.data?.speechId;
+
+    if(!audioUrl&&speechId){
+      for(let i=0;i<20;i++){
+        await sleep(2500);
+        const p=await fetch(`${AS_BASE}/speech/tts/${speechId}`,{headers:h});
+        if(p.ok){const pd=await p.json(); audioUrl=pd.url||pd.audioUrl||pd.data?.url||pd.data?.sections?.[0]?.url; if(audioUrl) break;}
+      }
+    }
+    if(!audioUrl) throw new Error('No audio URL');
+
+    let blob;
+    const dl=await fetch(audioUrl,{headers:{'x-api-key':asKey}});
+    if(dl.ok){ blob=await dl.blob(); } else { const dl2=await fetch(audioUrl); if(!dl2.ok) throw new Error('Download failed'); blob=await dl2.blob(); }
+
+    await dbSetBlob(`${chapId}_r${ri}_t${ti}`,blob);
+    st.takes[ti]=URL.createObjectURL(blob);
+    const el=document.getElementById(`tc-${ri}-${ti}`);
+    if(el) el.outerHTML=mkTake(ri,ti);
+  }catch(e){
+    console.error(`Take ${ti} err:`,e); toast(`Take ${ti+1}: ${e.message}`,'err');
+  }
+}
+
+async function accTake(ri,ti){
+  RS[ri].acceptedTake=ti; RS[ri].status='accepted';
+  await dbSet('config',`${activeEp.chapter_id}_r${ri}_acc`,ti);
+  refreshCard(ri); updateStitchBtn();
+  // Save to SE data
+  updateSEDataForCurrentEp();
+  toast(`Take ${ti+1} accepted ✓`,'ok');
+}
+
+function updateSEDataForCurrentEp(){
+  if(!activeEp) return;
+  const chapId=activeEp.chapter_id;
+  const title=activeEp.chapter_title||'Episode';
+  const patchesData=remarks.filter(r=>r.needsPatch&&RS[r.idx]?.acceptedTake>=0).map(r=>{
+    const st=RS[r.idx];
+    return {time:r.time, remark:r.rawRemarks?.substring(0,100)||r.issueType, issueType:r.issueType, scriptLine:st.scriptLine||r.scriptLine, blobUrl:st.takes[st.acceptedTake]||null};
+  });
+  saveSEData(chapId, title, patchesData, null);
+}
+function disTake(ri,ti){
+  if(!RS[ri].discarded) RS[ri].discarded=[];
+  if(!RS[ri].discarded.includes(ti)) RS[ri].discarded.push(ti);
+  if(RS[ri].acceptedTake===ti){RS[ri].acceptedTake=-1;RS[ri].status='done';}
+  const el=document.getElementById(`tc-${ri}-${ti}`); if(el) el.outerHTML=mkTake(ri,ti);
+  updateStitchBtn();
+}
+async function generateAllPending(){
+  const pending=remarks.filter(r=>r.needsPatch&&RS[r.idx].status==='idle');
+  if(!pending.length){toast('No idle patches','warn');return;}
+  for(const r of pending) await genTakes(r.idx);
+}
+
+// ── Stitch All ───────────────────────────────────────────────
+function updateStitchBtn(){
+  const accepted=remarks.filter(r=>r.needsPatch&&RS[r.idx].acceptedTake>=0);
+  const needed=remarks.filter(r=>r.needsPatch);
+  const btn=document.getElementById('stitchAllBtn');
+  if(accepted.length>0){ btn.style.display='inline-flex'; btn.textContent=`🔗 Stitch ${accepted.length}/${needed.length} & Preview`; }
+  else btn.style.display='none';
+}
+
+async function stitchAll(){
+  const accepted=remarks.filter(r=>r.needsPatch&&RS[r.idx].acceptedTake>=0);
+  if(!accepted.length){toast('Accept at least one take first','warn');return;}
+  // Get signed audio URL from CMS API
+  let epAudioUrl = null;
+  try{
+    const showId = activeEp._bookId || activeEp.book_id || activeShowId || '';
+    const chapId = activeEp.chapter_id;
+    const muResp = await fetch(`${CMS_BASE}/get_media_url?type=episode&media_type=audio&event=play&chapter_id=${chapId}&show_id=${showId}`, {headers: hdrs()});
+    if(muResp.ok){
+      const muData = await muResp.json();
+      epAudioUrl = muData.result?.media_url || muData.result?.url || muData.media_url || muData.url || null;
+    }
+  }catch(e){ console.error('get_media_url failed:', e); }
+  if(!epAudioUrl){ toast('Could not get audio URL from CMS','warn'); return; }
+
+  showOv('🔊','Fetching Episode Audio','Downloading from CMS...',10);
+  try{
+    const epResp=await fetch(epAudioUrl);
+    if(!epResp.ok) throw new Error('Cannot fetch episode audio: '+epResp.status);
+    const epBlob=await epResp.blob();
+    showOv('🎛','Decoding Audio','Preparing buffers...',25);
+    const epBuf=await blobToAudioBuf(epBlob);
+
+    // Sort patches by start time, parse time ranges
+    const sorted=[...accepted].sort((a,b)=>parseTime(a.time)-parseTime(b.time));
+    showOv('🎙','Loading Patches','Decoding accepted takes...',40);
+    const patches=[];
+    for(const r of sorted){
+      const pBlob=await fetch(RS[r.idx].takes[RS[r.idx].acceptedTake]).then(x=>x.blob());
+      const pBuf=await blobToAudioBuf(pBlob);
+      const range=parseTimeRange(r.time);
+      patches.push({startSec:range.startSec, endSec:range.endSec, buf:pBuf});
+    }
+
+    showOv('✂️','Detecting line boundaries...','Using silence detection for precise cuts',55);
+
+    // Detect exact line boundaries using silence gaps in the original audio
+    for(const p of patches){
+      // Find silence gap just before the QC timestamp = line start
+      p.lineStart = findSilenceBefore(epBuf, p.startSec, {searchSec:2, threshold:0.012});
+      // Find silence gap after the line = line end
+      // If QC has end time, search near it; otherwise search after start
+      const searchAfter = p.endSec || (p.startSec + p.buf.duration);
+      p.lineEnd = findSilenceAfter(epBuf, searchAfter, {searchSec:5, threshold:0.012});
+      // Fallback: if no silence found after, use start + patch duration + small margin
+      if(p.lineEnd == null) p.lineEnd = p.startSec + p.buf.duration + 0.2;
+      console.log(`Patch at ${p.startSec}s → detected line: ${p.lineStart.toFixed(2)}s – ${p.lineEnd.toFixed(2)}s (${(p.lineEnd-p.lineStart).toFixed(2)}s original, ${p.buf.duration.toFixed(2)}s patch)`);
+    }
+
+    showOv('✂️','Stitching','Building synced output...',65);
+
+    // Build segments: keep good parts, replace bad parts with patches
+    // Pad or trim to maintain total duration sync
+    const sr=epBuf.sampleRate, ch=epBuf.numberOfChannels;
+    const segments=[];
+    let prevEnd=0;
+    for(const p of patches){
+      // Keep good audio before this line
+      if(p.lineStart>prevEnd) segments.push({type:'ep',start:prevEnd,end:p.lineStart});
+      // Insert the patch
+      segments.push({type:'patch',buf:p.buf});
+      // Calculate duration difference and pad with silence to maintain sync
+      const origLineDur = p.lineEnd - p.lineStart;
+      const patchDur = p.buf.duration;
+      if(patchDur < origLineDur){
+        // Patch is shorter — add silence padding to keep everything aligned
+        const padSec = origLineDur - patchDur;
+        segments.push({type:'silence', duration:padSec});
+        console.log(`  → padding ${padSec.toFixed(2)}s silence to maintain sync`);
+      } else if(patchDur > origLineDur + 0.5){
+        // Patch is significantly longer — warn but accept the shift
+        console.warn(`  → patch is ${(patchDur-origLineDur).toFixed(2)}s longer than original, slight timing shift`);
+      }
+      prevEnd = p.lineEnd;
+    }
+    if(prevEnd<epBuf.duration) segments.push({type:'ep',start:prevEnd,end:epBuf.duration});
+
+    const totalLen=segments.reduce((s,seg)=>{
+      if(seg.type==='ep') return s+(seg.end-seg.start)*sr;
+      if(seg.type==='silence') return s+Math.floor(seg.duration*sr);
+      return s+seg.buf.length;
+    },0);
+    const outCtx=new OfflineAudioContext(ch,Math.ceil(totalLen),sr);
+    let cursor=0;
+    for(const seg of segments){
+      let buf;
+      if(seg.type==='ep') buf=cropBuf(epBuf,seg.start,seg.end);
+      else if(seg.type==='silence') buf=silenceBuf(seg.duration,sr,ch);
+      else buf=matchBuf(seg.buf,sr,ch);
+      const src=outCtx.createBufferSource(); src.buffer=buf; src.connect(outCtx.destination); src.start(cursor);
+      cursor+=buf.duration;
+    }
+    showOv('💾','Encoding','Converting to WAV...',80);
+    const rendered=await outCtx.startRendering();
+    finalAudioBlob=bufToWav(rendered);
+    finalAudioUrl=URL.createObjectURL(finalAudioBlob);
+    // Update SE data with stitched URL
+    if(activeEp){
+      updateSEDataForCurrentEp();
+      saveSEData(activeEp.chapter_id, activeEp.chapter_title||'Episode', JSON.parse(localStorage.getItem('ps_se_data')||'{}')[activeEp.chapter_id]?.patches||[], finalAudioUrl);
+    }
+    showOv('✅','Done!','',100);
+    await sleep(500); hideOv();
+    renderContent();
+    document.getElementById('mainContent').scrollTop=0;
+    toast(`Stitched ${patches.length} patches ✓`,'ok');
+  }catch(e){
+    hideOv(); toast('Stitch failed: '+e.message,'err'); console.error(e);
+  }
+}
+
+// ── CMS Upload ───────────────────────────────────────────────
+async function uploadToCMS(){
+  if(!finalAudioBlob){toast('No stitched audio','warn');return;}
+  const statusEl=document.getElementById('uploadStatus');
+  statusEl.innerHTML='<div class="upload-status us-load">⏳ Getting S3 upload URL from CMS...</div>';
+  try{
+    // Step 1: Get presigned S3 URL
+    // CMS uses AudioStack internally — we upload the stitched WAV to replace media_url
+    const bookId = activeEp.book_id || activeEp._bookId || '';
+    const chapId = activeEp.chapter_id;
+
+    // Try the presigned URL endpoint (update once confirmed from network tab)
+    const presignResp = await fetch(
+      `${CMS_BASE}/book.get_upload_url?chapter_id=${chapId}&book_id=${bookId}&is_novel=0&file_type=audio`,
+      { headers: hdrs() }
+    );
+
+    if(!presignResp.ok){
+      // Fallback: show manual download + instructions
+      statusEl.innerHTML=`<div class="upload-status us-err" style="line-height:1.7">
+        ⚠ CMS upload endpoint not yet confirmed.<br>
+        Share the network tab "Generate Audio" request URL to complete auto-upload.<br>
+        <a href="${finalAudioUrl}" download="stitched_${chapId}.wav" style="color:var(--accent);font-weight:700">⬇ Download WAV to upload manually</a>
+      </div>`;
+      toast('Share the Generate Audio network request to enable auto-upload','warn');
+      return;
+    }
+
+    const presignData = await presignResp.json();
+    const s3Url  = presignData.upload_url || presignData.presigned_url || presignData.url || presignData.s3_url;
+    const fileKey = presignData.file_key || presignData.key || presignData.s3_key;
+    if(!s3Url) throw new Error('No S3 URL in CMS response: ' + JSON.stringify(presignData));
+
+    // Step 2: Upload WAV to S3
+    statusEl.innerHTML='<div class="upload-status us-load">⬆ Uploading stitched audio to S3...</div>';
+    const s3Resp = await fetch(s3Url, {
+      method: 'PUT',
+      body: finalAudioBlob,
+      headers: { 'Content-Type': 'audio/wav' }
+    });
+    if(!s3Resp.ok) throw new Error('S3 upload failed: HTTP ' + s3Resp.status);
+
+    // Step 3: Notify CMS — update media_url for this chapter
+    statusEl.innerHTML='<div class="upload-status us-load">📡 Updating CMS media_url...</div>';
+    const notifyResp = await fetch(`${CMS_BASE}/book.update_chapter_media`, {
+      method: 'POST',
+      headers: hdrs(),
+      body: JSON.stringify({
+        chapter_id: chapId,
+        book_id: bookId,
+        file_key: fileKey,
+        is_novel: 0,
+        media_type: 'final_audio'
+      })
+    });
+    if(!notifyResp.ok) throw new Error('CMS update failed: HTTP ' + notifyResp.status);
+
+    statusEl.innerHTML='<div class="upload-status us-ok">✓ Stitched audio uploaded to CMS media_url!</div>';
+    toast('Approved and uploaded to CMS ✓','ok');
+  }catch(e){
+    statusEl.innerHTML=`<div class="upload-status us-err">
+      ✗ ${esc(e.message)}<br>
+      <a href="${finalAudioUrl}" download="stitched_${activeEp?.chapter_id||'ep'}.wav" style="color:var(--accent)">⬇ Download WAV instead</a>
+    </div>`;
+    toast('Upload error: '+e.message,'err');
+  }
+}
+
+// ── Audio Utilities ──────────────────────────────────────────
+async function blobToAudioBuf(blob){
+  const ab=await blob.arrayBuffer(), ctx=new AudioContext();
+  try{ return await ctx.decodeAudioData(ab); } finally{ ctx.close(); }
+}
+function cropBuf(buf,s,e){
+  const sr=buf.sampleRate,ch=buf.numberOfChannels;
+  const si=Math.floor(s*sr),ei=Math.min(Math.floor(e*sr),buf.length),len=Math.max(1,ei-si);
+  const out=new AudioBuffer({length:len,numberOfChannels:ch,sampleRate:sr});
+  for(let c=0;c<ch;c++) out.copyToChannel(buf.getChannelData(c).slice(si,ei),c);
+  return out;
+}
+function matchBuf(buf,targetSr,targetCh){
+  if(buf.sampleRate===targetSr&&buf.numberOfChannels===targetCh) return buf;
+  const len=Math.floor(buf.duration*targetSr);
+  const out=new AudioBuffer({length:len,numberOfChannels:targetCh,sampleRate:targetSr});
+  for(let c=0;c<targetCh;c++){
+    const sc=c<buf.numberOfChannels?c:buf.numberOfChannels-1;
+    const sd=buf.getChannelData(sc),od=out.getChannelData(c);
+    const ratio=sd.length/len;
+    for(let i=0;i<len;i++) od[i]=sd[Math.floor(i*ratio)]||0;
+  }
+  return out;
+}
+// ── Silence Detection ────────────────────────────────────────
+// Compute RMS energy in a short window
+function rms(channelData, start, len){
+  let sum=0;
+  const end=Math.min(start+len, channelData.length);
+  for(let i=start;i<end;i++) sum+=channelData[i]*channelData[i];
+  return Math.sqrt(sum/(end-start));
+}
+
+// Find the nearest silence gap BEFORE a given time (seconds)
+// Scans backwards from the timestamp looking for a low-energy region
+function findSilenceBefore(buf, timeSec, opts={}){
+  const sr=buf.sampleRate;
+  const winSize=Math.floor((opts.winMs||30)*sr/1000); // 30ms window
+  const threshold=opts.threshold||0.01; // RMS threshold for "silence"
+  const minGapSamples=Math.floor((opts.minGapMs||50)*sr/1000); // min 50ms gap
+  const searchRange=Math.floor((opts.searchSec||3)*sr); // search up to 3s before
+  const data=buf.getChannelData(0);
+  const centerSample=Math.floor(timeSec*sr);
+  const searchStart=Math.max(0, centerSample-searchRange);
+
+  // Scan backwards from the timestamp
+  let silenceEnd=-1, silenceStart=-1;
+  for(let i=centerSample; i>=searchStart; i-=winSize){
+    const e=rms(data, i, winSize);
+    if(e<threshold){
+      if(silenceEnd<0) silenceEnd=i+winSize;
+      silenceStart=i;
+    } else if(silenceEnd>0){
+      // Found end of silence gap (going backwards)
+      if(silenceEnd-silenceStart>=minGapSamples){
+        // Good silence gap found — return the midpoint
+        return (silenceStart+Math.floor((silenceEnd-silenceStart)/2))/sr;
+      }
+      silenceEnd=-1; silenceStart=-1;
+    }
+  }
+  // If we found a gap at the very start of search
+  if(silenceEnd>0 && silenceEnd-silenceStart>=minGapSamples){
+    return (silenceStart+Math.floor((silenceEnd-silenceStart)/2))/sr;
+  }
+  // No silence found — fall back to the original timestamp
+  return timeSec;
+}
+
+// Find the nearest silence gap AFTER a given time
+function findSilenceAfter(buf, timeSec, opts={}){
+  const sr=buf.sampleRate;
+  const winSize=Math.floor((opts.winMs||30)*sr/1000);
+  const threshold=opts.threshold||0.01;
+  const minGapSamples=Math.floor((opts.minGapMs||50)*sr/1000);
+  const searchRange=Math.floor((opts.searchSec||8)*sr); // search up to 8s after (lines can be long)
+  const data=buf.getChannelData(0);
+  const centerSample=Math.floor(timeSec*sr);
+  const searchEnd=Math.min(data.length, centerSample+searchRange);
+
+  let silenceStart=-1, silenceEnd=-1;
+  for(let i=centerSample; i<searchEnd; i+=winSize){
+    const e=rms(data, i, winSize);
+    if(e<threshold){
+      if(silenceStart<0) silenceStart=i;
+      silenceEnd=i+winSize;
+    } else if(silenceStart>0){
+      if(silenceEnd-silenceStart>=minGapSamples){
+        return (silenceStart+Math.floor((silenceEnd-silenceStart)/2))/sr;
+      }
+      silenceStart=-1; silenceEnd=-1;
+    }
+  }
+  if(silenceStart>0 && silenceEnd-silenceStart>=minGapSamples){
+    return (silenceStart+Math.floor((silenceEnd-silenceStart)/2))/sr;
+  }
+  // No silence found — estimate end as start + patch duration (caller provides)
+  return null;
+}
+
+// Create a silent AudioBuffer of given duration
+function silenceBuf(durationSec, sampleRate, channels){
+  const len=Math.max(1, Math.floor(durationSec*sampleRate));
+  return new AudioBuffer({length:len, numberOfChannels:channels, sampleRate:sampleRate});
+}
+
+function parseTime(t){
+  const s=t.split('-')[0].trim().split(':').map(Number);
+  return (s[0]||0)*60+(s[1]||0);
+}
+function parseTimeRange(t){
+  const parts=t.split('-').map(p=>p.trim());
+  const start=parts[0].split(':').map(Number);
+  const startSec=(start[0]||0)*60+(start[1]||0);
+  let endSec=null;
+  if(parts[1]){
+    const end=parts[1].split(':').map(Number);
+    endSec=(end[0]||0)*60+(end[1]||0);
+  }
+  return {startSec, endSec};
+}
+function bufToWav(buf){
+  const ch=buf.numberOfChannels,sr=buf.sampleRate,len=buf.length,bps=2;
+  const ds=len*ch*bps,ab=new ArrayBuffer(44+ds),v=new DataView(ab);
+  const ws=(o,s)=>{for(let i=0;i<s.length;i++) v.setUint8(o+i,s.charCodeAt(i));};
+  ws(0,'RIFF');v.setUint32(4,36+ds,true);ws(8,'WAVE');ws(12,'fmt ');
+  v.setUint32(16,16,true);v.setUint16(20,1,true);v.setUint16(22,ch,true);
+  v.setUint32(24,sr,true);v.setUint32(28,sr*ch*bps,true);v.setUint16(32,ch*bps,true);
+  v.setUint16(34,16,true);ws(36,'data');v.setUint32(40,ds,true);
+  let o=44;
+  for(let i=0;i<len;i++) for(let c=0;c<ch;c++){
+    const s=Math.max(-1,Math.min(1,buf.getChannelData(c)[i]));
+    v.setInt16(o,s<0?s*0x8000:s*0x7FFF,true);o+=2;
+  }
+  return new Blob([ab],{type:'audio/wav'});
+}
+
+// ── UI ───────────────────────────────────────────────────────
+function refreshCard(ri){
+  const el=document.getElementById(`rc-${ri}`); if(el) el.outerHTML=mkCard(remarks[ri]);
+  const op=document.querySelector('.op-bar');
+  if(op){
+    const accepted=remarks.filter(r=>r.needsPatch&&RS[r.idx].acceptedTake>=0);
+    const needed=remarks.filter(r=>r.needsPatch);
+    op.querySelector('.op-lbl').innerHTML=`Accepted: <strong style="color:var(--green)">${accepted.length}</strong> / ${needed.length} patches`;
+    op.querySelector('.op-count').textContent=accepted.length===needed.length&&needed.length>0?'✓ All accepted — stitch ready!':accepted.length>0?`${needed.length-accepted.length} remaining`:'Generate and accept patches';
+  }
+}
+function setStatus(s,t){const e=document.getElementById('topStatus');e.textContent=t;e.className='status-pill '+(s==='load'?'sp-load':s==='err'?'sp-err':'sp-ready');}
+function showOv(i,t,s,p){document.getElementById('ovIcon').textContent=i;document.getElementById('ovTitle').textContent=t;document.getElementById('ovSub').textContent=s;document.getElementById('ovProg').style.width=p+'%';document.getElementById('overlay').classList.add('show');}
+function hideOv(){document.getElementById('overlay').classList.remove('show');}
+function toast(msg,type='ok'){const e=document.createElement('div');e.className=`toast t-${type}`;e.innerHTML=(type==='ok'?'✓':type==='err'?'✗':'⚠')+' '+msg;document.getElementById('toasts').appendChild(e);setTimeout(()=>e.remove(),4000);}
+function esc(s){return(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+function fmtDur(s){const m=Math.floor(s/60);return `${m}:${String(s%60).padStart(2,'0')}`;}
+function sleep(ms){return new Promise(r=>setTimeout(r,ms));}
+</script>
+</body>
+</html>
