@@ -750,7 +750,7 @@ function renderSEPanel(){
               <td style="white-space:nowrap;font-family:var(--mono);font-size:11px;color:var(--accent)">${esc(p.time)}</td>
               <td style="font-size:11px;color:var(--text2);max-width:180px">${esc(p.remark||p.issueType||'')}</td>
               <td style="font-size:11px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(p.scriptLine)}">${esc((p.scriptLine||'').substring(0,50))}${(p.scriptLine||'').length>50?'...':''}</td>
-              <td>${p.blobUrl?'<a class="se-dl" href="'+p.blobUrl+'" download="patch_'+chapId+'_'+(pi+1)+'.mp3">⬇ MP3</a>':'—'}</td>
+              <td>${(p.audioBase64||p.blobUrl)?'<a class="se-dl" href="'+(p.audioBase64||p.blobUrl)+'" download="patch_'+chapId+'_'+(pi+1)+'.mp3">⬇ MP3</a>':'—'}</td>
               <td style="white-space:nowrap">
                 <button class="se-yn se-yn-yes ${pSt==='yes'?'active':''}" onclick="event.stopPropagation();setPatchStitch('${chapId}',${pi},'yes')" style="padding:3px 8px;font-size:10px">Yes</button>
                 <button class="se-yn se-yn-no ${pSt==='no'?'active':''}" onclick="event.stopPropagation();setPatchStitch('${chapId}',${pi},'no')" style="padding:3px 8px;font-size:10px">No</button>
@@ -779,10 +779,10 @@ function renderSEPanel(){
 function saveSEData(chapId, title, patchesData, stitchedUrl){
   const seData=getSEData();
   const existing=seData[chapId]?.patches||[];
-  // Strip blobUrl (local blob, meaningless to other users) before saving to Firebase
+  // Strip blobUrl (local blob) but keep audioBase64 for Firebase sharing
   const mergedPatches=(patchesData||[]).map((p,i)=>{
     const {blobUrl, ...rest} = p;
-    return {...rest, stitched: existing[i]?.stitched||p.stitched||''};
+    return {...rest, audioBase64: p.audioBase64||existing[i]?.audioBase64||null, stitched: existing[i]?.stitched||p.stitched||''};
   });
   const epData={
     title,
@@ -1219,14 +1219,29 @@ async function accTake(ri,ti){
   toast(`Take ${ti+1} accepted ✓`,'ok');
 }
 
-function updateSEDataForCurrentEp(){
+async function updateSEDataForCurrentEp(){
   if(!activeEp) return;
   const chapId=activeEp.chapter_id;
   const title=activeEp.chapter_title||'Episode';
-  const patchesData=remarks.filter(r=>r.needsPatch&&RS[r.idx]?.acceptedTake>=0).map(r=>{
+  const patchesData=[];
+  for(const r of remarks.filter(r=>r.needsPatch&&RS[r.idx]?.acceptedTake>=0)){
     const st=RS[r.idx];
-    return {time:r.time, remark:r.rawRemarks?.substring(0,100)||r.issueType, issueType:r.issueType, scriptLine:st.scriptLine||r.scriptLine, blobUrl:st.takes[st.acceptedTake]||null};
-  });
+    const blobUrl=st.takes[st.acceptedTake]||null;
+    let audioBase64=null;
+    // Convert blob URL to Base64 for Firebase storage
+    if(blobUrl){
+      try{
+        const resp=await fetch(blobUrl);
+        const blob=await resp.blob();
+        audioBase64=await new Promise((res)=>{
+          const reader=new FileReader();
+          reader.onloadend=()=>res(reader.result);
+          reader.readAsDataURL(blob);
+        });
+      }catch(e){ console.warn('Could not convert audio to base64:', e); }
+    }
+    patchesData.push({time:r.time, remark:r.rawRemarks?.substring(0,100)||r.issueType, issueType:r.issueType, scriptLine:st.scriptLine||r.scriptLine, audioBase64});
+  }
   saveSEData(chapId, title, patchesData, null);
 }
 function disTake(ri,ti){
