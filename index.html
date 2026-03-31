@@ -858,18 +858,32 @@ async function selectShow(id){
   await loadShow(s.showInput);
 }
 
-async function loadShow(directInput){
+async function loadShow(directInput, forceRefresh){
   let input=directInput||document.getElementById('showInp').value.trim();
   asKey=document.getElementById('asKeyInp').value.trim();
   asVoice=document.getElementById('asVoiceInp').value.trim();
   voiceType=document.getElementById('voiceType').value;
-  await dbSet('config','asKey',asKey); await dbSet('config','asVoice',asVoice);
-  await dbSet('config','voiceType',voiceType); await dbSet('config','showInput',input);
 
   const m=input.match(/show_id=([a-f0-9]+)/i)||input.match(/id=([a-f0-9]{30,})/i);
   activeShowId=m?m[1]:input;
   if(!activeShowId){toast('Enter a valid show ID or URL','warn');return;}
-  if(!authToken||!uid){toast('Save your CMS access-token and uid first','warn');return;}
+
+  // Try loading from Firebase cache first (no CMS login needed)
+  if(!forceRefresh){
+    const snap = await fbDb.ref('showEpisodes/'+activeShowId).once('value');
+    const cached = snap.val();
+    if(cached && cached.length){
+      episodes = cached.map(ep=>({chapter_details:ep, audio_duration:ep.audio_duration, natural_sequence_number:ep.natural_sequence_number}));
+      document.getElementById('topTitle').textContent = activeShowConfig?.name||'Show';
+      renderShowView();
+      setStatus('ready', `${episodes.length} eps (cached)`);
+      toast(`Loaded ${episodes.length} episodes from cache`,'ok');
+      return;
+    }
+  }
+
+  // Need CMS credentials to fetch fresh data
+  if(!authToken||!uid){toast('No cached data. Connect CMS credentials to load episodes.','warn');return;}
 
   setStatus('load','Loading...');
   document.getElementById('showEpList').innerHTML='<div class="empty"><div class="empty-icon">⏳</div><div class="empty-title">Loading episodes...</div></div>';
@@ -899,10 +913,22 @@ async function loadShow(directInput){
     episodes = eps;
     // Count QC episodes
     const qcCount = eps.filter(ep=>{const cd=ep.chapter_details||ep;const st=cd.audio_status||ep.audio_available||'';return String(st).includes('issue')||String(st).includes('qc');}).length;
-    // Save stats
+    // Save stats + episode list to Firebase so others can see without CMS login
     if(activeShowConfig){
       activeShowConfig.stats = {...(activeShowConfig.stats||{}), total: eps.length, qc: qcCount};
       await fbDb.ref('shows/'+activeShowConfig.id+'/stats').set(activeShowConfig.stats);
+      // Save episode list (stripped to essential fields to save space)
+      const epData = eps.map(ep=>{
+        const cd=ep.chapter_details||ep;
+        return {
+          chapter_id: cd.chapter_id||ep.chapter_id||'',
+          chapter_title: cd.chapter_title||ep.chapter_title||'',
+          audio_status: cd.audio_status||ep.audio_available||'',
+          audio_duration: ep.audio_duration||cd.audio_duration||0,
+          natural_sequence_number: ep.natural_sequence_number||cd.seq_number||0,
+        };
+      });
+      await fbDb.ref('showEpisodes/'+activeShowId).set(epData);
     }
     renderShowView();
     setStatus('ready', `${episodes.length} eps loaded`);
@@ -916,12 +942,34 @@ async function loadShow(directInput){
 // ── Load Episode ─────────────────────────────────────────────
 async function loadChapter(chapId, idx){
   if(!chapId){ return; }
-  if(!authToken||!uid){toast('No credentials — save access-token and uid first','warn');return;}
   console.log('loadChapter START', chapId);
   goPage('episode');
   setStatus('load','Loading...'); showOv('⏳','Loading Episode','Fetching QC remarks...',0);
 
   try{
+    // Try Firebase cache first (no CMS login needed)
+    const fbSnap = await fbDb.ref('episodeRemarks/'+chapId).once('value');
+    const fbData = fbSnap.val();
+
+    if(!authToken||!uid){
+      // No CMS credentials — use Firebase cache only
+      if(!fbData){
+        hideOv(); toast('No cached data. Someone with CMS access needs to load this episode first.','warn'); return;
+      }
+      activeEp={chapter_id:chapId, chapter_title:fbData.title}; finalAudioUrl=null; finalAudioBlob=null; RS={};
+      remarks = (fbData.remarks||[]).map((r,i)=>({...r, idx:i}));
+      for(const r2 of remarks){
+        RS[r2.idx]={scriptLine:r2.scriptLine,takes:[null,null,null],acceptedTake:-1,discarded:[],status:'idle'};
+      }
+      document.getElementById('topTitle').textContent=fbData.title||'Episode';
+      document.getElementById('genAllBtn').style.display='none';
+      renderContent();
+      setStatus('ready',`${remarks.filter(r2=>r2.needsPatch).length} patches (cached)`);
+      hideOv(); toast(`Loaded from cache: ${fbData.title}`,'ok');
+      return;
+    }
+
+    // Has CMS credentials — fetch fresh from API
     console.log('Fetching episode details...');
     const r=await fetch(`${CMS_BASE}/book.episode_details?chapter_id=${chapId}&is_novel=0`,{headers:hdrs()});
     console.log('Fetch status:', r.status);
@@ -967,6 +1015,19 @@ async function loadChapter(chapId, idx){
       const acc=await dbGet('config',`${chapId}_r${r2.idx}_acc`);
       if(acc!=null && acc>=0){ RS[r2.idx].acceptedTake=acc; RS[r2.idx].status='accepted'; }
     }
+
+    // Save QC remarks to Firebase so others can see without CMS login
+    const remarkData = remarks.map(r2=>({
+      idx:r2.idx, time:r2.time, issueType:r2.issueType,
+      userEmail:r2.userEmail, scriptLine:r2.scriptLine,
+      note:r2.note, rawRemarks:r2.rawRemarks, needsPatch:r2.needsPatch,
+    }));
+    await fbDb.ref('episodeRemarks/'+chapId).set({
+      title: ch.chapter_title||'Episode',
+      showId: activeShowId,
+      remarks: remarkData,
+      updatedAt: Date.now()
+    });
 
     document.getElementById('topTitle').textContent=ch.chapter_title||'Episode';
     document.getElementById('genAllBtn').style.display='inline-flex';
