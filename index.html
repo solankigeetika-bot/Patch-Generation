@@ -958,8 +958,21 @@ async function loadChapter(chapId, idx){
       }
       activeEp={chapter_id:chapId, chapter_title:fbData.title}; finalAudioUrl=null; finalAudioBlob=null; RS={};
       remarks = (fbData.remarks||[]).map((r,i)=>({...r, idx:i}));
+
+      // Load accepted patch audio from SE data in Firebase
+      const seSnap = await fbDb.ref('seData/'+chapId).once('value');
+      const seEp = seSnap.val();
+      const sePatches = seEp?.patches||[];
+
       for(const r2 of remarks){
         RS[r2.idx]={scriptLine:r2.scriptLine,takes:[null,null,null],acceptedTake:-1,discarded:[],status:'idle'};
+        // Find matching SE patch by time code and populate the accepted take
+        const matchedPatch = sePatches.find(p=>p.time===r2.time);
+        if(matchedPatch && matchedPatch.audioBase64){
+          RS[r2.idx].takes[0] = matchedPatch.audioBase64; // Put audio in take 1 slot
+          RS[r2.idx].acceptedTake = 0;
+          RS[r2.idx].status = 'accepted';
+        }
       }
       document.getElementById('topTitle').textContent=fbData.title||'Episode';
       document.getElementById('genAllBtn').style.display='none';
