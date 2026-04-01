@@ -1143,20 +1143,24 @@ async function loadChapter(chapId, idx){
     }
 
     // Fallback: load accepted patches from Firebase SE data if not found locally
-    const seSnap=await fbDb.ref('seData/'+chapId).once('value');
-    const seEp=seSnap.val();
-    const sePatches=seEp?.patches||[];
+    const seSnap2=await fbDb.ref('seData/'+chapId).once('value');
+    const seEp2=seSnap2.val();
+    const sePatches2=seEp2?.patches||[];
+    console.log('Firebase SE fallback:', sePatches2.length, 'patches found');
+    let fbRestored=0;
     for(const r2 of remarks){
       const st=RS[r2.idx];
-      if(st.status==='idle'||!st.takes.some(t=>t)){
-        const matchedPatch=sePatches.find(p=>p.time===r2.time);
+      if(!st.takes.some(t=>t)){
+        const matchedPatch=sePatches2.find(p=>p.time===r2.time);
         if(matchedPatch&&matchedPatch.audioBase64){
           st.takes[0]=matchedPatch.audioBase64;
           st.acceptedTake=0;
           st.status='accepted';
+          fbRestored++;
         }
       }
     }
+    if(fbRestored) console.log('Restored',fbRestored,'patches from Firebase');
 
     // Save QC remarks to Firebase so others can see without CMS login
     const remarkData = remarks.map(r2=>({
