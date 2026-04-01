@@ -1323,9 +1323,11 @@ async function getEpisodeAudioUrl(){
 async function genTakes(ri){
   const st=RS[ri], line=st.scriptLine||remarks[ri].scriptLine;
   if(!line.trim()){toast('Script line is empty — edit it first','warn');return;}
-  asKey=document.getElementById('asKeyInp').value.trim();
-  asVoice=document.getElementById('asVoiceInp').value.trim();
-  voiceType=document.getElementById('voiceType').value;
+  // Use show config values, fall back to hidden inputs
+  asKey=activeShowConfig?.asKey||document.getElementById('asKeyInp').value.trim();
+  asVoice=activeShowConfig?.voiceId||document.getElementById('asVoiceInp').value.trim();
+  voiceType=activeShowConfig?.voiceType||document.getElementById('voiceType').value;
+  console.log('Generating with voice:', asVoice, 'type:', voiceType);
   st.status='generating'; st.takes=[null,null,null]; st.acceptedTake=-1; st.discarded=[];
   refreshCard(ri);
   const chapId=activeEp.chapter_id;
