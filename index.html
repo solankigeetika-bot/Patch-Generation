@@ -1346,10 +1346,10 @@ async function genTakes(ri){
   const timeSec=parseTime(remarks[ri].time);
   const speed=estimateSpeed(episodeAudioBuf, timeSec);
 
-  // Get script context
-  const contextLine=getScriptContext(line);
+  // Use the raw script line for now (context can cause API failures with special chars)
+  const cleanLine=line.trim();
 
-  await Promise.allSettled([0,1,2].map(ti=>genOneTake(contextLine,ri,ti,chapId,speed,timeSec)));
+  await Promise.allSettled([0,1,2].map(ti=>genOneTake(cleanLine,ri,ti,chapId,speed,timeSec)));
   st.status=st.takes.some(t=>t)?'done':'error';
   refreshCard(ri); updateStitchBtn();
   toast(`3 takes generated for remark ${ri+1}`,'ok');
@@ -1359,6 +1359,7 @@ async function genOneTake(text,ri,ti,chapId,speed,timeSec){
   const st=RS[ri], h={'x-api-key':asKey,'Content-Type':'application/json'};
   try{
     // Create script then TTS
+    console.log(`Take ${ti+1} sending text:`, text.substring(0,100));
     const srResp=await fetch(`${AS_BASE}/content/script`,{method:'POST',headers:h,body:JSON.stringify({scriptText:text,projectName:'PatchStudio'})});
     const srText=await srResp.text();
     console.log(`Take ${ti+1} script response:`, srText.substring(0,200));
