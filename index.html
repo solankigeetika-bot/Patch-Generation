@@ -836,7 +836,7 @@ function renderSEShowDetail(group){
               <td style="white-space:nowrap;font-family:var(--mono);font-size:11px;color:var(--accent)">${esc(p.time)}</td>
               <td style="font-size:11px;color:var(--text2);max-width:180px">${esc(p.remark||p.issueType||'')}</td>
               <td style="font-size:11px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(p.scriptLine)}">${esc((p.scriptLine||'').substring(0,50))}${(p.scriptLine||'').length>50?'...':''}</td>
-              <td>${(p.audioBase64||p.blobUrl)?'<a class="se-dl" href="'+(p.audioBase64||p.blobUrl)+'" download="'+(p.time||'').replace(/:/g,'m')+'s_'+(p.scriptLine||'').substring(0,30).replace(/[^a-zA-ZÀ-ÿ0-9 ]/g,'').replace(/ /g,'_')+'.mp3">⬇ MP3</a>':'—'}</td>
+              <td>${(p.audioBase64||p.blobUrl)?'<a class="se-dl" href="'+(p.audioBase64||p.blobUrl)+'" download="'+(esc(ep.title||'Episode')).replace(/[^a-zA-ZÀ-ÿ0-9 ]/g,'').replace(/ /g,'_')+'_'+(p.time||'').replace(/:/g,'m')+'s_'+(p.scriptLine||'').substring(0,30).replace(/[^a-zA-ZÀ-ÿ0-9 ]/g,'').replace(/ /g,'_')+'.mp3">⬇ MP3</a>':'—'}</td>
               <td style="white-space:nowrap">
                 <button class="se-yn se-yn-yes ${pSt==='yes'?'active':''}" onclick="event.stopPropagation();setPatchStitch('${chapId}',${pi},'yes')" style="padding:3px 8px;font-size:10px">Yes</button>
                 <button class="se-yn se-yn-no ${pSt==='no'?'active':''}" onclick="event.stopPropagation();setPatchStitch('${chapId}',${pi},'no')" style="padding:3px 8px;font-size:10px">No</button>
