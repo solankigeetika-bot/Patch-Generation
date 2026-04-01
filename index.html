@@ -836,7 +836,7 @@ function renderSEShowDetail(group){
               <td style="white-space:nowrap;font-family:var(--mono);font-size:11px;color:var(--accent)">${esc(p.time)}</td>
               <td style="font-size:11px;color:var(--text2);max-width:180px">${esc(p.remark||p.issueType||'')}</td>
               <td style="font-size:11px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(p.scriptLine)}">${esc((p.scriptLine||'').substring(0,50))}${(p.scriptLine||'').length>50?'...':''}</td>
-              <td>${(p.audioBase64||p.blobUrl)?'<a class="se-dl" href="'+(p.audioBase64||p.blobUrl)+'" download="patch_'+chapId+'_'+(pi+1)+'.mp3">⬇ MP3</a>':'—'}</td>
+              <td>${(p.audioBase64||p.blobUrl)?'<a class="se-dl" href="'+(p.audioBase64||p.blobUrl)+'" download="'+(p.time||'').replace(/:/g,'m')+'s_'+(p.scriptLine||'').substring(0,30).replace(/[^a-zA-ZÀ-ÿ0-9 ]/g,'').replace(/ /g,'_')+'.mp3">⬇ MP3</a>':'—'}</td>
               <td style="white-space:nowrap">
                 <button class="se-yn se-yn-yes ${pSt==='yes'?'active':''}" onclick="event.stopPropagation();setPatchStitch('${chapId}',${pi},'yes')" style="padding:3px 8px;font-size:10px">Yes</button>
                 <button class="se-yn se-yn-no ${pSt==='no'?'active':''}" onclick="event.stopPropagation();setPatchStitch('${chapId}',${pi},'no')" style="padding:3px 8px;font-size:10px">No</button>
@@ -846,6 +846,7 @@ function renderSEShowDetail(group){
         </table>
       </div>
       <div class="se-actions">
+        <button class="btn btn-p btn-sm" onclick="event.stopPropagation();downloadAllPatches('${chapId}')" style="font-size:10px">⬇ Download All Patches</button>
         ${ep.stitchedUrl?'<a class="se-dl" href="'+ep.stitchedUrl+'" download="stitched_'+chapId+'.wav">⬇ Stitched WAV</a>':''}
         <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
           <label style="font-family:var(--mono);font-size:10px;display:flex;align-items:center;gap:4px;cursor:pointer">
@@ -862,6 +863,52 @@ function renderSEShowDetail(group){
   }).join('');
 
   document.getElementById('seList').innerHTML=html;
+}
+
+async function downloadAllPatches(chapId){
+  const seData=getSEData();
+  const ep=seData[chapId];
+  if(!ep?.patches?.length){toast('No patches to download','warn');return;}
+  const patchesWithAudio=ep.patches.filter(p=>p.audioBase64);
+  if(!patchesWithAudio.length){toast('No audio available','warn');return;}
+  toast('Combining '+patchesWithAudio.length+' patches...','ok');
+
+  try{
+    // Decode all patches
+    const buffers=[];
+    for(const p of patchesWithAudio){
+      const resp=await fetch(p.audioBase64);
+      const blob=await resp.blob();
+      const buf=await blobToAudioBuf(blob);
+      buffers.push(buf);
+    }
+
+    // Get target sample rate and channels from first buffer
+    const sr=buffers[0].sampleRate, ch=buffers[0].numberOfChannels;
+    // Add 0.3s silence between patches
+    const silenceLen=Math.floor(0.3*sr);
+    const totalLen=buffers.reduce((s,b)=>s+b.length+silenceLen,0);
+    const outCtx=new OfflineAudioContext(ch,totalLen,sr);
+    let cursor=0;
+    for(const buf of buffers){
+      const matched=matchBuf(buf,sr,ch);
+      const src=outCtx.createBufferSource();src.buffer=matched;src.connect(outCtx.destination);src.start(cursor/sr);
+      cursor+=buf.length+silenceLen;
+    }
+    const rendered=await outCtx.startRendering();
+    const wav=bufToWav(rendered);
+    const url=URL.createObjectURL(wav);
+
+    // Trigger download
+    const a=document.createElement('a');
+    a.href=url;
+    a.download='all_patches_'+(ep.title||'episode').replace(/[^a-zA-ZÀ-ÿ0-9 ]/g,'').replace(/ /g,'_')+'.wav';
+    document.body.appendChild(a);a.click();document.body.removeChild(a);
+    toast('Downloaded combined patches WAV','ok');
+  }catch(e){
+    toast('Failed to combine: '+e.message,'err');
+    console.error(e);
+  }
 }
 
 function saveSEData(chapId, title, patchesData, stitchedUrl){
