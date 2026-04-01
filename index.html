@@ -1358,22 +1358,15 @@ async function genTakes(ri){
 async function genOneTake(text,ri,ti,chapId,speed,timeSec){
   const st=RS[ri], h={'x-api-key':asKey,'Content-Type':'application/json'};
   try{
-    // Try script-based TTS first, fall back to direct text TTS
-    let ttsBody;
-    try{
-      const sr=await fetch(`${AS_BASE}/content/script`,{method:'POST',headers:h,body:JSON.stringify({scriptText:text,projectName:'PatchStudio'})});
-      const sd=JSON.parse(await sr.text());
-      const scriptId=sd.scriptId||sd.script_id||sd.data?.scriptId;
-      if(scriptId){
-        ttsBody={scriptId,voice:asVoice,sync:true};
-      }
-    }catch(e){ console.warn('Script creation failed, using direct text TTS'); }
+    // Create script then TTS
+    const srResp=await fetch(`${AS_BASE}/content/script`,{method:'POST',headers:h,body:JSON.stringify({scriptText:text,projectName:'PatchStudio'})});
+    const srText=await srResp.text();
+    console.log(`Take ${ti+1} script response:`, srText.substring(0,200));
+    const sd=JSON.parse(srText);
+    const scriptId=sd.scriptId||sd.script_id||sd.data?.scriptId;
+    if(!scriptId) throw new Error('No scriptId. Response: '+srText.substring(0,200));
 
-    // Fallback: direct text-based TTS (no script needed)
-    if(!ttsBody){
-      ttsBody={text:text.substring(0,800),voice:asVoice,sync:true};
-      console.log(`Take ${ti+1}: using direct text TTS (script creation failed)`);
-    }
+    const ttsBody={scriptId,voice:asVoice,sync:true};
 
     if(voiceType==='expressive') ttsBody.voiceIntelligence=true;
     if(speed && speed!==1.0) ttsBody.speed=speed;
