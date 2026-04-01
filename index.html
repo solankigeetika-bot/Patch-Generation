@@ -1500,12 +1500,17 @@ async function updateSEDataForCurrentEp(){
   }
   saveSEData(chapId, title, patchesData, null);
 }
-function disTake(ri,ti){
+async function disTake(ri,ti){
   if(!RS[ri].discarded) RS[ri].discarded=[];
   if(!RS[ri].discarded.includes(ti)) RS[ri].discarded.push(ti);
-  if(RS[ri].acceptedTake===ti){RS[ri].acceptedTake=-1;RS[ri].status='done';}
-  const el=document.getElementById(`tc-${ri}-${ti}`); if(el) el.outerHTML=mkTake(ri,ti);
-  updateStitchBtn();
+  const wasAccepted=RS[ri].acceptedTake===ti;
+  if(wasAccepted){RS[ri].acceptedTake=-1;RS[ri].status='done';}
+  await dbSet('config',`${activeEp.chapter_id}_r${ri}_acc`,-1);
+  refreshCard(ri); updateStitchBtn();
+  if(wasAccepted){
+    await updateSEDataForCurrentEp();
+    toast(`Take ${ti+1} rejected — removed from SE`,'ok');
+  }
 }
 async function generateAllPending(){
   const pending=remarks.filter(r=>r.needsPatch&&RS[r.idx].status==='idle');
