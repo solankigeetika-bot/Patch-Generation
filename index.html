@@ -731,14 +731,23 @@ function renderSEPanel(){
     return;
   }
 
-  // Group episodes by show
+  // Group episodes by show — match showId against shows list
   const showGroups={};
-  shows.forEach(s=>{ showGroups[s.showInput||s.id]={show:s, episodes:[]}; });
+  function findShowForId(sid){
+    if(!sid) return null;
+    return shows.find(s=>s.showInput===sid || s.showInput?.includes(sid) || String(s.id)===sid);
+  }
+  shows.forEach(s=>{
+    const key=s.showInput||String(s.id);
+    if(!showGroups[key]) showGroups[key]={show:s, episodes:[]};
+  });
   epIds.forEach(chapId=>{
     const ep=seData[chapId];
     const showId=ep.showId||'unknown';
-    if(!showGroups[showId]) showGroups[showId]={show:{name:'Unknown Show',showInput:showId}, episodes:[]};
-    showGroups[showId].episodes.push({chapId,...ep});
+    const matchedShow=findShowForId(showId);
+    const groupKey=matchedShow?(matchedShow.showInput||String(matchedShow.id)):showId;
+    if(!showGroups[groupKey]) showGroups[groupKey]={show:matchedShow||{name:showId.substring(0,20)+'...',showInput:showId}, episodes:[]};
+    showGroups[groupKey].episodes.push({chapId,...ep});
   });
 
   // If a show is selected, show its episodes detail
