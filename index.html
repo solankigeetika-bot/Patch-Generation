@@ -935,8 +935,15 @@ function saveSEData(chapId, title, patchesData, stitchedUrl){
   // Strip blobUrl (local blob) but keep audioBase64 for Firebase sharing
   const mergedPatches=(patchesData||[]).map((p,i)=>{
     const {blobUrl, ...rest} = p;
-    return {...rest, audioBase64: p.audioBase64||existing[i]?.audioBase64||null, stitched: existing[i]?.stitched||p.stitched||''};
+    // Match existing patch by time code for correct audio/stitch preservation
+    const match=existing.find(ep=>ep.time===p.time)||existing[i]||{};
+    return {...rest, audioBase64: p.audioBase64||match.audioBase64||null, stitched: match.stitched||p.stitched||''};
   });
+  // If no patches and no stitched URL, remove episode from SE data entirely
+  if(!mergedPatches.length && !stitchedUrl && !seData[chapId]?.stitchedUrl){
+    fbDb.ref('seData/'+chapId).remove();
+    return;
+  }
   const epData={
     title,
     showId: activeShowId||seData[chapId]?.showId||'',
@@ -1418,16 +1425,16 @@ async function genTakes(ri){
 async function genOneTake(text,ri,ti,chapId){
   const st=RS[ri], h={'x-api-key':asKey,'Content-Type':'application/json'};
   try{
-    // Clean text: remove SFX markers, stage directions, normalize quotes and whitespace
+    // Clean text: remove bracketed tags, strip AudioStack invalid chars, normalize quotes
     let cleanText=text
-      .replace(/\[SFX[:\s][^\]]*\]/gi,'')
-      .replace(/\[[A-Z\s]+\]/g,'')
+      .replace(/\[[^\]]*\]/g,'')
       .replace(/[\u00ab\u00bb]/g,'"')
       .replace(/[\u2018\u2019]/g,"'")
       .replace(/[\u201c\u201d\u201e]/g,'"')
       .replace(/[\u2013\u2014]/g,'-')
+      .replace(/[\[\]^{}>\-#|<\\{}]/g,'')
       .replace(/\s+/g,' ').trim();
-    if(!cleanText){cleanText=text.trim();}
+    if(!cleanText){cleanText=text.replace(/[\[\]^{}>\-#|<\\{}]/g,'').replace(/\s+/g,' ').trim();}
     console.log(`Take ${ti} sending text:`, cleanText.substring(0,100));
     const sr=await fetch(`${AS_BASE}/content/script`,{method:'POST',headers:h,body:JSON.stringify({scriptText:cleanText,projectName:'PatchStudio'})});
     const srText=await sr.text();
