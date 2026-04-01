@@ -1400,10 +1400,23 @@ async function genTakes(ri){
 async function genOneTake(text,ri,ti,chapId){
   const st=RS[ri], h={'x-api-key':asKey,'Content-Type':'application/json'};
   try{
-    const sr=await fetch(`${AS_BASE}/content/script`,{method:'POST',headers:h,body:JSON.stringify({scriptText:text,projectName:'PatchStudio'})});
-    const sd=JSON.parse(await sr.text());
-    const scriptId=sd.scriptId||sd.script_id||sd.data?.scriptId;
-    if(!scriptId) throw new Error('No scriptId returned');
+    // Clean text: remove SFX markers, stage directions, normalize quotes and whitespace
+    let cleanText=text
+      .replace(/\[SFX[:\s][^\]]*\]/gi,'')
+      .replace(/\[[A-Z\s]+\]/g,'')
+      .replace(/[\u00ab\u00bb]/g,'"')
+      .replace(/[\u2018\u2019]/g,"'")
+      .replace(/[\u201c\u201d\u201e]/g,'"')
+      .replace(/[\u2013\u2014]/g,'-')
+      .replace(/\s+/g,' ').trim();
+    if(!cleanText){cleanText=text.trim();}
+    console.log(`Take ${ti} sending text:`, cleanText.substring(0,100));
+    const sr=await fetch(`${AS_BASE}/content/script`,{method:'POST',headers:h,body:JSON.stringify({scriptText:cleanText,projectName:'PatchStudio'})});
+    const srText=await sr.text();
+    if(!sr.ok){console.error(`Script API ${sr.status}:`,srText); throw new Error('Script API error: '+sr.status+' '+srText.substring(0,200));}
+    const sd=JSON.parse(srText);
+    const scriptId=sd.scriptId||sd.script_id||sd.id||(sd.data&&(sd.data.scriptId||sd.data.script_id||sd.data.id))||(sd.response&&(sd.response.scriptId||sd.response.script_id));
+    if(!scriptId) throw new Error('No scriptId in response: '+srText.substring(0,200));
 
     const ttsBody={scriptId,voice:asVoice,sync:true};
     if(voiceType==='expressive') ttsBody.voiceIntelligence=true;
