@@ -7,6 +7,7 @@
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet"/>
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
 <style>
 :root {
   --bg:#f7f8fa;--surface:#fff;--surface2:#f1f3f6;--surface3:#e8ecf2;
@@ -341,6 +342,8 @@ let episodes=[], activeEp=null, activeShowId='';
 let remarks=[], RS={};
 let db=null, finalAudioUrl=null, finalAudioBlob=null;
 let currentPage='dashboard';
+let episodeScript=[]; // Full script lines from .docx
+let episodeAudioBuf=null; // Decoded episode audio for speed/volume analysis
 
 // ── Synchronous credential loading (runs immediately) ────────
 // 1. Check URL params from bookmarklet redirect
@@ -1042,6 +1045,21 @@ async function loadChapter(chapId, idx){
       updatedAt: Date.now()
     });
 
+    // Fetch and parse episode script (.docx) for context
+    episodeScript=[];
+    if(ch.file_url){
+      try{
+        showOv('📄','Loading Script','Parsing episode script...',80);
+        const docxResp=await fetch(ch.file_url);
+        if(docxResp.ok){
+          const docxBuf=await docxResp.arrayBuffer();
+          const result=await mammoth.extractRawText({arrayBuffer:docxBuf});
+          episodeScript=result.value.split('\n').map(l=>l.trim()).filter(l=>l.length>5);
+          console.log('Script parsed:',episodeScript.length,'lines');
+        }
+      }catch(e){ console.warn('Could not parse .docx:',e); }
+    }
+
     document.getElementById('topTitle').textContent=ch.chapter_title||'Episode';
     document.getElementById('genAllBtn').style.display='inline-flex';
     updateStitchBtn(); renderContent();
@@ -1171,6 +1189,20 @@ function mkTake(ri,ti){
 }
 
 // ── Generate Takes ───────────────────────────────────────────
+async function getEpisodeAudioUrl(){
+  if(!activeEp) return null;
+  try{
+    const showId=activeEp._bookId||activeEp.book_id||activeShowId||'';
+    const chapId=activeEp.chapter_id;
+    const muResp=await fetch(`${CMS_BASE}/get_media_url?type=episode&media_type=audio&event=play&chapter_id=${chapId}&show_id=${showId}`,{headers:hdrs()});
+    if(muResp.ok){
+      const muData=await muResp.json();
+      return muData.result?.media_url||muData.result?.url||muData.media_url||muData.url||null;
+    }
+  }catch(e){ console.warn('getEpisodeAudioUrl failed:',e); }
+  return null;
+}
+
 async function genTakes(ri){
   const st=RS[ri], line=st.scriptLine||remarks[ri].scriptLine;
   if(!line.trim()){toast('Script line is empty — edit it first','warn');return;}
@@ -1180,13 +1212,33 @@ async function genTakes(ri){
   st.status='generating'; st.takes=[null,null,null]; st.acceptedTake=-1; st.discarded=[];
   refreshCard(ri);
   const chapId=activeEp.chapter_id;
-  await Promise.allSettled([0,1,2].map(ti=>genOneTake(line,ri,ti,chapId)));
+
+  // Fetch episode audio for speed/volume analysis (once, cached)
+  if(!episodeAudioBuf && authToken && uid){
+    try{
+      toast('Fetching episode audio for tone analysis...','ok');
+      const epUrl=await getEpisodeAudioUrl();
+      if(epUrl){
+        const epResp=await fetch(epUrl);
+        if(epResp.ok) episodeAudioBuf=await blobToAudioBuf(await epResp.blob());
+      }
+    }catch(e){ console.warn('Could not fetch episode audio for analysis:',e); }
+  }
+
+  // Calculate speed for this remark's timestamp
+  const timeSec=parseTime(remarks[ri].time);
+  const speed=estimateSpeed(episodeAudioBuf, timeSec);
+
+  // Get script context
+  const contextLine=getScriptContext(line);
+
+  await Promise.allSettled([0,1,2].map(ti=>genOneTake(contextLine,ri,ti,chapId,speed,timeSec)));
   st.status=st.takes.some(t=>t)?'done':'error';
   refreshCard(ri); updateStitchBtn();
   toast(`3 takes generated for remark ${ri+1}`,'ok');
 }
 
-async function genOneTake(text,ri,ti,chapId){
+async function genOneTake(text,ri,ti,chapId,speed,timeSec){
   const st=RS[ri], h={'x-api-key':asKey,'Content-Type':'application/json'};
   try{
     const sr=await fetch(`${AS_BASE}/content/script`,{method:'POST',headers:h,body:JSON.stringify({scriptText:text,projectName:'PatchStudio'})});
@@ -1196,6 +1248,8 @@ async function genOneTake(text,ri,ti,chapId){
 
     const ttsBody={scriptId,voice:asVoice,sync:true};
     if(voiceType==='expressive') ttsBody.voiceIntelligence=true;
+    if(speed && speed!==1.0) ttsBody.speed=speed;
+    console.log(`Take ${ti+1}: speed=${speed||1.0}, voiceIntelligence=${!!ttsBody.voiceIntelligence}`);
     const tr=await fetch(`${AS_BASE}/speech/tts`,{method:'POST',headers:h,body:JSON.stringify(ttsBody)});
     const td=JSON.parse(await tr.text());
     let audioUrl=td.url||td.audioUrl||td.data?.url||td.data?.sections?.[0]?.url||td.sections?.[0]?.url;
@@ -1213,6 +1267,16 @@ async function genOneTake(text,ri,ti,chapId){
     let blob;
     const dl=await fetch(audioUrl,{headers:{'x-api-key':asKey}});
     if(dl.ok){ blob=await dl.blob(); } else { const dl2=await fetch(audioUrl); if(!dl2.ok) throw new Error('Download failed'); blob=await dl2.blob(); }
+
+    // Volume normalization: match original episode's volume at this timestamp
+    if(episodeAudioBuf && timeSec!=null){
+      try{
+        const patchBuf=await blobToAudioBuf(blob);
+        normalizeVolume(patchBuf, episodeAudioBuf, timeSec);
+        blob=audioBufToBlob(patchBuf);
+        console.log(`Take ${ti+1}: volume normalized to match original at ${timeSec}s`);
+      }catch(e){ console.warn('Volume normalization failed:',e); }
+    }
 
     await dbSetBlob(`${chapId}_r${ri}_t${ti}`,blob);
     st.takes[ti]=URL.createObjectURL(blob);
@@ -1564,6 +1628,70 @@ function findSilenceAfter(buf, timeSec, opts={}){
 function silenceBuf(durationSec, sampleRate, channels){
   const len=Math.max(1, Math.floor(durationSec*sampleRate));
   return new AudioBuffer({length:len, numberOfChannels:channels, sampleRate:sampleRate});
+}
+
+// ── Tone Matching Helpers ────────────────────────────────────
+function estimateSpeed(audioBuf, timeSec){
+  if(!audioBuf) return 1.0;
+  const data=audioBuf.getChannelData(0), sr=audioBuf.sampleRate;
+  const start=Math.max(0, Math.floor((timeSec-2.5)*sr));
+  const end=Math.min(data.length, Math.floor((timeSec+2.5)*sr));
+  if(end<=start) return 1.0;
+  // Count zero crossings as proxy for speech rate
+  let crossings=0;
+  for(let i=start+1;i<end;i++) if((data[i]>=0)!==(data[i-1]>=0)) crossings++;
+  const duration=(end-start)/sr;
+  const rate=crossings/duration;
+  // Average speech ~100-120 crossings/sec. Map to speed param.
+  const speed=Math.round(Math.max(0.7, Math.min(1.5, rate/110))*100)/100;
+  console.log(`Speed analysis at ${timeSec}s: ${crossings} crossings, rate=${rate.toFixed(1)}/s → speed=${speed}`);
+  return speed;
+}
+
+function normalizeVolume(patchBuf, originalBuf, timeSec){
+  if(!originalBuf||!patchBuf) return patchBuf;
+  const sr=originalBuf.sampleRate;
+  const origStart=Math.max(0,Math.floor((timeSec-1.5)*sr));
+  const origRMS=rms(originalBuf.getChannelData(0), origStart, sr*3);
+  const patchRMS=rms(patchBuf.getChannelData(0), 0, patchBuf.length);
+  if(patchRMS===0||origRMS===0) return patchBuf;
+  const gain=origRMS/patchRMS;
+  // Clamp gain to avoid extreme amplification
+  const clampedGain=Math.max(0.3, Math.min(3.0, gain));
+  console.log(`Volume: original RMS=${origRMS.toFixed(4)}, patch RMS=${patchRMS.toFixed(4)}, gain=${clampedGain.toFixed(2)}`);
+  for(let c=0;c<patchBuf.numberOfChannels;c++){
+    const d=patchBuf.getChannelData(c);
+    for(let i=0;i<d.length;i++) d[i]*=clampedGain;
+  }
+  return patchBuf;
+}
+
+function getScriptContext(scriptLine, linesBefore=1, linesAfter=1){
+  if(!episodeScript.length||!scriptLine) return scriptLine;
+  // Find the best matching line in the full script
+  const targetLower=scriptLine.toLowerCase().substring(0,40);
+  let bestIdx=-1, bestScore=0;
+  for(let i=0;i<episodeScript.length;i++){
+    const lineLower=episodeScript[i].toLowerCase();
+    if(lineLower.includes(targetLower)){ bestIdx=i; bestScore=100; break; }
+    // Partial match: count common words
+    const targetWords=targetLower.split(/\s+/);
+    const matches=targetWords.filter(w=>w.length>3&&lineLower.includes(w)).length;
+    if(matches>bestScore){ bestScore=matches; bestIdx=i; }
+  }
+  if(bestIdx<0||bestScore<2) return scriptLine;
+  // Extract surrounding lines as context
+  const before=episodeScript.slice(Math.max(0,bestIdx-linesBefore),bestIdx);
+  const after=episodeScript.slice(bestIdx+1,bestIdx+1+linesAfter);
+  const context=[...before, scriptLine, ...after].join('\n');
+  console.log(`Script context: found at line ${bestIdx}, using ${before.length} before + ${after.length} after`);
+  return context;
+}
+
+// Convert AudioBuffer back to Blob (for storing volume-normalized audio)
+function audioBufToBlob(buf){
+  const wav=bufToWav(buf);
+  return wav;
 }
 
 function parseTime(t){
