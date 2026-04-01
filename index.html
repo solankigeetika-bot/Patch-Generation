@@ -1329,50 +1329,22 @@ async function genTakes(ri){
   st.status='generating'; st.takes=[null,null,null]; st.acceptedTake=-1; st.discarded=[];
   refreshCard(ri);
   const chapId=activeEp.chapter_id;
-
-  // Fetch episode audio for speed/volume analysis (once, cached)
-  if(!episodeAudioBuf && authToken && uid){
-    try{
-      toast('Fetching episode audio for tone analysis...','ok');
-      const epUrl=await getEpisodeAudioUrl();
-      if(epUrl){
-        const epResp=await fetch(epUrl);
-        if(epResp.ok) episodeAudioBuf=await blobToAudioBuf(await epResp.blob());
-      }
-    }catch(e){ console.warn('Could not fetch episode audio for analysis:',e); }
-  }
-
-  // Calculate speed for this remark's timestamp
-  const timeSec=parseTime(remarks[ri].time);
-  const speed=estimateSpeed(episodeAudioBuf, timeSec);
-
-  // Clean the script line — join all lines into one continuous text
-  const cleanLine=line.split('\n').map(l=>l.trim()).filter(l=>l.length>0).join(' ').trim();
-  console.log('Generating with text:', cleanLine.substring(0,120));
-
-  await Promise.allSettled([0,1,2].map(ti=>genOneTake(cleanLine,ri,ti,chapId,speed,timeSec)));
+  await Promise.allSettled([0,1,2].map(ti=>genOneTake(line.trim(),ri,ti,chapId)));
   st.status=st.takes.some(t=>t)?'done':'error';
   refreshCard(ri); updateStitchBtn();
   toast(`3 takes generated for remark ${ri+1}`,'ok');
 }
 
-async function genOneTake(text,ri,ti,chapId,speed,timeSec){
+async function genOneTake(text,ri,ti,chapId){
   const st=RS[ri], h={'x-api-key':asKey,'Content-Type':'application/json'};
   try{
-    // Create script then TTS
-    console.log(`Take ${ti+1} sending text:`, text.substring(0,100));
-    const srResp=await fetch(`${AS_BASE}/content/script`,{method:'POST',headers:h,body:JSON.stringify({scriptText:text,projectName:'PatchStudio'})});
-    const srText=await srResp.text();
-    console.log(`Take ${ti+1} script response:`, srText.substring(0,200));
-    const sd=JSON.parse(srText);
+    const sr=await fetch(`${AS_BASE}/content/script`,{method:'POST',headers:h,body:JSON.stringify({scriptText:text,projectName:'PatchStudio'})});
+    const sd=JSON.parse(await sr.text());
     const scriptId=sd.scriptId||sd.script_id||sd.data?.scriptId;
-    if(!scriptId) throw new Error('No scriptId. Response: '+srText.substring(0,200));
+    if(!scriptId) throw new Error('No scriptId returned');
 
     const ttsBody={scriptId,voice:asVoice,sync:true};
-
     if(voiceType==='expressive') ttsBody.voiceIntelligence=true;
-    if(speed && speed!==1.0) ttsBody.speed=speed;
-    console.log(`Take ${ti+1}: speed=${speed||1.0}, voiceIntelligence=${!!ttsBody.voiceIntelligence}`);
     const tr=await fetch(`${AS_BASE}/speech/tts`,{method:'POST',headers:h,body:JSON.stringify(ttsBody)});
     const td=JSON.parse(await tr.text());
     let audioUrl=td.url||td.audioUrl||td.data?.url||td.data?.sections?.[0]?.url||td.sections?.[0]?.url;
@@ -1390,16 +1362,6 @@ async function genOneTake(text,ri,ti,chapId,speed,timeSec){
     let blob;
     const dl=await fetch(audioUrl,{headers:{'x-api-key':asKey}});
     if(dl.ok){ blob=await dl.blob(); } else { const dl2=await fetch(audioUrl); if(!dl2.ok) throw new Error('Download failed'); blob=await dl2.blob(); }
-
-    // Volume normalization: match original episode's volume at this timestamp
-    if(episodeAudioBuf && timeSec!=null){
-      try{
-        const patchBuf=await blobToAudioBuf(blob);
-        normalizeVolume(patchBuf, episodeAudioBuf, timeSec);
-        blob=audioBufToBlob(patchBuf);
-        console.log(`Take ${ti+1}: volume normalized to match original at ${timeSec}s`);
-      }catch(e){ console.warn('Volume normalization failed:',e); }
-    }
 
     await dbSetBlob(`${chapId}_r${ri}_t${ti}`,blob);
     st.takes[ti]=URL.createObjectURL(blob);
