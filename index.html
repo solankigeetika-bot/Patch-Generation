@@ -846,7 +846,8 @@ function renderSEShowDetail(group){
         </table>
       </div>
       <div class="se-actions">
-        <button class="btn btn-p btn-sm" onclick="event.stopPropagation();downloadAllPatches('${chapId}')" style="font-size:10px">⬇ Download All Patches</button>
+        <button class="btn btn-p btn-sm" onclick="event.stopPropagation();downloadAllPatches('${chapId}')" style="font-size:10px">⬇ Download All Patches (Combined WAV)</button>
+        <button class="btn btn-p btn-sm" onclick="event.stopPropagation();downloadAllIndividual('${chapId}')" style="font-size:10px">⬇ Download All MP3s</button>
         ${ep.stitchedUrl?'<a class="se-dl" href="'+ep.stitchedUrl+'" download="stitched_'+chapId+'.wav">⬇ Stitched WAV</a>':''}
         <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
           <label style="font-family:var(--mono);font-size:10px;display:flex;align-items:center;gap:4px;cursor:pointer">
@@ -909,6 +910,23 @@ async function downloadAllPatches(chapId){
     toast('Failed to combine: '+e.message,'err');
     console.error(e);
   }
+}
+
+async function downloadAllIndividual(chapId){
+  const seData=getSEData();
+  const ep=seData[chapId];
+  if(!ep?.patches?.length){toast('No patches to download','warn');return;}
+  const patchesWithAudio=ep.patches.filter(p=>p.audioBase64);
+  if(!patchesWithAudio.length){toast('No audio available','warn');return;}
+  const epName=(ep.title||'Episode').replace(/[^a-zA-ZÀ-ÿ0-9 ]/g,'').replace(/ /g,'_');
+  for(const p of patchesWithAudio){
+    const a=document.createElement('a');
+    a.href=p.audioBase64;
+    a.download=epName+'_'+(p.time||'').replace(/:/g,'m')+'s_'+(p.scriptLine||'').substring(0,30).replace(/[^a-zA-ZÀ-ÿ0-9 ]/g,'').replace(/ /g,'_')+'.mp3';
+    document.body.appendChild(a);a.click();document.body.removeChild(a);
+    await sleep(300);
+  }
+  toast('Downloaded '+patchesWithAudio.length+' individual patches','ok');
 }
 
 function saveSEData(chapId, title, patchesData, stitchedUrl){
