@@ -1346,8 +1346,9 @@ async function genTakes(ri){
   const timeSec=parseTime(remarks[ri].time);
   const speed=estimateSpeed(episodeAudioBuf, timeSec);
 
-  // Use the raw script line for now (context can cause API failures with special chars)
-  const cleanLine=line.trim();
+  // Clean the script line — take first meaningful line, remove problematic chars
+  const cleanLine=line.split('\n').map(l=>l.trim()).filter(l=>l.length>3)[0]||line.trim();
+  console.log('Generating with text:', cleanLine.substring(0,80));
 
   await Promise.allSettled([0,1,2].map(ti=>genOneTake(cleanLine,ri,ti,chapId,speed,timeSec)));
   st.status=st.takes.some(t=>t)?'done':'error';
