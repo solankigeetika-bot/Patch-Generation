@@ -682,17 +682,22 @@ function toggleSEEp(chapId){
   if(el) el.classList.toggle('expanded');
 }
 
+let seActiveShowId=null; // which show is expanded in SE panel
+
+function pct(n,d){ return d>0?Math.round(n/d*100):0; }
+function pctBar(val,color){ return `<div style="height:4px;background:var(--border);border-radius:2px;overflow:hidden;margin-top:3px"><div style="height:100%;width:${val}%;background:${color};border-radius:2px"></div></div>`; }
+
 function renderSEPanel(){
   const seData=getSEData();
   const epIds=Object.keys(seData);
 
-  // Pipeline counts
+  // Global pipeline counts
   let totalPatches=0, reviewedPatches=0, stitchedPatches=0, qcDoneEps=0, uploadedEps=0;
   epIds.forEach(id=>{
     const ep=seData[id];
     const patches=ep.patches||[];
     totalPatches+=patches.length;
-    reviewedPatches+=patches.length; // all patches in SE are already accepted/reviewed
+    reviewedPatches+=patches.length;
     stitchedPatches+=patches.filter(p=>p.stitched==='yes').length;
     if(ep.qcDone) qcDoneEps++;
     if(ep.uploadedCMS) uploadedEps++;
@@ -703,8 +708,8 @@ function renderSEPanel(){
       <div class="sum-card"><div class="sum-val">${totalPatches}</div><div class="sum-lbl">Patches Required</div></div>
       <div class="sum-card sc-accent"><div class="sum-val">${reviewedPatches}</div><div class="sum-lbl">Reviewed</div></div>
       <div class="sum-card sc-green"><div class="sum-val">${stitchedPatches}</div><div class="sum-lbl">Stitched</div></div>
-      <div class="sum-card sc-purple"><div class="sum-val">${qcDoneEps}</div><div class="sum-lbl">Episodes QC Done</div></div>
-      <div class="sum-card sc-orange"><div class="sum-val">${uploadedEps}</div><div class="sum-lbl">Uploaded to CMS</div></div>
+      <div class="sum-card sc-purple"><div class="sum-val">${qcDoneEps}</div><div class="sum-lbl">Eps QC Done</div></div>
+      <div class="sum-card sc-orange"><div class="sum-val">${uploadedEps}</div><div class="sum-lbl">Uploaded</div></div>
     </div>
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:10px 16px;margin-bottom:14px;display:flex;align-items:center;gap:16px;flex-wrap:wrap">
       <div style="font-family:var(--mono);font-size:10px;color:var(--muted)">Pipeline:</div>
@@ -721,16 +726,85 @@ function renderSEPanel(){
       </div>
     </div>`;
 
-  if(!epIds.length){
+  if(!shows.length&&!epIds.length){
     document.getElementById('seList').innerHTML=`<div class="empty"><div class="empty-icon">🎧</div><div class="empty-title">No episodes processed yet</div><div class="empty-sub">Load a show → open an episode → generate & accept patches → they'll appear here</div></div>`;
     return;
   }
 
-  document.getElementById('seList').innerHTML=epIds.map(chapId=>{
+  // Group episodes by show
+  const showGroups={};
+  shows.forEach(s=>{ showGroups[s.showInput||s.id]={show:s, episodes:[]}; });
+  epIds.forEach(chapId=>{
     const ep=seData[chapId];
+    const showId=ep.showId||'unknown';
+    if(!showGroups[showId]) showGroups[showId]={show:{name:'Unknown Show',showInput:showId}, episodes:[]};
+    showGroups[showId].episodes.push({chapId,...ep});
+  });
+
+  // If a show is selected, show its episodes detail
+  if(seActiveShowId && showGroups[seActiveShowId]){
+    renderSEShowDetail(showGroups[seActiveShowId]);
+    return;
+  }
+
+  // Show cards view
+  document.getElementById('seList').innerHTML=`<div class="dash-grid">${Object.entries(showGroups).map(([showId,group])=>{
+    const eps=group.episodes;
+    if(!eps.length) return '';
+    const totalP=eps.reduce((s,e)=>(e.patches?.length||0)+s,0);
+    const stitchedP=eps.reduce((s,e)=>(e.patches||[]).filter(p=>p.stitched==='yes').length+s,0);
+    const qcD=eps.filter(e=>e.qcDone).length;
+    const uplD=eps.filter(e=>e.uploadedCMS).length;
+    const pReviewed=pct(totalP,totalP);
+    const pStitched=pct(stitchedP,totalP);
+    const pQC=pct(qcD,eps.length);
+    const pUploaded=pct(uplD,eps.length);
+
+    return `<div class="show-card" onclick="seActiveShowId='${esc(showId)}';renderSEPanel()">
+      <div class="sc-body">
+        <div class="sc-top">
+          <div class="sc-icon">🎧</div>
+          <div>
+            <div class="sc-name">${esc(group.show.name||showId)}</div>
+            <div class="sc-meta">${eps.length} episode${eps.length!==1?'s':''} · ${totalP} patches</div>
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:8px;margin-top:10px">
+          <div style="font-family:var(--mono);font-size:9px;color:var(--muted)">REVIEWED <span style="float:right;color:var(--accent);font-weight:700">${pReviewed}%</span></div>
+          ${pctBar(pReviewed,'var(--accent)')}
+          <div style="font-family:var(--mono);font-size:9px;color:var(--muted)">STITCHED <span style="float:right;color:var(--green);font-weight:700">${pStitched}%</span></div>
+          ${pctBar(pStitched,'var(--green)')}
+          <div style="font-family:var(--mono);font-size:9px;color:var(--muted)">QC DONE <span style="float:right;color:var(--purple);font-weight:700">${pQC}%</span></div>
+          ${pctBar(pQC,'var(--purple)')}
+          <div style="font-family:var(--mono);font-size:9px;color:var(--muted)">UPLOADED <span style="float:right;color:var(--orange);font-weight:700">${pUploaded}%</span></div>
+          ${pctBar(pUploaded,'var(--orange)')}
+        </div>
+      </div>
+    </div>`;
+  }).join('')}</div>`;
+}
+
+function renderSEShowDetail(group){
+  const eps=group.episodes;
+  const totalP=eps.reduce((s,e)=>(e.patches?.length||0)+s,0);
+  const stitchedP=eps.reduce((s,e)=>(e.patches||[]).filter(p=>p.stitched==='yes').length+s,0);
+  const qcD=eps.filter(e=>e.qcDone).length;
+  const uplD=eps.filter(e=>e.uploadedCMS).length;
+
+  let html=`<button class="back-btn" onclick="seActiveShowId=null;renderSEPanel()">← Back to all shows</button>`;
+  html+=`<div style="font-size:16px;font-weight:800;margin-bottom:14px">${esc(group.show.name||'Show')}</div>`;
+  html+=`<div class="sum-bar">
+    <div class="sum-card"><div class="sum-val">${eps.length}</div><div class="sum-lbl">Episodes</div></div>
+    <div class="sum-card"><div class="sum-val">${totalP}</div><div class="sum-lbl">Patches</div></div>
+    <div class="sum-card sc-green"><div class="sum-val">${stitchedP}/${totalP}</div><div class="sum-lbl">Stitched (${pct(stitchedP,totalP)}%)</div></div>
+    <div class="sum-card sc-purple"><div class="sum-val">${qcD}/${eps.length}</div><div class="sum-lbl">QC Done (${pct(qcD,eps.length)}%)</div></div>
+    <div class="sum-card sc-orange"><div class="sum-val">${uplD}/${eps.length}</div><div class="sum-lbl">Uploaded (${pct(uplD,eps.length)}%)</div></div>
+  </div>`;
+
+  html+=eps.map(ep=>{
+    const chapId=ep.chapId;
     const patches=ep.patches||[];
     const stitchedCount=patches.filter(p=>p.stitched==='yes').length;
-    const allStitched=patches.length>0&&stitchedCount===patches.length;
     const epCls=ep.uploadedCMS?'se-yes':ep.qcDone?'se-yes':'';
 
     return `<div class="se-ep ${epCls}" id="se-ep-${chapId}">
@@ -777,6 +851,8 @@ function renderSEPanel(){
       </div>
     </div>`;
   }).join('');
+
+  document.getElementById('seList').innerHTML=html;
 }
 
 function saveSEData(chapId, title, patchesData, stitchedUrl){
@@ -789,6 +865,7 @@ function saveSEData(chapId, title, patchesData, stitchedUrl){
   });
   const epData={
     title,
+    showId: activeShowId||seData[chapId]?.showId||'',
     patches:mergedPatches,
     stitchedUrl: stitchedUrl||seData[chapId]?.stitchedUrl||null,
     qcDone: seData[chapId]?.qcDone||false,
