@@ -624,9 +624,8 @@ function renderEpCards(){
   const filtered=sorted.filter((ep,i)=>{
     const cd=ep.chapter_details||ep;
     const title=(cd.chapter_title||ep.chapter_title||'').toLowerCase();
-    const st2=String(cd.audio_status||ep.audio_available||'').toLowerCase();
-    const qc=st2.includes('issue')||st2.includes('qc');
-    if(epFilterMode==='qc'&&!qc) return false;
+    const hasQC=cd.hasQC||cd.qcCount>0||String(cd.audio_status||'').includes('issue');
+    if(epFilterMode==='qc'&&!hasQC) return false;
     if(epFilter&&!title.includes(epFilter)&&!String(ep.natural_sequence_number).includes(epFilter)) return false;
     return true;
   });
@@ -636,17 +635,18 @@ function renderEpCards(){
 
   el.innerHTML=filtered.map((ep)=>{
     const cd=ep.chapter_details||ep;
-    const st2=cd.audio_status||ep.audio_available||'';
-    const qc=String(st2).includes('issue')||String(st2).includes('qc');
+    const hasQC=cd.hasQC||cd.qcCount>0||String(cd.audio_status||'').includes('issue');
+    const qcCount=cd.qcCount||0;
     const cid=cd.chapter_id||ep.chapter_id||'';
     const title=cd.chapter_title||ep.chapter_title||'Episode';
     const dur=ep.audio_duration||cd.audio_duration||0;
     const seq=ep.natural_sequence_number||(cd.seq_number)||'';
-    return `<div class="ep-card" onclick="loadChapter('${cid}',0)">
+    const statusText=hasQC?`${qcCount} QC issue${qcCount!==1?'s':''}`:String(cd.audio_status||'').replace(/_/g,' ');
+    return `<div class="ep-card" onclick="loadChapter('${cid}',0)" style="${hasQC?'border-left:3px solid var(--orange)':''}">
       <div class="ep-num">${seq?'#'+seq:''}</div>
       <div class="ep-info">
-        <div class="ep-name">${esc(title)}${qc?'<span class="ep-badge">QC</span>':''}</div>
-        <div class="ep-dur">${dur?fmtDur(dur):''} ${String(st2).replace(/_/g,' ')}</div>
+        <div class="ep-name">${esc(title)}${hasQC?'<span class="ep-badge">'+qcCount+' QC</span>':''}</div>
+        <div class="ep-dur">${dur?fmtDur(dur):''} ${statusText!=='pending'?statusText:''}</div>
       </div>
     </div>`;
   }).join('');
@@ -1000,13 +1000,42 @@ async function loadShow(directInput, forceRefresh){
     }
 
     episodes = eps;
-    // Count QC episodes
-    const qcCount = eps.filter(ep=>{const cd=ep.chapter_details||ep;const st=cd.audio_status||ep.audio_available||'';return String(st).includes('issue')||String(st).includes('qc');}).length;
-    // Save stats + episode list to Firebase so others can see without CMS login
+
+    // Bulk-load episode details to detect QC issues (batches of 5)
+    setStatus('load', 'Checking QC status...');
+    document.getElementById('showEpList').innerHTML=`<div class="empty"><div class="empty-icon">🔍</div><div class="empty-title">Checking QC status...</div><div class="empty-sub" id="bulkProgress">0/${eps.length} episodes</div></div>`;
+    let qcCount=0;
+    const BATCH=5;
+    for(let b=0; b<eps.length; b+=BATCH){
+      const batch=eps.slice(b, b+BATCH);
+      await Promise.allSettled(batch.map(async ep=>{
+        const cd=ep.chapter_details||ep;
+        const chapId=cd.chapter_id||ep.chapter_id||'';
+        if(!chapId) return;
+        try{
+          const dr=await fetch(`${CMS_BASE}/book.episode_details?chapter_id=${chapId}&is_novel=0`,{headers:hdrs()});
+          if(!dr.ok) return;
+          const dd=await dr.json();
+          const ch=dd.result?.chapter_details;
+          if(!ch) return;
+          const qcDetails=ch.qc_details||[];
+          // Enrich the episode object with QC info
+          if(!ep.chapter_details) ep.chapter_details=cd;
+          ep.chapter_details.qcCount=qcDetails.length;
+          ep.chapter_details.hasQC=qcDetails.length>0;
+          ep.chapter_details.audio_status=ch.audio_status||cd.audio_status||'';
+          if(qcDetails.length>0) qcCount++;
+        }catch(e){}
+      }));
+      const done=Math.min(b+BATCH, eps.length);
+      const progEl=document.getElementById('bulkProgress');
+      if(progEl) progEl.textContent=`${done}/${eps.length} episodes`;
+    }
+
+    // Save stats + enriched episode list to Firebase
     if(activeShowConfig){
       activeShowConfig.stats = {...(activeShowConfig.stats||{}), total: eps.length, qc: qcCount};
       await fbDb.ref('shows/'+activeShowConfig.id+'/stats').set(activeShowConfig.stats);
-      // Save episode list (stripped to essential fields to save space)
       const epData = eps.map(ep=>{
         const cd=ep.chapter_details||ep;
         return {
@@ -1015,13 +1044,15 @@ async function loadShow(directInput, forceRefresh){
           audio_status: cd.audio_status||ep.audio_available||'',
           audio_duration: ep.audio_duration||cd.audio_duration||0,
           natural_sequence_number: ep.natural_sequence_number||cd.seq_number||0,
+          qcCount: cd.qcCount||0,
+          hasQC: cd.hasQC||false,
         };
       });
       await fbDb.ref('showEpisodes/'+activeShowId).set(epData);
     }
     renderShowView();
-    setStatus('ready', `${episodes.length} eps loaded`);
-    toast(`Loaded: ${showTitle} — ${episodes.length} episodes`, 'ok');
+    setStatus('ready', `${episodes.length} eps loaded — ${qcCount} with QC issues`);
+    toast(`Loaded: ${showTitle} — ${episodes.length} episodes, ${qcCount} with QC`, 'ok');
   }catch(e){
     setStatus('err','Error'); toast('Load failed: '+e.message,'err');
     document.getElementById('showEpList').innerHTML=`<div class="empty"><div class="empty-icon">⚠️</div><div class="empty-title">${esc(e.message)}</div></div>`;
