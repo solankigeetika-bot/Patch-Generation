@@ -1111,18 +1111,11 @@ async function loadChapter(chapId, idx){
     if(!ch) throw new Error('No chapter_details');
     activeEp=ch; activeEp.book_id = ch.book_id || ''; finalAudioUrl=null; finalAudioBlob=null; RS={};
 
-    // Auto-detect voice from CMS episode data
+    // Use show config voice (user's choice) — only auto-detect if no voice is configured
     const cmsVoice = ch.text_to_speech_details?.assigned_voice_id || '';
-    if(cmsVoice && cmsVoice !== asVoice){
+    if(cmsVoice && !activeShowConfig?.voiceId){
       asVoice = cmsVoice;
       document.getElementById('asVoiceInp').value = cmsVoice;
-      await dbSet('config','asVoice', cmsVoice);
-      // Also update the active show config
-      if(activeShowConfig){
-        activeShowConfig.voiceId = cmsVoice;
-        const idx = shows.findIndex(x=>x.id===activeShowConfig.id);
-        if(idx>=0){ shows[idx].voiceId = cmsVoice; await dbSet('config','shows', shows); }
-      }
       toast('Voice auto-set from CMS: ' + cmsVoice, 'ok');
     }
 
