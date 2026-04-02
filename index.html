@@ -1031,9 +1031,10 @@ async function loadShow(directInput, forceRefresh){
   // Try loading from Firebase cache first (no CMS login needed)
   if(!forceRefresh){
     const snap = await fbDb.ref('showEpisodes/'+activeShowId).once('value');
-    const cached = snap.val();
-    if(cached && cached.length){
-      episodes = cached.map(ep=>({chapter_details:ep, audio_duration:ep.audio_duration, natural_sequence_number:ep.natural_sequence_number}));
+    const rawCached = snap.val();
+    const cached = rawCached ? (Array.isArray(rawCached) ? rawCached : Object.values(rawCached)) : [];
+    if(cached.length){
+      episodes = cached.filter(ep=>ep).map(ep=>({chapter_details:ep, audio_duration:ep.audio_duration, natural_sequence_number:ep.natural_sequence_number}));
       document.getElementById('topTitle').textContent = activeShowConfig?.name||'Show';
       renderShowView();
       setStatus('ready', `${episodes.length} eps (cached)`);
