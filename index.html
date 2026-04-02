@@ -298,6 +298,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
     <!-- PAGE: Dashboard -->
     <div class="pg active" id="page-dashboard">
       <div id="dashSummary"></div>
+      <div id="errorSummary"></div>
       <div class="dash-grid" id="dashGrid"></div>
     </div>
     <!-- PAGE: Show View -->
@@ -582,6 +583,103 @@ function renderDashboard(){
   html+=`<div class="add-card" onclick="openAddShow()"><div class="plus">＋</div><p>Add a new show</p></div>`;
   document.getElementById('dashGrid').innerHTML=html;
   renderSidebarNav();
+  loadErrorSummary();
+}
+
+// ── Error Summary ───────────────────────────────────────────
+async function loadErrorSummary(){
+  const el=document.getElementById('errorSummary');
+  if(!el) return;
+  el.innerHTML='<div style="font-size:12px;color:var(--muted);padding:12px">Loading error summary...</div>';
+
+  try{
+    const remarksSnap=await fbDb.ref('episodeRemarks').once('value');
+    const allRemarks=remarksSnap.val()||{};
+    const epsSnap=await fbDb.ref('showEpisodes').once('value');
+    const allEps=epsSnap.val()||{};
+
+    // Build show→episodes mapping
+    const showMap={};
+    for(const s of shows){
+      const sid=s.showInput?.match(/show_id=([a-f0-9]+)/i)?.[1]||s.showInput||s.id;
+      showMap[String(s.id)]={name:s.name, showInput:sid, episodes:0, totalErrors:0, errorTypes:{}};
+    }
+
+    // Count episodes per show from showEpisodes
+    for(const [showId, eps] of Object.entries(allEps)){
+      const epArr=Array.isArray(eps)?eps:Object.values(eps||{});
+      // Find which show this belongs to
+      const match=Object.values(showMap).find(sm=>sm.showInput===showId);
+      if(match) match.episodes=epArr.filter(e=>e).length;
+    }
+
+    // Aggregate error types from episodeRemarks
+    for(const [chapId, epData] of Object.entries(allRemarks)){
+      if(!epData?.remarks) continue;
+      const remarks=Array.isArray(epData.remarks)?epData.remarks:Object.values(epData.remarks||{});
+      const showId=epData.showId||'';
+      const match=Object.values(showMap).find(sm=>sm.showInput===showId);
+      const target=match||{errorTypes:{},totalErrors:0};
+
+      for(const r of remarks){
+        if(!r) continue;
+        const type=(r.issueType||'Unknown').trim();
+        if(!target.errorTypes[type]) target.errorTypes[type]=0;
+        target.errorTypes[type]++;
+        target.totalErrors++;
+      }
+      if(match){
+        match.errorTypes=target.errorTypes;
+        match.totalErrors=target.totalErrors;
+      }
+    }
+
+    // Build all unique error types
+    const allTypes=new Set();
+    for(const sm of Object.values(showMap)) for(const t of Object.keys(sm.errorTypes)) allTypes.add(t);
+    const typeArr=[...allTypes].sort();
+
+    if(!typeArr.length){
+      el.innerHTML='<div style="font-size:12px;color:var(--muted);padding:12px">No QC data available yet. Load episodes from CMS to populate error summary.</div>';
+      return;
+    }
+
+    // Render table
+    let html=`<div style="margin:16px 0">
+      <div style="font-size:14px;font-weight:800;margin-bottom:10px;color:var(--text)">QC Error Summary</div>
+      <div style="overflow-x:auto">
+      <table style="width:100%;border-collapse:collapse;font-size:11px;font-family:var(--mono)">
+        <thead><tr style="background:var(--surface2);border-bottom:2px solid var(--border)">
+          <th style="padding:8px 10px;text-align:left;color:var(--text2)">Show</th>
+          <th style="padding:8px 10px;text-align:center;color:var(--text2)">Episodes</th>
+          <th style="padding:8px 10px;text-align:center;color:var(--text2)">Total Errors</th>
+          ${typeArr.map(t=>`<th style="padding:8px 10px;text-align:center;color:var(--text2)">${esc(t)}</th>`).join('')}
+        </tr></thead>
+        <tbody>`;
+
+    for(const sm of Object.values(showMap)){
+      html+=`<tr style="border-bottom:1px solid var(--border)">
+        <td style="padding:8px 10px;font-weight:600;color:var(--text)">${esc(sm.name)}</td>
+        <td style="padding:8px 10px;text-align:center">${sm.episodes||'—'}</td>
+        <td style="padding:8px 10px;text-align:center;font-weight:700;color:var(--orange)">${sm.totalErrors||0}</td>
+        ${typeArr.map(t=>`<td style="padding:8px 10px;text-align:center;${sm.errorTypes[t]?'color:var(--red);font-weight:700':''}">${sm.errorTypes[t]||0}</td>`).join('')}
+      </tr>`;
+    }
+
+    // Totals row
+    html+=`<tr style="border-top:2px solid var(--border);background:var(--surface2);font-weight:800">
+      <td style="padding:8px 10px">TOTAL</td>
+      <td style="padding:8px 10px;text-align:center">${Object.values(showMap).reduce((s,m)=>s+(m.episodes||0),0)}</td>
+      <td style="padding:8px 10px;text-align:center;color:var(--orange)">${Object.values(showMap).reduce((s,m)=>s+m.totalErrors,0)}</td>
+      ${typeArr.map(t=>`<td style="padding:8px 10px;text-align:center;color:var(--red)">${Object.values(showMap).reduce((s,m)=>s+(m.errorTypes[t]||0),0)}</td>`).join('')}
+    </tr>`;
+
+    html+=`</tbody></table></div></div>`;
+    el.innerHTML=html;
+  }catch(e){
+    console.error('Error summary failed:',e);
+    el.innerHTML='<div style="font-size:12px;color:var(--red);padding:12px">Failed to load error summary: '+e.message+'</div>';
+  }
 }
 
 // ── Show View (episodes list) ───────────────────────────────
