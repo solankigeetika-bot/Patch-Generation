@@ -869,31 +869,38 @@ async function downloadAllPatches(chapId){
   const seData=getSEData();
   const ep=seData[chapId];
   if(!ep?.patches?.length){toast('No patches to download','warn');return;}
-  const patchesWithAudio=ep.patches.filter(p=>p.audioBase64);
+  const patchesWithAudio=ep.patches.filter(p=>p.audioBase64&&p.time);
   if(!patchesWithAudio.length){toast('No audio available','warn');return;}
-  toast('Combining '+patchesWithAudio.length+' patches...','ok');
+  toast('Placing '+patchesWithAudio.length+' patches at timestamps...','ok');
 
   try{
-    // Decode all patches
-    const buffers=[];
+    // Decode all patches and parse their timestamps
+    const items=[];
     for(const p of patchesWithAudio){
       const resp=await fetch(p.audioBase64);
       const blob=await resp.blob();
       const buf=await blobToAudioBuf(blob);
-      buffers.push(buf);
+      const startSec=parseTime(p.time);
+      items.push({buf, startSec});
     }
+    // Sort by timestamp
+    items.sort((a,b)=>a.startSec-b.startSec);
 
     // Get target sample rate and channels from first buffer
-    const sr=buffers[0].sampleRate, ch=buffers[0].numberOfChannels;
-    // Add 0.3s silence between patches
-    const silenceLen=Math.floor(0.3*sr);
-    const totalLen=buffers.reduce((s,b)=>s+b.length+silenceLen,0);
+    const sr=items[0].buf.sampleRate, ch=items[0].buf.numberOfChannels;
+
+    // Calculate total length: last patch start + its duration
+    const lastItem=items[items.length-1];
+    const totalSec=lastItem.startSec+lastItem.buf.duration+0.5;
+    const totalLen=Math.ceil(totalSec*sr);
+
     const outCtx=new OfflineAudioContext(ch,totalLen,sr);
-    let cursor=0;
-    for(const buf of buffers){
-      const matched=matchBuf(buf,sr,ch);
-      const src=outCtx.createBufferSource();src.buffer=matched;src.connect(outCtx.destination);src.start(cursor/sr);
-      cursor+=buf.length+silenceLen;
+    for(const item of items){
+      const matched=matchBuf(item.buf,sr,ch);
+      const src=outCtx.createBufferSource();
+      src.buffer=matched;
+      src.connect(outCtx.destination);
+      src.start(item.startSec);
     }
     const rendered=await outCtx.startRendering();
     const wav=bufToWav(rendered);
@@ -904,7 +911,7 @@ async function downloadAllPatches(chapId){
     a.href=url;
     a.download='all_patches_'+(ep.title||'episode').replace(/[^a-zA-ZÀ-ÿ0-9 ]/g,'').replace(/ /g,'_')+'.wav';
     document.body.appendChild(a);a.click();document.body.removeChild(a);
-    toast('Downloaded combined patches','ok');
+    toast('Downloaded patches at timestamps','ok');
   }catch(e){
     toast('Failed to combine: '+e.message,'err');
     console.error(e);
