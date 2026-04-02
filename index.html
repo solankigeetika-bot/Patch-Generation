@@ -657,21 +657,24 @@ async function loadErrorSummary(){
         </tr></thead>
         <tbody>`;
 
+    const pctFn=(n,total)=>total?Math.round(n/total*100):0;
+
     for(const sm of Object.values(showMap)){
       html+=`<tr style="border-bottom:1px solid var(--border)">
         <td style="padding:8px 10px;font-weight:600;color:var(--text)">${esc(sm.name)}</td>
         <td style="padding:8px 10px;text-align:center">${sm.episodes||'—'}</td>
         <td style="padding:8px 10px;text-align:center;font-weight:700;color:var(--orange)">${sm.totalErrors||0}</td>
-        ${typeArr.map(t=>`<td style="padding:8px 10px;text-align:center;${sm.errorTypes[t]?'color:var(--red);font-weight:700':''}">${sm.errorTypes[t]||0}</td>`).join('')}
+        ${typeArr.map(t=>{const c=sm.errorTypes[t]||0;const p=pctFn(c,sm.totalErrors);return `<td style="padding:8px 10px;text-align:center;${c?'color:var(--red);font-weight:700':''}">${c}${c?` <span style="font-weight:400;font-size:9px;color:var(--muted)">(${p}%)</span>`:''}</td>`;}).join('')}
       </tr>`;
     }
 
     // Totals row
+    const grandTotal=Object.values(showMap).reduce((s,m)=>s+m.totalErrors,0);
     html+=`<tr style="border-top:2px solid var(--border);background:var(--surface2);font-weight:800">
       <td style="padding:8px 10px">TOTAL</td>
       <td style="padding:8px 10px;text-align:center">${Object.values(showMap).reduce((s,m)=>s+(m.episodes||0),0)}</td>
-      <td style="padding:8px 10px;text-align:center;color:var(--orange)">${Object.values(showMap).reduce((s,m)=>s+m.totalErrors,0)}</td>
-      ${typeArr.map(t=>`<td style="padding:8px 10px;text-align:center;color:var(--red)">${Object.values(showMap).reduce((s,m)=>s+(m.errorTypes[t]||0),0)}</td>`).join('')}
+      <td style="padding:8px 10px;text-align:center;color:var(--orange)">${grandTotal}</td>
+      ${typeArr.map(t=>{const c=Object.values(showMap).reduce((s,m)=>s+(m.errorTypes[t]||0),0);const p=pctFn(c,grandTotal);return `<td style="padding:8px 10px;text-align:center;color:var(--red)">${c} <span style="font-weight:400;font-size:9px;color:var(--muted)">(${p}%)</span></td>`;}).join('')}
     </tr>`;
 
     html+=`</tbody></table></div></div>`;
