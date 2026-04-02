@@ -8,6 +8,7 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/lamejs/1.2.1/lame.all.js"></script>
 <style>
 :root {
   --bg:#f7f8fa;--surface:#fff;--surface2:#f1f3f6;--surface3:#e8ecf2;
@@ -846,8 +847,7 @@ function renderSEShowDetail(group){
         </table>
       </div>
       <div class="se-actions">
-        <button class="btn btn-p btn-sm" onclick="event.stopPropagation();downloadAllPatches('${chapId}')" style="font-size:10px">⬇ Download All Patches (Combined WAV)</button>
-        <button class="btn btn-p btn-sm" onclick="event.stopPropagation();downloadAllIndividual('${chapId}')" style="font-size:10px">⬇ Download All MP3s</button>
+        <button class="btn btn-p btn-sm" onclick="event.stopPropagation();downloadAllPatches('${chapId}')" style="font-size:10px">⬇ Download All Patches (MP3)</button>
         ${ep.stitchedUrl?'<a class="se-dl" href="'+ep.stitchedUrl+'" download="stitched_'+chapId+'.wav">⬇ Stitched WAV</a>':''}
         <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
           <label style="font-family:var(--mono);font-size:10px;display:flex;align-items:center;gap:4px;cursor:pointer">
@@ -897,15 +897,15 @@ async function downloadAllPatches(chapId){
       cursor+=buf.length+silenceLen;
     }
     const rendered=await outCtx.startRendering();
-    const wav=bufToWav(rendered);
-    const url=URL.createObjectURL(wav);
+    const mp3=bufToMp3(rendered);
+    const url=URL.createObjectURL(mp3);
 
     // Trigger download
     const a=document.createElement('a');
     a.href=url;
-    a.download='all_patches_'+(ep.title||'episode').replace(/[^a-zA-ZÀ-ÿ0-9 ]/g,'').replace(/ /g,'_')+'.wav';
+    a.download='all_patches_'+(ep.title||'episode').replace(/[^a-zA-ZÀ-ÿ0-9 ]/g,'').replace(/ /g,'_')+'.mp3';
     document.body.appendChild(a);a.click();document.body.removeChild(a);
-    toast('Downloaded combined patches WAV','ok');
+    toast('Downloaded combined patches MP3','ok');
   }catch(e){
     toast('Failed to combine: '+e.message,'err');
     console.error(e);
@@ -1913,6 +1913,26 @@ function bufToWav(buf){
     v.setInt16(o,s<0?s*0x8000:s*0x7FFF,true);o+=2;
   }
   return new Blob([ab],{type:'audio/wav'});
+}
+function bufToMp3(buf){
+  const sr=buf.sampleRate,ch=buf.numberOfChannels,len=buf.length;
+  const kbps=128,mp3enc=new lamejs.Mp3Encoder(ch,sr,kbps);
+  const sampleBlockSize=1152,mp3Data=[];
+  // Convert float32 to int16
+  const left=new Int16Array(len),right=ch>1?new Int16Array(len):null;
+  for(let i=0;i<len;i++){
+    left[i]=Math.max(-32768,Math.min(32767,Math.floor(buf.getChannelData(0)[i]*32767)));
+    if(right) right[i]=Math.max(-32768,Math.min(32767,Math.floor(buf.getChannelData(1)[i]*32767)));
+  }
+  for(let i=0;i<len;i+=sampleBlockSize){
+    const l=left.subarray(i,i+sampleBlockSize);
+    const r=right?right.subarray(i,i+sampleBlockSize):l;
+    const mp3buf=mp3enc.encodeBuffer(l,r);
+    if(mp3buf.length>0) mp3Data.push(mp3buf);
+  }
+  const end=mp3enc.flush();
+  if(end.length>0) mp3Data.push(end);
+  return new Blob(mp3Data,{type:'audio/mp3'});
 }
 
 // ── UI ───────────────────────────────────────────────────────
