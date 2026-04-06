@@ -621,31 +621,35 @@ async function loadErrorSummary(){
     }
 
     // Count episodes per show and find max episode with QC/ready-to-master
+    // Build chapId→seq mapping from showEpisodes
+    const chapSeqMap={};
     for(const [showId, eps] of Object.entries(allEps)){
       const epArr=Array.isArray(eps)?eps:Object.values(eps||{});
       const match=Object.values(showMap).find(sm=>sm.showInput===showId);
       if(match){
         const validEps=epArr.filter(e=>e);
         match.episodes=validEps.length;
-        // Find highest ep number with QC or ready_to_master
         for(const ep of validEps){
-          const seq=ep.natural_sequence_number||ep.seq_number||0;
-          const hasQC=ep.hasQC||ep.qcCount>0;
-          const isReady=String(ep.audio_status||'').includes('ready')||String(ep.audio_status||'').includes('master');
-          if((hasQC||isReady)&&seq>match.qcTillEp) match.qcTillEp=seq;
+          if(ep.chapter_id) chapSeqMap[ep.chapter_id]=ep.natural_sequence_number||ep.seq_number||0;
         }
       }
     }
 
-    // Aggregate error types from episodeRemarks
+    // Aggregate error types from episodeRemarks and find QC'd Till Ep
     for(const [chapId, epData] of Object.entries(allRemarks)){
       if(!epData?.remarks) continue;
       const remarks=Array.isArray(epData.remarks)?epData.remarks:Object.values(epData.remarks||{});
+      if(!remarks.length) continue;
       const showId=epData.showId||'';
       const match=Object.values(showMap).find(sm=>sm.showInput===showId);
-      const target=match||{errorTypes:{},totalErrors:0,epWithQC:0};
+      const target=match||{errorTypes:{},totalErrors:0,epWithQC:0,qcTillEp:0};
 
-      if(remarks.length>0 && match) match.epWithQC++;
+      if(match){
+        match.epWithQC++;
+        // Find episode sequence number from cached episodes
+        const seq=chapSeqMap[chapId]||0;
+        if(seq>match.qcTillEp) match.qcTillEp=seq;
+      }
 
       for(const r of remarks){
         if(!r) continue;
@@ -956,7 +960,7 @@ function renderShowView(){
       <input class="inp" id="epSearch" placeholder="Search episodes..." style="max-width:260px;font-size:11px" oninput="epFilter=this.value.toLowerCase();renderEpCards()" value="${esc(epFilter)}"/>
       <button class="btn btn-sm ${epFilterMode==='all'?'btn-p':'btn-g'}" onclick="epFilterMode='all';renderShowView()">All</button>
       <button class="btn btn-sm ${epFilterMode==='qc'?'btn-orange':'btn-g'}" onclick="epFilterMode='qc';renderShowView()">QC Only</button>
-      ${authToken?`<button class="btn btn-sm btn-g" onclick="loadShow(activeShowConfig?.showInput,true)" style="font-size:10px">🔄 Refresh QC Data</button>`:''}
+      <button class="btn btn-sm btn-g" onclick="loadShow(activeShowConfig?.showInput,true)" style="font-size:10px">🔄 Refresh QC Data</button>
       <span style="font-family:var(--mono);font-size:10px;color:var(--muted);margin-left:auto" id="epFilterCount"></span>
     </div>`;
 
