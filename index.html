@@ -420,6 +420,7 @@ window.onload = async () => {
   if(savedShow) document.getElementById('showInp').value=savedShow;
   await initShows();
   initSESync();
+  initDictSync();
 
   if(_paramT && _paramU) toast('CMS credentials received automatically!','ok');
 };
@@ -478,6 +479,7 @@ function hdrs(){
 // ── Show Management ──────────────────────────────────────────
 let shows = [];
 let activeShowConfig = null;
+let _dictCache = {}; // {chapId_remarkIdx: {word, phonetic, classification, ...}}
 
 async function initShows(){
   // Real-time listener: whenever any client writes shows, everyone gets updated
@@ -719,54 +721,25 @@ async function renderDictionary(){
   conEl.innerHTML='';
 
   try{
-    const remarksSnap=await fbDb.ref('episodeRemarks').once('value');
-    const allRemarks=remarksSnap.val()||{};
+    // Load from Firebase dictionary collection (manually added entries)
+    const dictSnap=await fbDb.ref('dictionary').once('value');
+    const dictEntries=dictSnap.val()||{};
 
-    // Extract mispronunciation entries grouped by show
     const dictByShow={};
     const allWords=[];
 
-    for(const [chapId, epData] of Object.entries(allRemarks)){
-      if(!epData?.remarks) continue;
-      const remarks=Array.isArray(epData.remarks)?epData.remarks:Object.values(epData.remarks||{});
-      const showId=epData.showId||'unknown';
-      const showConfig=shows.find(s=>{
-        const sid=s.showInput?.match(/show_id=([a-f0-9]+)/i)?.[1]||s.showInput||'';
-        return sid===showId;
-      });
-      const showName=showConfig?.name||showId;
+    for(const [key, d] of Object.entries(dictEntries)){
+      if(!d||!d.word) continue;
+      const showName=d.show||'Unknown';
       if(!dictByShow[showName]) dictByShow[showName]={entries:[], epSet:new Set()};
-
-      for(const r of remarks){
-        if(!r||!r.issueType) continue;
-        const isMisp=r.issueType.toLowerCase().includes('misp');
-        if(!isMisp) continue;
-
-        dictByShow[showName].epSet.add(chapId);
-
-        // Extract word from "Word: xyz" or "Word : "xyz""
-        const raw=r.rawRemarks||'';
-        let word='';
-        const wm=raw.match(/[Ww]ord\s*[:\-]\s*["\u201c\u00ab]?\s*([^"\u201d\u00bb\n;]+)/);
-        if(wm) word=wm[1].replace(/["\u201d\u00bb\u201c\u00ab]/g,'').trim();
-
-        // Phonetic = from QC note (how QC agent says it should be pronounced)
-        let phonetic=r.note||'';
-        // Try to extract specific correction from note
-        const pm=phonetic.match(/(?:remove|replace|change|correct|should\s+be|pronounced?)\s*[:\-]?\s*["\u201c]?([^"\u201d\n]+)/i);
-        if(pm) phonetic=pm[1].trim();
-
-        const classification=classifyWord(word, r.scriptLine||'', r.note||'');
-
-        const entry={
-          show:showName, episode:epData.title||chapId, time:r.time||'',
-          word, phonetic, classification,
-          scriptLine:r.scriptLine||'', note:r.note||'',
-          agent:r.userEmail||'', rawRemarks:raw
-        };
-        dictByShow[showName].entries.push(entry);
-        allWords.push(entry);
-      }
+      dictByShow[showName].epSet.add(d.episodeId||key);
+      const entry={
+        show:showName, episode:d.episode||'', time:d.time||'',
+        word:d.word, phonetic:d.phonetic||'', classification:d.classification||classifyWord(d.word,'',''),
+        note:d.note||'', agent:d.agent||''
+      };
+      dictByShow[showName].entries.push(entry);
+      allWords.push(entry);
     }
 
     // ── SUMMARY TABLE ──
@@ -901,6 +874,42 @@ function renderDictTable(entries){
   }
   html+=`</tbody></table></div>`;
   el.innerHTML=html;
+}
+
+// ── Dictionary: Add from QC card ──
+function initDictSync(){
+  fbDb.ref('dictionary').on('value', snap=>{
+    _dictCache=snap.val()||{};
+  });
+}
+
+async function addToDict(ri){
+  if(!activeEp) return;
+  const wordEl=document.getElementById('dw-'+ri);
+  const phoneticEl=document.getElementById('dp-'+ri);
+  const word=(wordEl?.value||'').trim();
+  const phonetic=(phoneticEl?.value||'').trim();
+  if(!word){toast('Enter the mispronounced word','warn');return;}
+  if(!phonetic){toast('Enter the phonetically correct spelling','warn');return;}
+
+  const r=remarks[ri];
+  const chapId=activeEp.chapter_id;
+  const key=`${chapId}_${ri}`;
+  const classification=classifyWord(word, r?.scriptLine||'', r?.note||'');
+  const entry={
+    word, phonetic, classification,
+    show:activeShowConfig?.name||'',
+    showId:activeShowId||'',
+    episode:activeEp.chapter_title||'',
+    episodeId:chapId,
+    time:r?.time||'',
+    agent:r?.userEmail||'',
+    note:r?.note||'',
+    addedAt:Date.now()
+  };
+  await fbDb.ref('dictionary/'+key).set(entry);
+  toast(`"${word}" added to dictionary`,'ok');
+  refreshCard(ri);
 }
 
 function downloadDictCSV(){
@@ -1693,16 +1702,27 @@ function renderContent(){
   mc.innerHTML=html;
 }
 
+function extractWord(raw){
+  const wm=(raw||'').match(/[Ww]ord\s*[:\-]\s*["\u201c\u00ab]?\s*([^"\u201d\u00bb\n;]+)/);
+  return wm?wm[1].replace(/["\u201d\u00bb\u201c\u00ab]/g,'').trim():'';
+}
+
 function mkCard(r){
   const st=RS[r.idx];
   const tc=r.issueType.toLowerCase().includes('misp')?'t-misp':r.issueType.toLowerCase().includes('mod')?'t-mod':'t-qual';
   const cc=st.status==='accepted'?'rc-acc':st.status==='discarded'?'rc-dis':'';
+  const isMisp=r.issueType.toLowerCase().includes('misp');
+  const mispWord=isMisp?extractWord(r.rawRemarks):'';
+  const dictKey=activeEp?`${activeEp.chapter_id}_${r.idx}`:'';
+  const savedDict=isMisp&&dictKey?(_dictCache[dictKey]||null):null;
+
   return `<div class="rc ${cc}" id="rc-${r.idx}">
     <div class="rc-hdr">
       <span class="rc-time">⏱ ${r.time}</span>
       <span class="rc-type ${tc}">${r.issueType||'QC'}</span>
       ${st.status==='accepted'?`<span class="rc-sbadge rsb-acc">✓ Take ${st.acceptedTake+1} Accepted</span>`:''}
       ${st.status==='discarded'?`<span class="rc-sbadge rsb-dis">✗ Discarded</span>`:''}
+      ${savedDict?`<span class="rc-sbadge" style="background:#E2F0D9;color:#2E7D32;border-color:#A5D6A7">📖 In Dictionary</span>`:''}
       <span class="rc-email">${r.userEmail}</span>
     </div>
     <div class="rc-body">
@@ -1711,6 +1731,20 @@ function mkCard(r){
         <div style="font-size:12px;color:var(--text2);line-height:1.6;white-space:pre-wrap">${esc(r.rawRemarks)}</div>
       </div>`:''}
       ${r.note?`<div class="note-box"><div class="note-lbl">📝 QC Direction</div><div class="note-txt">${esc(r.note)}</div></div>`:''}
+      ${isMisp?`<div style="background:#FFF8E1;border:1px solid #FFE082;border-radius:7px;padding:10px 12px;margin-bottom:12px">
+        <div style="font-family:var(--mono);font-size:9px;color:var(--muted);letter-spacing:1px;margin-bottom:6px">📖 DICTIONARY ENTRY</div>
+        <div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap">
+          <div style="flex:1;min-width:150px">
+            <div style="font-size:9px;color:var(--muted);margin-bottom:2px">Correct Spelling (from QC)</div>
+            <input type="text" id="dw-${r.idx}" value="${esc(mispWord)}" style="width:100%;padding:5px 8px;border:1px solid var(--border);border-radius:5px;font-size:12px;font-weight:700" placeholder="Mispronounced word"/>
+          </div>
+          <div style="flex:1;min-width:150px">
+            <div style="font-size:9px;color:var(--muted);margin-bottom:2px">Phonetically Correct Spelling</div>
+            <input type="text" id="dp-${r.idx}" value="${esc(savedDict?.phonetic||'')}" style="width:100%;padding:5px 8px;border:1px solid var(--border);border-radius:5px;font-size:12px;font-style:italic" placeholder="Type phonetic spelling"/>
+          </div>
+          <button class="btn ${savedDict?'btn-g':'btn-p'} btn-sm" onclick="addToDict(${r.idx})" style="font-size:10px;white-space:nowrap">${savedDict?'✓ Update':'+ Add to Dictionary'}</button>
+        </div>
+      </div>`:''}
       <div style="margin-bottom:12px">
         <div class="script-lbl">Script Line <span class="edit-hint">✏ Click to edit</span></div>
         ${r.needsPatch
