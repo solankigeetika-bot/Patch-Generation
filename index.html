@@ -678,6 +678,7 @@ async function loadErrorSummary(){
         <thead><tr style="background:var(--surface2);border-bottom:2px solid var(--border)">
           <th style="padding:8px 10px;text-align:left;color:var(--text2)">Show</th>
           <th style="padding:8px 10px;text-align:center;color:var(--text2)">Episodes</th>
+          <th style="padding:8px 10px;text-align:center;color:var(--text2);background:#E8F5E9">QC'd Till Ep</th>
           <th style="padding:8px 10px;text-align:center;color:var(--text2)">Total Errors</th>
           ${typeArr.map(t=>`<th style="padding:8px 10px;text-align:center;color:var(--text2)">${esc(t)}</th>`).join('')}
         </tr></thead>
@@ -689,6 +690,7 @@ async function loadErrorSummary(){
       html+=`<tr style="border-bottom:1px solid var(--border)">
         <td style="padding:8px 10px;font-weight:600;color:var(--text)">${esc(sm.name)}</td>
         <td style="padding:8px 10px;text-align:center">${sm.episodes||'—'}</td>
+        <td style="padding:8px 10px;text-align:center;font-weight:700;color:var(--green);background:#E8F5E9">${sm.qcTillEp||'—'}</td>
         <td style="padding:8px 10px;text-align:center;font-weight:700;color:var(--orange)">${sm.totalErrors||0}</td>
         ${typeArr.map(t=>{const c=sm.errorTypes[t]||0;const p=pctFn(c,sm.totalErrors);return `<td style="padding:8px 10px;text-align:center;${c?'color:var(--red);font-weight:700':''}">${c}${c?` <span style="font-weight:400;font-size:9px;color:var(--muted)">(${p}%)</span>`:''}</td>`;}).join('')}
       </tr>`;
@@ -699,24 +701,9 @@ async function loadErrorSummary(){
     html+=`<tr style="border-top:2px solid var(--border);background:var(--surface2);font-weight:800">
       <td style="padding:8px 10px">TOTAL</td>
       <td style="padding:8px 10px;text-align:center">${Object.values(showMap).reduce((s,m)=>s+(m.episodes||0),0)}</td>
+      <td style="padding:8px 10px;text-align:center;background:#E8F5E9"></td>
       <td style="padding:8px 10px;text-align:center;color:var(--orange)">${grandTotal}</td>
       ${typeArr.map(t=>{const c=Object.values(showMap).reduce((s,m)=>s+(m.errorTypes[t]||0),0);const p=pctFn(c,grandTotal);return `<td style="padding:8px 10px;text-align:center;color:var(--red)">${c} <span style="font-weight:400;font-size:9px;color:var(--muted)">(${p}%)</span></td>`;}).join('')}
-    </tr>`;
-
-    // QC'd Till Ep row
-    html+=`<tr style="background:#E8F5E9;font-weight:700;font-size:10px">
-      <td style="padding:6px 10px;color:var(--green)">QC'd Till Ep</td>
-      <td style="padding:6px 10px;text-align:center"></td>
-      <td style="padding:6px 10px;text-align:center"></td>
-      ${typeArr.map(()=>'<td style="padding:6px 10px"></td>').join('')}
-    </tr>`;
-    // Per-show QC'd Till Ep as a separate info row
-    html+=`<tr style="background:#E8F5E9;font-size:10px;color:var(--text2)">
-      <td colspan="${3+typeArr.length}" style="padding:6px 10px">
-        ${Object.values(showMap).filter(sm=>sm.qcTillEp>0||sm.epWithQC>0).map(sm=>
-          `<span style="margin-right:16px"><strong>${esc(sm.name)}:</strong> Ep ${sm.qcTillEp||'—'} (${sm.epWithQC} eps with QC)</span>`
-        ).join('')||'No QC data yet'}
-      </td>
     </tr>`;
 
     html+=`</tbody></table></div></div>`;
