@@ -254,6 +254,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
     <label class="fl">Navigation</label>
     <button class="btn btn-g btn-sm" onclick="goPage('dashboard')" style="width:100%;margin-bottom:4px;justify-content:flex-start">🏠 Dashboard</button>
     <button class="btn btn-g btn-sm" onclick="goPage('se')" style="width:100%;margin-bottom:4px;justify-content:flex-start">🎧 SE Panel</button>
+    <button class="btn btn-g btn-sm" onclick="goPage('dict')" style="width:100%;margin-bottom:4px;justify-content:flex-start">📖 Dictionary</button>
     <div id="sbShowNav"></div>
   </div>
 
@@ -310,6 +311,11 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
     <div class="pg" id="page-se">
       <div id="seSummary"></div>
       <div id="seList"></div>
+    </div>
+    <!-- PAGE: Dictionary -->
+    <div class="pg" id="page-dict">
+      <div id="dictSummary"></div>
+      <div id="dictContent"></div>
     </div>
     <!-- PAGE: Episode View -->
     <div class="pg" id="page-episode">
@@ -517,6 +523,12 @@ function goPage(name){
     genBtn.style.display='none';
     stitchBtn.style.display='none';
     renderSEPanel();
+  } else if(name==='dict'){
+    back.style.display='inline-flex';
+    document.getElementById('topTitle').textContent='Mispronunciation Dictionary';
+    genBtn.style.display='none';
+    stitchBtn.style.display='none';
+    renderDictionary();
   } else if(name==='episode'){
     back.style.display='inline-flex';
     genBtn.style.display='inline-flex';
@@ -528,6 +540,7 @@ function goBack(){
   if(currentPage==='episode') goPage('show');
   else if(currentPage==='show') goPage('dashboard');
   else if(currentPage==='se') goPage('dashboard');
+  else if(currentPage==='dict') goPage('dashboard');
 }
 
 // ── Sidebar Nav ─────────────────────────────────────────────
@@ -683,6 +696,139 @@ async function loadErrorSummary(){
     console.error('Error summary failed:',e);
     el.innerHTML='<div style="font-size:12px;color:var(--red);padding:12px">Failed to load error summary: '+e.message+'</div>';
   }
+}
+
+// ── Dictionary ──────────────────────────────────────────────
+async function renderDictionary(){
+  const sumEl=document.getElementById('dictSummary');
+  const conEl=document.getElementById('dictContent');
+  sumEl.innerHTML='<div style="font-size:12px;color:var(--muted);padding:12px">Loading dictionary data...</div>';
+  conEl.innerHTML='';
+
+  try{
+    const remarksSnap=await fbDb.ref('episodeRemarks').once('value');
+    const allRemarks=remarksSnap.val()||{};
+
+    // Extract mispronunciation entries grouped by show
+    const dictByShow={};
+    const allWords=[];
+
+    for(const [chapId, epData] of Object.entries(allRemarks)){
+      if(!epData?.remarks) continue;
+      const remarks=Array.isArray(epData.remarks)?epData.remarks:Object.values(epData.remarks||{});
+      const showId=epData.showId||'unknown';
+      const showConfig=shows.find(s=>{
+        const sid=s.showInput?.match(/show_id=([a-f0-9]+)/i)?.[1]||s.showInput||'';
+        return sid===showId;
+      });
+      const showName=showConfig?.name||showId;
+      if(!dictByShow[showName]) dictByShow[showName]=[];
+
+      for(const r of remarks){
+        if(!r||!r.issueType) continue;
+        const isMisp=r.issueType.toLowerCase().includes('misp');
+        if(!isMisp) continue;
+
+        // Extract the mispronounced word from remarks
+        const raw=r.rawRemarks||'';
+        let word='', phonetic='', noteText=r.note||'';
+        // Try to extract "Word: xyz" pattern
+        const wm=raw.match(/[Ww]ord\s*[:\-]\s*["\u201c]?([^"\u201d\n;]+)/);
+        if(wm) word=wm[1].replace(/["\u201d\u00bb]/g,'').trim();
+        // Try "Line from script" for context
+        const line=r.scriptLine||'';
+
+        const entry={
+          show:showName, episode:epData.title||chapId, time:r.time||'',
+          word:word, scriptLine:line, note:noteText,
+          agent:r.userEmail||'', rawRemarks:raw
+        };
+        dictByShow[showName].push(entry);
+        allWords.push(entry);
+      }
+    }
+
+    // Summary
+    const showNames=Object.keys(dictByShow).sort();
+    const totalWords=allWords.length;
+    const uniqueWords=new Set(allWords.map(w=>w.word.toLowerCase()).filter(w=>w)).size;
+
+    sumEl.innerHTML=`
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:16px">
+        <div>
+          <div style="font-size:16px;font-weight:800;color:var(--text)">Mispronunciation Dictionary</div>
+          <div style="font-size:12px;color:var(--muted)">${totalWords} entries across ${showNames.length} shows | ${uniqueWords} unique words</div>
+        </div>
+        <div style="display:flex;gap:8px">
+          <select id="dictShowFilter" onchange="filterDict()" style="font-size:11px;padding:4px 8px;border:1px solid var(--border);border-radius:6px">
+            <option value="all">All Shows</option>
+            ${showNames.map(s=>`<option value="${esc(s)}">${esc(s)}</option>`).join('')}
+          </select>
+          <button class="btn btn-p btn-sm" onclick="downloadDictCSV()" style="font-size:10px">⬇ Download CSV</button>
+        </div>
+      </div>`;
+
+    // Store data globally for filtering/download
+    window._dictData=allWords;
+    window._dictByShow=dictByShow;
+    renderDictTable(allWords);
+  }catch(e){
+    console.error('Dictionary failed:',e);
+    sumEl.innerHTML='<div style="color:var(--red);padding:12px">Failed to load: '+e.message+'</div>';
+  }
+}
+
+function filterDict(){
+  const sel=document.getElementById('dictShowFilter').value;
+  if(sel==='all') renderDictTable(window._dictData||[]);
+  else renderDictTable((window._dictByShow||{})[sel]||[]);
+}
+
+function renderDictTable(entries){
+  const el=document.getElementById('dictContent');
+  if(!entries.length){
+    el.innerHTML='<div style="padding:20px;text-align:center;color:var(--muted)">No mispronunciation entries found. Load episodes with QC data first.</div>';
+    return;
+  }
+  let html=`<div style="overflow-x:auto">
+    <table style="width:100%;border-collapse:collapse;font-size:11px;font-family:var(--mono)">
+      <thead><tr style="background:var(--surface2);border-bottom:2px solid var(--border)">
+        <th style="padding:8px 10px;text-align:left;color:var(--text2)">Show</th>
+        <th style="padding:8px 10px;text-align:left;color:var(--text2)">Episode</th>
+        <th style="padding:8px 10px;text-align:left;color:var(--text2)">Time</th>
+        <th style="padding:8px 10px;text-align:left;color:var(--text2)">Mispronounced Word</th>
+        <th style="padding:8px 10px;text-align:left;color:var(--text2)">Script Line</th>
+        <th style="padding:8px 10px;text-align:left;color:var(--text2)">QC Note</th>
+        <th style="padding:8px 10px;text-align:left;color:var(--text2)">Agent</th>
+      </tr></thead><tbody>`;
+  for(const e of entries){
+    html+=`<tr style="border-bottom:1px solid var(--border)">
+      <td style="padding:6px 10px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(e.show)}">${esc(e.show)}</td>
+      <td style="padding:6px 10px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(e.episode)}">${esc(e.episode)}</td>
+      <td style="padding:6px 10px;white-space:nowrap;color:var(--accent)">${esc(e.time)}</td>
+      <td style="padding:6px 10px;font-weight:700;color:var(--red)">${esc(e.word)||'<span style="color:var(--muted);font-weight:400">—</span>'}</td>
+      <td style="padding:6px 10px;max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(e.scriptLine)}">${esc(e.scriptLine).substring(0,60)}${e.scriptLine.length>60?'...':''}</td>
+      <td style="padding:6px 10px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(e.note)}">${esc(e.note).substring(0,50)}${e.note.length>50?'...':''}</td>
+      <td style="padding:6px 10px;font-size:9px;color:var(--muted)">${esc(e.agent).split('@')[0]}</td>
+    </tr>`;
+  }
+  html+=`</tbody></table></div>`;
+  el.innerHTML=html;
+}
+
+function downloadDictCSV(){
+  const sel=document.getElementById('dictShowFilter')?.value||'all';
+  const data=sel==='all'?(window._dictData||[]):((window._dictByShow||{})[sel]||[]);
+  if(!data.length){toast('No data to download','warn');return;}
+  const headers=['Show','Episode','Time','Mispronounced Word','Script Line','QC Note','Agent','Full Remarks'];
+  const rows=data.map(e=>[e.show,e.episode,e.time,e.word,e.scriptLine,e.note,e.agent,e.rawRemarks].map(v=>'"'+(v||'').replace(/"/g,'""')+'"').join(','));
+  const csv=[headers.join(','),...rows].join('\n');
+  const blob=new Blob(['\uFEFF'+csv],{type:'text/csv;charset=utf-8'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download='mispronunciation_dictionary'+(sel!=='all'?'_'+sel.replace(/[^a-zA-Z0-9]/g,'_'):'')+'.csv';
+  document.body.appendChild(a);a.click();document.body.removeChild(a);
+  toast('Downloaded dictionary CSV','ok');
 }
 
 // ── Show View (episodes list) ───────────────────────────────
@@ -1205,7 +1351,20 @@ async function loadShow(directInput, forceRefresh){
           ep.chapter_details.qcCount=qcDetails.length;
           ep.chapter_details.hasQC=qcDetails.length>0;
           ep.chapter_details.audio_status=ch.audio_status||cd.audio_status||'';
-          if(qcDetails.length>0) qcCount++;
+          if(qcDetails.length>0){
+            qcCount++;
+            // Save QC remarks to Firebase for error summary and dictionary
+            const remarkData=qcDetails.map((qc,i)=>({
+              idx:i, time:qc.time, issueType:qc.issue_type||'',
+              userEmail:qc.user_email||'', scriptLine:extractLine(qc.remarks),
+              note:extractNote(qc.remarks), rawRemarks:qc.remarks,
+              needsPatch:!!extractLine(qc.remarks),
+            }));
+            fbDb.ref('episodeRemarks/'+chapId).set({
+              title:ch.chapter_title||'Episode', showId:activeShowId,
+              remarks:remarkData, updatedAt:Date.now()
+            });
+          }
         }catch(e){}
       }));
       const done=Math.min(b+BATCH, eps.length);
