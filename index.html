@@ -629,13 +629,17 @@ async function loadErrorSummary(){
       if(match){
         const validEps=epArr.filter(e=>e);
         match.episodes=validEps.length;
+        const statusCounts={};
         for(const ep of validEps){
           if(ep.chapter_id) chapSeqMap[ep.chapter_id]=ep.natural_sequence_number||ep.seq_number||0;
-          const seq=ep.natural_sequence_number||ep.seq_number||0;
           const status=String(ep.audio_status||'').toLowerCase();
-          const isQCd=status.includes('issue')||status.includes('ready')||status.includes('master');
+          statusCounts[status]=(statusCounts[status]||0)+1;
+          // QC'd = has issue_found_in_raw status specifically
+          const isQCd=status.includes('issue_found');
+          const seq=ep.natural_sequence_number||ep.seq_number||0;
           if(isQCd&&seq>match.qcTillEp) match.qcTillEp=seq;
         }
+        console.log('Show:', match.name, 'audio_status counts:', statusCounts);
       }
     }
 
