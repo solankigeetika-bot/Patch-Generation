@@ -699,6 +699,19 @@ async function loadErrorSummary(){
 }
 
 // ── Dictionary ──────────────────────────────────────────────
+function classifyWord(word, scriptLine, note){
+  const w=(word||'').toLowerCase(), ctx=(scriptLine+' '+note).toLowerCase();
+  // Common French verb endings
+  if(/(?:aient|ent|ait|ait|ont|rent|ient|irent|erent|ir|er|oir|re)$/i.test(w)) return 'Verb';
+  // Common noun patterns
+  if(/(?:tion|ment|eur|ence|ance|age|isme|iste|esse|ure|oir)$/i.test(w)) return 'Noun';
+  // Interjections
+  if(/^(ah|oh|hein|haha|hmm|euh|bah|tiens|voil[aà]|h[ée]las)$/i.test(w)) return 'Interjection';
+  // If it starts with capital, likely a proper noun
+  if(word && word[0]===word[0].toUpperCase() && word[0]!==word[0].toLowerCase()) return 'Noun';
+  return 'Other';
+}
+
 async function renderDictionary(){
   const sumEl=document.getElementById('dictSummary');
   const conEl=document.getElementById('dictContent');
@@ -722,42 +735,108 @@ async function renderDictionary(){
         return sid===showId;
       });
       const showName=showConfig?.name||showId;
-      if(!dictByShow[showName]) dictByShow[showName]=[];
+      if(!dictByShow[showName]) dictByShow[showName]={entries:[], epSet:new Set()};
 
       for(const r of remarks){
         if(!r||!r.issueType) continue;
         const isMisp=r.issueType.toLowerCase().includes('misp');
         if(!isMisp) continue;
 
-        // Extract the mispronounced word from remarks
+        dictByShow[showName].epSet.add(chapId);
+
+        // Extract word from "Word: xyz" or "Word : "xyz""
         const raw=r.rawRemarks||'';
-        let word='', phonetic='', noteText=r.note||'';
-        // Try to extract "Word: xyz" pattern
-        const wm=raw.match(/[Ww]ord\s*[:\-]\s*["\u201c]?([^"\u201d\n;]+)/);
-        if(wm) word=wm[1].replace(/["\u201d\u00bb]/g,'').trim();
-        // Try "Line from script" for context
-        const line=r.scriptLine||'';
+        let word='';
+        const wm=raw.match(/[Ww]ord\s*[:\-]\s*["\u201c\u00ab]?\s*([^"\u201d\u00bb\n;]+)/);
+        if(wm) word=wm[1].replace(/["\u201d\u00bb\u201c\u00ab]/g,'').trim();
+
+        // Phonetic = from QC note (how QC agent says it should be pronounced)
+        let phonetic=r.note||'';
+        // Try to extract specific correction from note
+        const pm=phonetic.match(/(?:remove|replace|change|correct|should\s+be|pronounced?)\s*[:\-]?\s*["\u201c]?([^"\u201d\n]+)/i);
+        if(pm) phonetic=pm[1].trim();
+
+        const classification=classifyWord(word, r.scriptLine||'', r.note||'');
 
         const entry={
           show:showName, episode:epData.title||chapId, time:r.time||'',
-          word:word, scriptLine:line, note:noteText,
+          word, phonetic, classification,
+          scriptLine:r.scriptLine||'', note:r.note||'',
           agent:r.userEmail||'', rawRemarks:raw
         };
-        dictByShow[showName].push(entry);
+        dictByShow[showName].entries.push(entry);
         allWords.push(entry);
       }
     }
 
-    // Summary
+    // ── SUMMARY TABLE ──
     const showNames=Object.keys(dictByShow).sort();
     const totalWords=allWords.length;
-    const uniqueWords=new Set(allWords.map(w=>w.word.toLowerCase()).filter(w=>w)).size;
+    const uniqueWords=[...new Set(allWords.map(w=>w.word.toLowerCase()).filter(w=>w))];
 
-    sumEl.innerHTML=`
-      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:16px">
+    let summaryHtml=`<div style="font-size:16px;font-weight:800;margin-bottom:12px;color:var(--text)">Dictionary Summary</div>
+    <div style="overflow-x:auto;margin-bottom:24px">
+    <table style="width:100%;border-collapse:collapse;font-size:11px;font-family:var(--mono)">
+      <thead><tr style="background:var(--surface2);border-bottom:2px solid var(--border)">
+        <th style="padding:8px 10px;text-align:left">Show Name</th>
+        <th style="padding:8px 10px;text-align:center">Ep with Misp</th>
+        <th style="padding:8px 10px;text-align:center">Words/Ep</th>
+        <th style="padding:8px 10px;text-align:center;background:#FFFFCC">#Words</th>
+        <th style="padding:8px 10px;text-align:center">Noun</th>
+        <th style="padding:8px 10px;text-align:center">Verb</th>
+        <th style="padding:8px 10px;text-align:center">Interjection</th>
+        <th style="padding:8px 10px;text-align:center">Other</th>
+      </tr></thead><tbody>`;
+
+    let grandTotal=0, grandNoun=0, grandVerb=0, grandInterj=0, grandOther=0;
+    for(const sn of showNames){
+      const d=dictByShow[sn];
+      const entries=d.entries;
+      const epCount=d.epSet.size;
+      const wc=entries.length;
+      const wpe=epCount?Math.round(wc/epCount*10)/10:0;
+      const noun=entries.filter(e=>e.classification==='Noun').length;
+      const verb=entries.filter(e=>e.classification==='Verb').length;
+      const interj=entries.filter(e=>e.classification==='Interjection').length;
+      const other=entries.filter(e=>e.classification==='Other').length;
+      grandTotal+=wc; grandNoun+=noun; grandVerb+=verb; grandInterj+=interj; grandOther+=other;
+
+      summaryHtml+=`<tr style="border-bottom:1px solid var(--border)">
+        <td style="padding:6px 10px;font-weight:600">${esc(sn)}</td>
+        <td style="padding:6px 10px;text-align:center">${epCount}</td>
+        <td style="padding:6px 10px;text-align:center">${wpe}</td>
+        <td style="padding:6px 10px;text-align:center;font-weight:700;background:#FFFFCC">${wc}</td>
+        <td style="padding:6px 10px;text-align:center">${noun}</td>
+        <td style="padding:6px 10px;text-align:center">${verb}</td>
+        <td style="padding:6px 10px;text-align:center">${interj}</td>
+        <td style="padding:6px 10px;text-align:center">${other}</td>
+      </tr>`;
+    }
+    const pFn=(n,t)=>t?Math.round(n/t*100)+'%':'0%';
+    summaryHtml+=`<tr style="border-top:2px solid var(--border);background:var(--surface2);font-weight:800">
+      <td style="padding:6px 10px" colspan="3">Total</td>
+      <td style="padding:6px 10px;text-align:center;background:#FFFFCC">${grandTotal}</td>
+      <td style="padding:6px 10px;text-align:center">${grandNoun}</td>
+      <td style="padding:6px 10px;text-align:center">${grandVerb}</td>
+      <td style="padding:6px 10px;text-align:center">${grandInterj}</td>
+      <td style="padding:6px 10px;text-align:center">${grandOther}</td>
+    </tr>
+    <tr style="background:var(--surface2);font-size:10px;color:var(--muted)">
+      <td style="padding:4px 10px" colspan="3"></td>
+      <td style="padding:4px 10px;text-align:center"></td>
+      <td style="padding:4px 10px;text-align:center">${pFn(grandNoun,grandTotal)}</td>
+      <td style="padding:4px 10px;text-align:center">${pFn(grandVerb,grandTotal)}</td>
+      <td style="padding:4px 10px;text-align:center">${pFn(grandInterj,grandTotal)}</td>
+      <td style="padding:4px 10px;text-align:center">${pFn(grandOther,grandTotal)}</td>
+    </tr>`;
+    summaryHtml+=`</tbody></table></div>`;
+
+    // ── WORD LIST HEADER ──
+    sumEl.innerHTML=summaryHtml+`
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:12px">
         <div>
-          <div style="font-size:16px;font-weight:800;color:var(--text)">Mispronunciation Dictionary</div>
-          <div style="font-size:12px;color:var(--muted)">${totalWords} entries across ${showNames.length} shows | ${uniqueWords} unique words</div>
+          <div style="font-size:14px;font-weight:800;color:var(--text)">Word List</div>
+          <div style="font-size:11px;color:var(--muted)">${totalWords} entries | ${uniqueWords.length} unique words</div>
         </div>
         <div style="display:flex;gap:8px">
           <select id="dictShowFilter" onchange="filterDict()" style="font-size:11px;padding:4px 8px;border:1px solid var(--border);border-radius:6px">
@@ -768,7 +847,6 @@ async function renderDictionary(){
         </div>
       </div>`;
 
-    // Store data globally for filtering/download
     window._dictData=allWords;
     window._dictByShow=dictByShow;
     renderDictTable(allWords);
@@ -781,7 +859,7 @@ async function renderDictionary(){
 function filterDict(){
   const sel=document.getElementById('dictShowFilter').value;
   if(sel==='all') renderDictTable(window._dictData||[]);
-  else renderDictTable((window._dictByShow||{})[sel]||[]);
+  else renderDictTable((window._dictByShow||{})[sel]?.entries||[]);
 }
 
 function renderDictTable(entries){
@@ -790,26 +868,35 @@ function renderDictTable(entries){
     el.innerHTML='<div style="padding:20px;text-align:center;color:var(--muted)">No mispronunciation entries found. Load episodes with QC data first.</div>';
     return;
   }
+  // Deduplicate by word (keep first occurrence per show)
+  const seen=new Set();
+  const deduped=entries.filter(e=>{
+    if(!e.word) return true;
+    const key=e.show+'|'+e.word.toLowerCase();
+    if(seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
   let html=`<div style="overflow-x:auto">
     <table style="width:100%;border-collapse:collapse;font-size:11px;font-family:var(--mono)">
       <thead><tr style="background:var(--surface2);border-bottom:2px solid var(--border)">
-        <th style="padding:8px 10px;text-align:left;color:var(--text2)">Show</th>
-        <th style="padding:8px 10px;text-align:left;color:var(--text2)">Episode</th>
-        <th style="padding:8px 10px;text-align:left;color:var(--text2)">Time</th>
-        <th style="padding:8px 10px;text-align:left;color:var(--text2)">Mispronounced Word</th>
-        <th style="padding:8px 10px;text-align:left;color:var(--text2)">Script Line</th>
-        <th style="padding:8px 10px;text-align:left;color:var(--text2)">QC Note</th>
-        <th style="padding:8px 10px;text-align:left;color:var(--text2)">Agent</th>
+        <th style="padding:8px 10px;text-align:left">Correct Grammatical Spelling</th>
+        <th style="padding:8px 10px;text-align:left">Phonetically Correct Spelling</th>
+        <th style="padding:8px 10px;text-align:center">Classification</th>
+        <th style="padding:8px 10px;text-align:left">Show</th>
+        <th style="padding:8px 10px;text-align:left">Episode</th>
+        <th style="padding:8px 10px;text-align:left">QC Note</th>
       </tr></thead><tbody>`;
-  for(const e of entries){
+  for(const e of deduped){
+    const cls=e.classification==='Noun'?'color:var(--accent)':e.classification==='Verb'?'color:var(--green)':'color:var(--muted)';
     html+=`<tr style="border-bottom:1px solid var(--border)">
-      <td style="padding:6px 10px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(e.show)}">${esc(e.show)}</td>
-      <td style="padding:6px 10px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(e.episode)}">${esc(e.episode)}</td>
-      <td style="padding:6px 10px;white-space:nowrap;color:var(--accent)">${esc(e.time)}</td>
-      <td style="padding:6px 10px;font-weight:700;color:var(--red)">${esc(e.word)||'<span style="color:var(--muted);font-weight:400">—</span>'}</td>
-      <td style="padding:6px 10px;max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(e.scriptLine)}">${esc(e.scriptLine).substring(0,60)}${e.scriptLine.length>60?'...':''}</td>
-      <td style="padding:6px 10px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(e.note)}">${esc(e.note).substring(0,50)}${e.note.length>50?'...':''}</td>
-      <td style="padding:6px 10px;font-size:9px;color:var(--muted)">${esc(e.agent).split('@')[0]}</td>
+      <td style="padding:6px 10px;font-weight:700">${esc(e.word)||'<span style="color:var(--muted);font-weight:400">\u2014</span>'}</td>
+      <td style="padding:6px 10px;font-style:italic;color:var(--text2)">${esc(e.phonetic)||'<span style="color:var(--muted)">\u2014</span>'}</td>
+      <td style="padding:6px 10px;text-align:center;font-size:10px;${cls}">${esc(e.classification)}</td>
+      <td style="padding:6px 10px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(e.show)}</td>
+      <td style="padding:6px 10px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(e.episode)}</td>
+      <td style="padding:6px 10px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(e.note)}">${esc(e.note).substring(0,60)}${e.note.length>60?'...':''}</td>
     </tr>`;
   }
   html+=`</tbody></table></div>`;
@@ -818,10 +905,10 @@ function renderDictTable(entries){
 
 function downloadDictCSV(){
   const sel=document.getElementById('dictShowFilter')?.value||'all';
-  const data=sel==='all'?(window._dictData||[]):((window._dictByShow||{})[sel]||[]);
+  const data=sel==='all'?(window._dictData||[]):((window._dictByShow||{})[sel]?.entries||[]);
   if(!data.length){toast('No data to download','warn');return;}
-  const headers=['Show','Episode','Time','Mispronounced Word','Script Line','QC Note','Agent','Full Remarks'];
-  const rows=data.map(e=>[e.show,e.episode,e.time,e.word,e.scriptLine,e.note,e.agent,e.rawRemarks].map(v=>'"'+(v||'').replace(/"/g,'""')+'"').join(','));
+  const headers=['Correct Grammatical Spelling','Phonetically Correct Spelling','Classification','Show','Episode','Time','QC Note','Agent'];
+  const rows=data.map(e=>[e.word,e.phonetic,e.classification,e.show,e.episode,e.time,e.note,e.agent].map(v=>'"'+(v||'').replace(/"/g,'""')+'"').join(','));
   const csv=[headers.join(','),...rows].join('\n');
   const blob=new Blob(['\uFEFF'+csv],{type:'text/csv;charset=utf-8'});
   const a=document.createElement('a');
