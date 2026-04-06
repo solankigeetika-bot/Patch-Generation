@@ -617,15 +617,24 @@ async function loadErrorSummary(){
     const showMap={};
     for(const s of shows){
       const sid=s.showInput?.match(/show_id=([a-f0-9]+)/i)?.[1]||s.showInput||s.id;
-      showMap[String(s.id)]={name:s.name, showInput:sid, episodes:0, totalErrors:0, errorTypes:{}};
+      showMap[String(s.id)]={name:s.name, showInput:sid, episodes:0, totalErrors:0, errorTypes:{}, qcTillEp:0, epWithQC:0};
     }
 
-    // Count episodes per show from showEpisodes
+    // Count episodes per show and find max episode with QC/ready-to-master
     for(const [showId, eps] of Object.entries(allEps)){
       const epArr=Array.isArray(eps)?eps:Object.values(eps||{});
-      // Find which show this belongs to
       const match=Object.values(showMap).find(sm=>sm.showInput===showId);
-      if(match) match.episodes=epArr.filter(e=>e).length;
+      if(match){
+        const validEps=epArr.filter(e=>e);
+        match.episodes=validEps.length;
+        // Find highest ep number with QC or ready_to_master
+        for(const ep of validEps){
+          const seq=ep.natural_sequence_number||ep.seq_number||0;
+          const hasQC=ep.hasQC||ep.qcCount>0;
+          const isReady=String(ep.audio_status||'').includes('ready')||String(ep.audio_status||'').includes('master');
+          if((hasQC||isReady)&&seq>match.qcTillEp) match.qcTillEp=seq;
+        }
+      }
     }
 
     // Aggregate error types from episodeRemarks
@@ -634,7 +643,9 @@ async function loadErrorSummary(){
       const remarks=Array.isArray(epData.remarks)?epData.remarks:Object.values(epData.remarks||{});
       const showId=epData.showId||'';
       const match=Object.values(showMap).find(sm=>sm.showInput===showId);
-      const target=match||{errorTypes:{},totalErrors:0};
+      const target=match||{errorTypes:{},totalErrors:0,epWithQC:0};
+
+      if(remarks.length>0 && match) match.epWithQC++;
 
       for(const r of remarks){
         if(!r) continue;
@@ -692,6 +703,22 @@ async function loadErrorSummary(){
       ${typeArr.map(t=>{const c=Object.values(showMap).reduce((s,m)=>s+(m.errorTypes[t]||0),0);const p=pctFn(c,grandTotal);return `<td style="padding:8px 10px;text-align:center;color:var(--red)">${c} <span style="font-weight:400;font-size:9px;color:var(--muted)">(${p}%)</span></td>`;}).join('')}
     </tr>`;
 
+    // QC'd Till Ep row
+    html+=`<tr style="background:#E8F5E9;font-weight:700;font-size:10px">
+      <td style="padding:6px 10px;color:var(--green)">QC'd Till Ep</td>
+      <td style="padding:6px 10px;text-align:center"></td>
+      <td style="padding:6px 10px;text-align:center"></td>
+      ${typeArr.map(()=>'<td style="padding:6px 10px"></td>').join('')}
+    </tr>`;
+    // Per-show QC'd Till Ep as a separate info row
+    html+=`<tr style="background:#E8F5E9;font-size:10px;color:var(--text2)">
+      <td colspan="${3+typeArr.length}" style="padding:6px 10px">
+        ${Object.values(showMap).filter(sm=>sm.qcTillEp>0||sm.epWithQC>0).map(sm=>
+          `<span style="margin-right:16px"><strong>${esc(sm.name)}:</strong> Ep ${sm.qcTillEp||'—'} (${sm.epWithQC} eps with QC)</span>`
+        ).join('')||'No QC data yet'}
+      </td>
+    </tr>`;
+
     html+=`</tbody></table></div></div>`;
     el.innerHTML=html;
   }catch(e){
@@ -702,16 +729,23 @@ async function loadErrorSummary(){
 
 // ── Dictionary ──────────────────────────────────────────────
 function classifyWord(word, scriptLine, note){
-  const w=(word||'').toLowerCase(), ctx=(scriptLine+' '+note).toLowerCase();
+  const w=(word||'').toLowerCase();
   // Common French verb endings
-  if(/(?:aient|ent|ait|ait|ont|rent|ient|irent|erent|ir|er|oir|re)$/i.test(w)) return 'Verb';
-  // Common noun patterns
-  if(/(?:tion|ment|eur|ence|ance|age|isme|iste|esse|ure|oir)$/i.test(w)) return 'Noun';
+  if(/(?:aient|ent|ait|ont|rent|ient|irent|[eè]rent|ir|er|oir|re|ais|ez|ons|ût|ît)$/i.test(w)) return 'Verb';
   // Interjections
-  if(/^(ah|oh|hein|haha|hmm|euh|bah|tiens|voil[aà]|h[ée]las)$/i.test(w)) return 'Interjection';
-  // If it starts with capital, likely a proper noun
-  if(word && word[0]===word[0].toUpperCase() && word[0]!==word[0].toLowerCase()) return 'Noun';
-  return 'Other';
+  if(/^(ah|oh|hein|haha|hmm|euh|bah|tiens|voil[aà]|h[ée]las|allons|parbleu|zut|mince|sacr[ée])$/i.test(w)) return 'Interjection';
+  // Figures of speech / expressions (multi-word or idiomatic)
+  if(w.includes(' ')||w.includes('-')&&w.split('-').length>2) return 'Expression';
+  // Adjectives (common French endings)
+  if(/(?:eux|euse|ique|able|ible|aire|el|elle|if|ive|oux|al|ale|ien|ienne)$/i.test(w)) return 'Adjective';
+  // Adverbs
+  if(/(?:ment|emment|amment)$/i.test(w)&&w.length>6) return 'Adverb';
+  // Proper nouns (capitalized)
+  if(word && word[0]===word[0].toUpperCase() && word[0]!==word[0].toLowerCase()) return 'Proper Noun';
+  // Common noun patterns
+  if(/(?:tion|sion|ment|eur|ence|ance|age|isme|iste|esse|ure|oir|eau|ée|té)$/i.test(w)) return 'Noun';
+  // Default
+  return 'Noun';
 }
 
 async function renderDictionary(){
@@ -747,6 +781,11 @@ async function renderDictionary(){
     const totalWords=allWords.length;
     const uniqueWords=[...new Set(allWords.map(w=>w.word.toLowerCase()).filter(w=>w))];
 
+    // Collect all classification types dynamically
+    const allClassTypes=new Set();
+    for(const e of allWords) allClassTypes.add(e.classification||'Noun');
+    const classArr=[...allClassTypes].sort();
+
     let summaryHtml=`<div style="font-size:16px;font-weight:800;margin-bottom:12px;color:var(--text)">Dictionary Summary</div>
     <div style="overflow-x:auto;margin-bottom:24px">
     <table style="width:100%;border-collapse:collapse;font-size:11px;font-family:var(--mono)">
@@ -755,52 +794,39 @@ async function renderDictionary(){
         <th style="padding:8px 10px;text-align:center">Ep with Misp</th>
         <th style="padding:8px 10px;text-align:center">Words/Ep</th>
         <th style="padding:8px 10px;text-align:center;background:#FFFFCC">#Words</th>
-        <th style="padding:8px 10px;text-align:center">Noun</th>
-        <th style="padding:8px 10px;text-align:center">Verb</th>
-        <th style="padding:8px 10px;text-align:center">Interjection</th>
-        <th style="padding:8px 10px;text-align:center">Other</th>
+        ${classArr.map(c=>`<th style="padding:8px 10px;text-align:center">${esc(c)}</th>`).join('')}
       </tr></thead><tbody>`;
 
-    let grandTotal=0, grandNoun=0, grandVerb=0, grandInterj=0, grandOther=0;
+    let grandTotal=0;
+    const grandClass={};
+    classArr.forEach(c=>grandClass[c]=0);
+
     for(const sn of showNames){
       const d=dictByShow[sn];
       const entries=d.entries;
       const epCount=d.epSet.size;
       const wc=entries.length;
       const wpe=epCount?Math.round(wc/epCount*10)/10:0;
-      const noun=entries.filter(e=>e.classification==='Noun').length;
-      const verb=entries.filter(e=>e.classification==='Verb').length;
-      const interj=entries.filter(e=>e.classification==='Interjection').length;
-      const other=entries.filter(e=>e.classification==='Other').length;
-      grandTotal+=wc; grandNoun+=noun; grandVerb+=verb; grandInterj+=interj; grandOther+=other;
+      grandTotal+=wc;
 
       summaryHtml+=`<tr style="border-bottom:1px solid var(--border)">
         <td style="padding:6px 10px;font-weight:600">${esc(sn)}</td>
         <td style="padding:6px 10px;text-align:center">${epCount}</td>
         <td style="padding:6px 10px;text-align:center">${wpe}</td>
         <td style="padding:6px 10px;text-align:center;font-weight:700;background:#FFFFCC">${wc}</td>
-        <td style="padding:6px 10px;text-align:center">${noun}</td>
-        <td style="padding:6px 10px;text-align:center">${verb}</td>
-        <td style="padding:6px 10px;text-align:center">${interj}</td>
-        <td style="padding:6px 10px;text-align:center">${other}</td>
+        ${classArr.map(c=>{const cnt=entries.filter(e=>e.classification===c).length;grandClass[c]+=cnt;return `<td style="padding:6px 10px;text-align:center">${cnt}</td>`;}).join('')}
       </tr>`;
     }
     const pFn=(n,t)=>t?Math.round(n/t*100)+'%':'0%';
     summaryHtml+=`<tr style="border-top:2px solid var(--border);background:var(--surface2);font-weight:800">
       <td style="padding:6px 10px" colspan="3">Total</td>
       <td style="padding:6px 10px;text-align:center;background:#FFFFCC">${grandTotal}</td>
-      <td style="padding:6px 10px;text-align:center">${grandNoun}</td>
-      <td style="padding:6px 10px;text-align:center">${grandVerb}</td>
-      <td style="padding:6px 10px;text-align:center">${grandInterj}</td>
-      <td style="padding:6px 10px;text-align:center">${grandOther}</td>
+      ${classArr.map(c=>`<td style="padding:6px 10px;text-align:center">${grandClass[c]}</td>`).join('')}
     </tr>
     <tr style="background:var(--surface2);font-size:10px;color:var(--muted)">
       <td style="padding:4px 10px" colspan="3"></td>
       <td style="padding:4px 10px;text-align:center"></td>
-      <td style="padding:4px 10px;text-align:center">${pFn(grandNoun,grandTotal)}</td>
-      <td style="padding:4px 10px;text-align:center">${pFn(grandVerb,grandTotal)}</td>
-      <td style="padding:4px 10px;text-align:center">${pFn(grandInterj,grandTotal)}</td>
-      <td style="padding:4px 10px;text-align:center">${pFn(grandOther,grandTotal)}</td>
+      ${classArr.map(c=>`<td style="padding:4px 10px;text-align:center">${pFn(grandClass[c],grandTotal)}</td>`).join('')}
     </tr>`;
     summaryHtml+=`</tbody></table></div>`;
 
