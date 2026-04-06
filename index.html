@@ -956,6 +956,7 @@ function renderShowView(){
       <input class="inp" id="epSearch" placeholder="Search episodes..." style="max-width:260px;font-size:11px" oninput="epFilter=this.value.toLowerCase();renderEpCards()" value="${esc(epFilter)}"/>
       <button class="btn btn-sm ${epFilterMode==='all'?'btn-p':'btn-g'}" onclick="epFilterMode='all';renderShowView()">All</button>
       <button class="btn btn-sm ${epFilterMode==='qc'?'btn-orange':'btn-g'}" onclick="epFilterMode='qc';renderShowView()">QC Only</button>
+      ${authToken?`<button class="btn btn-sm btn-g" onclick="loadShow(activeShowConfig?.showInput,true)" style="font-size:10px">🔄 Refresh QC Data</button>`:''}
       <span style="font-family:var(--mono);font-size:10px;color:var(--muted);margin-left:auto" id="epFilterCount"></span>
     </div>`;
 
