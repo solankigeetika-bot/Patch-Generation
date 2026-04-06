@@ -1134,6 +1134,7 @@ async function loadShow(directInput, forceRefresh){
 
   const m=input.match(/show_id=([a-f0-9]+)/i)||input.match(/id=([a-f0-9]{30,})/i);
   activeShowId=m?m[1]:input;
+  console.log('loadShow input:', input, '→ activeShowId:', activeShowId);
   if(!activeShowId){toast('Enter a valid show ID or URL','warn');return;}
 
   // Try loading from Firebase cache first (no CMS login needed)
