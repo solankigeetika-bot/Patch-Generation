@@ -276,6 +276,12 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
       <div><label class="fl" style="margin-bottom:3px">Show ID or CMS URL *</label><input class="inp" id="m_showid" placeholder="show_id or full CMS URL..."/></div>
       <div><label class="fl" style="margin-bottom:3px">AudioStack API Key *</label><input type="password" class="inp" id="m_askey" placeholder="a8b654d7-..." value="a8b654d7-aeed-40dc-8e3b-4f6181c26cb6"/></div>
       <div><label class="fl" style="margin-bottom:3px">Voice ID</label><input class="inp" id="m_voice" placeholder="Auto-detected from CMS · or paste manually"/></div>
+      <div style="display:flex;gap:8px">
+        <div style="flex:2"><label class="fl" style="margin-bottom:3px">Voice Name</label><input class="inp" id="m_voicename" placeholder="e.g. Charles Moreau"/></div>
+        <div style="flex:1"><label class="fl" style="margin-bottom:3px">Voice Gender</label>
+          <select class="inp" id="m_voicegender"><option value="">—</option><option value="M">Male</option><option value="F">Female</option></select>
+        </div>
+      </div>
       <div><label class="fl" style="margin-bottom:3px">Voice Type</label>
         <select class="inp" id="m_voicetype"><option value="standard">Standard</option><option value="expressive">Expressive</option></select>
       </div>
@@ -617,7 +623,7 @@ async function loadErrorSummary(){
     const showMap={};
     for(const s of shows){
       const sid=s.showInput?.match(/show_id=([a-f0-9]+)/i)?.[1]||s.showInput||s.id;
-      showMap[String(s.id)]={name:s.name, showInput:sid, episodes:0, totalErrors:0, errorTypes:{}, qcTillEp:0, epWithQC:0};
+      showMap[String(s.id)]={name:s.name, showInput:sid, voiceName:s.voiceName||'', voiceGender:s.voiceGender||'', episodes:0, totalErrors:0, errorTypes:{}, qcTillEp:0, epWithQC:0};
     }
 
     // Count episodes per show and find max episode with QC/ready-to-master
@@ -684,6 +690,8 @@ async function loadErrorSummary(){
       <table style="width:100%;border-collapse:collapse;font-size:11px;font-family:var(--mono)">
         <thead><tr style="background:var(--surface2);border-bottom:2px solid var(--border)">
           <th style="padding:8px 10px;text-align:left;color:var(--text2)">Show</th>
+          <th style="padding:8px 10px;text-align:center;color:var(--text2)">Voice</th>
+          <th style="padding:8px 10px;text-align:center;color:var(--text2)">M/F</th>
           <th style="padding:8px 10px;text-align:center;color:var(--text2)">Episodes</th>
           <th style="padding:8px 10px;text-align:center;color:var(--text2);background:#E8F5E9">QC'd Till Ep</th>
           <th style="padding:8px 10px;text-align:center;color:var(--text2)">Total Errors</th>
@@ -696,6 +704,8 @@ async function loadErrorSummary(){
     for(const sm of Object.values(showMap)){
       html+=`<tr style="border-bottom:1px solid var(--border)">
         <td style="padding:8px 10px;font-weight:600;color:var(--text)">${esc(sm.name)}</td>
+        <td style="padding:8px 10px;text-align:center;font-size:10px">${esc(sm.voiceName)||'—'}</td>
+        <td style="padding:8px 10px;text-align:center;font-weight:700;color:${sm.voiceGender==='F'?'#E91E63':'#1565C0'}">${esc(sm.voiceGender)||'—'}</td>
         <td style="padding:8px 10px;text-align:center">${sm.episodes||'—'}</td>
         <td style="padding:8px 10px;text-align:center;font-weight:700;color:var(--green);background:#E8F5E9">${sm.qcTillEp||'—'}</td>
         <td style="padding:8px 10px;text-align:center;font-weight:700;color:var(--orange)">${sm.totalErrors||0}</td>
@@ -707,6 +717,8 @@ async function loadErrorSummary(){
     const grandTotal=Object.values(showMap).reduce((s,m)=>s+m.totalErrors,0);
     html+=`<tr style="border-top:2px solid var(--border);background:var(--surface2);font-weight:800">
       <td style="padding:8px 10px">TOTAL</td>
+      <td style="padding:8px 10px"></td>
+      <td style="padding:8px 10px"></td>
       <td style="padding:8px 10px;text-align:center">${Object.values(showMap).reduce((s,m)=>s+(m.episodes||0),0)}</td>
       <td style="padding:8px 10px;text-align:center;background:#E8F5E9"></td>
       <td style="padding:8px 10px;text-align:center;color:var(--orange)">${grandTotal}</td>
@@ -1333,8 +1345,10 @@ function openAddShow(){
   document.getElementById('m_showid').value = '';
   document.getElementById('m_askey').value = asKey || 'a8b654d7-aeed-40dc-8e3b-4f6181c26cb6';
   document.getElementById('m_voice').value = '';
+  document.getElementById('m_voicename').value = '';
+  document.getElementById('m_voicegender').value = '';
   document.getElementById('m_voicetype').value = 'standard';
-  document.getElementById('addShowModal').style.display = 'flex'; 
+  document.getElementById('addShowModal').style.display = 'flex';
 }
 function closeAddShow(){ document.getElementById('addShowModal').style.display = 'none'; }
 
@@ -1347,6 +1361,8 @@ function editShow(id){
   document.getElementById('m_showid').value = s.showInput;
   document.getElementById('m_askey').value = s.asKey||'';
   document.getElementById('m_voice').value = s.voiceId||'';
+  document.getElementById('m_voicename').value = s.voiceName||'';
+  document.getElementById('m_voicegender').value = s.voiceGender||'';
   document.getElementById('m_voicetype').value = s.voiceType||'standard';
   document.getElementById('addShowModal').style.display = 'flex';
 }
@@ -1357,15 +1373,17 @@ async function saveShow(){
   const showInput = document.getElementById('m_showid').value.trim();
   const asKeyVal = document.getElementById('m_askey').value.trim();
   const voiceId = document.getElementById('m_voice').value.trim();
+  const voiceName = document.getElementById('m_voicename').value.trim();
+  const voiceGender = document.getElementById('m_voicegender').value;
   const voiceType = document.getElementById('m_voicetype').value;
   if(!name||!showInput){ toast('Name and Show ID are required','warn'); return; }
   if(editId){
     const show = shows.find(x=>x.id==editId) || {};
-    const updated = {...show, name, showInput, asKey:asKeyVal, voiceId, voiceType};
+    const updated = {...show, name, showInput, asKey:asKeyVal, voiceId, voiceName, voiceGender, voiceType};
     await fbDb.ref('shows/'+editId).set(updated);
   } else {
     const id = Date.now();
-    await fbDb.ref('shows/'+id).set({ id, name, showInput, asKey:asKeyVal, voiceId, voiceType });
+    await fbDb.ref('shows/'+id).set({ id, name, showInput, asKey:asKeyVal, voiceId, voiceName, voiceGender, voiceType });
   }
   closeAddShow();
   toast(editId ? 'Show updated ✓' : 'Show added ✓','ok');
