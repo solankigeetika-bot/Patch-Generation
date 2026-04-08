@@ -1625,7 +1625,11 @@ async function loadChapter(chapId, idx){
     let fbRestored=0;
     for(const r2 of remarks){
       const st=RS[r2.idx];
-      if(!st.takes.some(t=>t)){
+      // Restore from Firebase if: no local takes at all, OR accepted but audio blob is missing/dead
+      const hasValidAudio=st.takes.some(t=>t&&!t.startsWith('blob:'));
+      const hasLocalBlob=st.takes.some(t=>t&&t.startsWith('blob:'));
+      const needsRestore=!hasValidAudio||(st.acceptedTake>=0&&hasLocalBlob);
+      if(needsRestore||!st.takes.some(t=>t)){
         const matchedPatch=sePatches2.find(p=>p.time===r2.time);
         if(matchedPatch&&matchedPatch.audioBase64){
           st.takes[0]=matchedPatch.audioBase64;
@@ -1786,11 +1790,9 @@ function mkCard(r){
       </div>`:''}
       <div style="margin-bottom:12px">
         <div class="script-lbl">Script Line <span class="edit-hint">✏ Click to edit</span></div>
-        ${r.needsPatch
-          ?`<textarea class="script-ta" id="sl-${r.idx}" rows="2" oninput="RS[${r.idx}].scriptLine=this.value">${esc(st.scriptLine)}</textarea>`
-          :`<div class="no-script">No "Line from script" found — not eligible for patch generation</div>`}
+        <textarea class="script-ta" id="sl-${r.idx}" rows="2" oninput="RS[${r.idx}].scriptLine=this.value;if(!remarks[${r.idx}].needsPatch&&this.value.trim()){remarks[${r.idx}].needsPatch=true;refreshCard(${r.idx});}" placeholder="${r.needsPatch?'':'Type script line to enable patch generation...'}">${esc(st.scriptLine)}</textarea>
       </div>
-      ${r.needsPatch?`
+      ${r.needsPatch||st.scriptLine?`
         <div class="gen-row">
           <button class="gen-btn" onclick="genTakes(${r.idx})" id="gb-${r.idx}" ${st.status==='generating'?'disabled':''}>
             ${st.status==='generating'?'⏳ Generating 3 takes...':'▶ Generate 3 Takes'}
