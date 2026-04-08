@@ -695,6 +695,7 @@ async function loadErrorSummary(){
           <th style="padding:8px 10px;text-align:center;color:var(--text2)">Episodes</th>
           <th style="padding:8px 10px;text-align:center;color:var(--text2);background:#E8F5E9">QC'd Till Ep</th>
           <th style="padding:8px 10px;text-align:center;color:var(--text2)">Total Errors</th>
+          <th style="padding:8px 10px;text-align:center;color:var(--text2);background:#FFF3E0">Errors/Ep</th>
           ${typeArr.map(t=>`<th style="padding:8px 10px;text-align:center;color:var(--text2)">${esc(t)}</th>`).join('')}
         </tr></thead>
         <tbody>`;
@@ -709,6 +710,7 @@ async function loadErrorSummary(){
         <td style="padding:8px 10px;text-align:center">${sm.episodes||'—'}</td>
         <td style="padding:8px 10px;text-align:center;font-weight:700;color:var(--green);background:#E8F5E9">${sm.qcTillEp||'—'}</td>
         <td style="padding:8px 10px;text-align:center;font-weight:700;color:var(--orange)">${sm.totalErrors||0}</td>
+        <td style="padding:8px 10px;text-align:center;font-weight:700;background:#FFF3E0">${sm.qcTillEp?Math.round(sm.totalErrors/sm.qcTillEp*10)/10:'—'}</td>
         ${typeArr.map(t=>{const c=sm.errorTypes[t]||0;const p=pctFn(c,sm.totalErrors);return `<td style="padding:8px 10px;text-align:center;${c?'color:var(--red);font-weight:700':''}">${c}${c?` <span style="font-weight:400;font-size:9px;color:var(--muted)">(${p}%)</span>`:''}</td>`;}).join('')}
       </tr>`;
     }
@@ -722,6 +724,7 @@ async function loadErrorSummary(){
       <td style="padding:8px 10px;text-align:center">${Object.values(showMap).reduce((s,m)=>s+(m.episodes||0),0)}</td>
       <td style="padding:8px 10px;text-align:center;background:#E8F5E9"></td>
       <td style="padding:8px 10px;text-align:center;color:var(--orange)">${grandTotal}</td>
+      <td style="padding:8px 10px;text-align:center;background:#FFF3E0;font-weight:700">${(()=>{const totalQcEp=Object.values(showMap).reduce((s,m)=>s+(m.qcTillEp||0),0);return totalQcEp?Math.round(grandTotal/totalQcEp*10)/10:'—';})()}</td>
       ${typeArr.map(t=>{const c=Object.values(showMap).reduce((s,m)=>s+(m.errorTypes[t]||0),0);const p=pctFn(c,grandTotal);return `<td style="padding:8px 10px;text-align:center;color:var(--red)">${c} <span style="font-weight:400;font-size:9px;color:var(--muted)">(${p}%)</span></td>`;}).join('')}
     </tr>`;
 
