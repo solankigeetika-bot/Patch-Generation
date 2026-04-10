@@ -1562,12 +1562,13 @@ async function loadChapter(chapId, idx){
       const seEp = seSnap.val();
       const sePatches = seEp?.patches||[];
 
+      const fbDisps=fbData.dispositions||{};
       for(const r2 of remarks){
-        RS[r2.idx]={scriptLine:r2.scriptLine,takes:[null,null,null],acceptedTake:-1,discarded:[],status:'idle'};
+        RS[r2.idx]={scriptLine:r2.scriptLine,takes:[null,null,null],acceptedTake:-1,discarded:[],status:'idle',disposition:fbDisps[r2.idx]||''};
         // Find matching SE patch by time code and populate the accepted take
         const matchedPatch = sePatches.find(p=>p.time===r2.time);
         if(matchedPatch && matchedPatch.audioBase64){
-          RS[r2.idx].takes[0] = matchedPatch.audioBase64; // Put audio in take 1 slot
+          RS[r2.idx].takes[0] = matchedPatch.audioBase64;
           RS[r2.idx].acceptedTake = 0;
           RS[r2.idx].status = 'accepted';
         }
@@ -1609,8 +1610,9 @@ async function loadChapter(chapId, idx){
       rawRemarks:qc.remarks, needsPatch:!!extractLine(qc.remarks),
     }));
 
+    const fbDisps2=fbData?.dispositions||{};
     for(const r2 of remarks){
-      RS[r2.idx]={scriptLine:r2.scriptLine,takes:[null,null,null],acceptedTake:-1,discarded:[],status:'idle'};
+      RS[r2.idx]={scriptLine:r2.scriptLine,takes:[null,null,null],acceptedTake:-1,discarded:[],status:'idle',disposition:fbDisps2[r2.idx]||await dbGet('config',`${chapId}_r${r2.idx}_disp`)||''};
       for(let t=0;t<3;t++){
         const blob=await dbGetBlob(`${chapId}_r${r2.idx}_t${t}`);
         if(blob) RS[r2.idx].takes[t]=URL.createObjectURL(blob);
@@ -1756,7 +1758,8 @@ function extractWord(raw){
 function mkCard(r){
   const st=RS[r.idx];
   const tc=r.issueType.toLowerCase().includes('misp')?'t-misp':r.issueType.toLowerCase().includes('mod')?'t-mod':'t-qual';
-  const cc=st.status==='accepted'?'rc-acc':st.status==='discarded'?'rc-dis':'';
+  const disp=st.disposition||'';
+  const cc=st.status==='accepted'?'rc-acc':st.status==='discarded'?'rc-dis':disp==='no_patch'?'rc-acc':disp==='wrong_error'?'rc-dis':'';
   const isMisp=r.issueType.toLowerCase().includes('misp');
   const mispWord=isMisp?extractWord(r.rawRemarks):'';
   const dictKey=activeEp?`${activeEp.chapter_id}_${r.idx}`:'';
@@ -1768,11 +1771,17 @@ function mkCard(r){
       <span class="rc-type ${tc}">${r.issueType||'QC'}</span>
       ${st.status==='accepted'?`<span class="rc-sbadge rsb-acc">✓ Take ${st.acceptedTake+1} Accepted</span>`:''}
       ${st.status==='discarded'?`<span class="rc-sbadge rsb-dis">✗ Discarded</span>`:''}
+      ${disp==='no_patch'?`<span class="rc-sbadge" style="background:#E8F5E9;color:#2E7D32;border-color:#A5D6A7">✓ No Patch Needed</span>`:''}
+      ${disp==='wrong_error'?`<span class="rc-sbadge" style="background:#FFEBEE;color:#C62828;border-color:#EF9A9A">✗ Wrong Error</span>`:''}
       ${savedDict?`<span class="rc-sbadge" style="background:#E2F0D9;color:#2E7D32;border-color:#A5D6A7">📖 In Dictionary</span>`:''}
       <span class="rc-email">${r.userEmail}</span>
     </div>
     <div class="rc-body">
-      ${r.rawRemarks?`<div style="background:var(--surface2);border:1px solid var(--border);border-radius:7px;padding:9px 12px;margin-bottom:12px">
+      ${disp!=='no_patch'&&disp!=='wrong_error'?`<div style="display:flex;gap:6px;margin-bottom:10px">
+        <button class="btn btn-g btn-sm" onclick="setDisposition(${r.idx},'no_patch')" style="font-size:10px;color:#2E7D32;border-color:#A5D6A7">✓ No Patch Required</button>
+        <button class="btn btn-g btn-sm" onclick="setDisposition(${r.idx},'wrong_error')" style="font-size:10px;color:#C62828;border-color:#EF9A9A">✗ Wrong Error</button>
+      </div>`:`<div style="margin-bottom:10px"><button class="btn btn-g btn-sm" onclick="setDisposition(${r.idx},'')" style="font-size:10px">↩ Undo</button></div>`}
+      ${disp==='no_patch'||disp==='wrong_error'?'':`${r.rawRemarks?`<div style="background:var(--surface2);border:1px solid var(--border);border-radius:7px;padding:9px 12px;margin-bottom:12px">
         <div style="font-family:var(--mono);font-size:9px;color:var(--muted);letter-spacing:1px;margin-bottom:4px">QC REMARKS</div>
         <div style="font-size:12px;color:var(--text2);line-height:1.6;white-space:pre-wrap">${esc(r.rawRemarks)}</div>
       </div>`:''}
@@ -1804,6 +1813,7 @@ function mkCard(r){
         </div>
         <div class="takes-grid" id="tg-${r.idx}">${[0,1,2].map(ti=>mkTake(r.idx,ti)).join('')}</div>
       `:''}
+      `}
     </div>
   </div>`;
 }
@@ -1940,6 +1950,17 @@ async function updateSEDataForCurrentEp(){
   }
   saveSEData(chapId, title, patchesData, null);
 }
+async function setDisposition(ri, disp){
+  RS[ri].disposition=disp;
+  if(activeEp) await dbSet('config',`${activeEp.chapter_id}_r${ri}_disp`,disp);
+  // Save to Firebase so other users see it
+  if(activeEp) fbDb.ref('episodeRemarks/'+activeEp.chapter_id+'/dispositions/'+ri).set(disp||null);
+  refreshCard(ri); updateStitchBtn();
+  if(disp==='no_patch') toast('Marked: no patch required','ok');
+  else if(disp==='wrong_error') toast('Marked: wrong error','ok');
+  else toast('Disposition cleared','ok');
+}
+
 async function disTake(ri,ti){
   if(!RS[ri].discarded) RS[ri].discarded=[];
   if(!RS[ri].discarded.includes(ti)) RS[ri].discarded.push(ti);
