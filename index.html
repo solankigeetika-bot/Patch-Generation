@@ -1045,6 +1045,19 @@ function initSESync(){
     _seDataCache = snapshot.val() || {};
     if(currentPage === 'se') renderSEPanel();
   });
+  // Also cache showEpisodes for sequence numbers (for SE panel sorting)
+  fbDb.ref('showEpisodes').on('value', snap => {
+    const all = snap.val() || {};
+    window._showEpsCache = {};
+    for(const [sid, eps] of Object.entries(all)){
+      const arr = Array.isArray(eps) ? eps : Object.values(eps||{});
+      window._showEpsCache[sid] = {};
+      for(const e of arr){
+        if(e && e.chapter_id) window._showEpsCache[sid][e.chapter_id] = e.natural_sequence_number || e.seq_number || 0;
+      }
+    }
+    if(currentPage === 'se') renderSEPanel();
+  });
 }
 
 function setPatchStitch(chapId, patchIdx, val){
@@ -1173,7 +1186,15 @@ function renderSEPanel(){
 }
 
 function renderSEShowDetail(group){
-  const eps=group.episodes;
+  // Sort episodes by sequence number (from showEpisodes cache)
+  const showEpsCache=window._showEpsCache||{};
+  const showId=group.show?.showInput?.match(/show_id=([a-f0-9]+)/i)?.[1]||group.show?.showInput||'';
+  const seqCache=showEpsCache[showId]||{};
+  const eps=[...group.episodes].sort((a,b)=>{
+    const sa=seqCache[a.chapId]||a.seq||9999;
+    const sb=seqCache[b.chapId]||b.seq||9999;
+    return sa-sb;
+  });
   const totalP=eps.reduce((s,e)=>(e.patches?.length||0)+s,0);
   const stitchedP=eps.reduce((s,e)=>(e.patches||[]).filter(p=>p.stitched==='yes').length+s,0);
   const qcD=eps.filter(e=>e.qcDone).length;
@@ -1194,10 +1215,12 @@ function renderSEShowDetail(group){
     const patches=ep.patches||[];
     const stitchedCount=patches.filter(p=>p.stitched==='yes').length;
     const epCls=ep.uploadedCMS?'se-yes':ep.qcDone?'se-yes':'';
+    const epSeq=seqCache[chapId]||ep.seq||'';
 
     return `<div class="se-ep ${epCls}" id="se-ep-${chapId}">
       <div class="se-ep-hdr" onclick="toggleSEEp('${chapId}')">
         <span class="se-ep-arrow">▶</span>
+        ${epSeq?`<span style="font-family:var(--mono);font-size:11px;color:var(--accent);font-weight:700;margin-right:8px">#${epSeq}</span>`:''}
         <div class="se-ep-name">${esc(ep.title||'Episode')}</div>
         <div class="se-ep-pills">
           <span class="se-pill se-pill-patches">${stitchedCount}/${patches.length} stitched</span>
@@ -1226,6 +1249,7 @@ function renderSEShowDetail(group){
       </div>
       <div class="se-actions">
         <button class="btn btn-p btn-sm" onclick="event.stopPropagation();downloadAllPatches('${chapId}')" style="font-size:10px">⬇ Download All Patches</button>
+        <button class="btn btn-orange btn-sm" onclick="event.stopPropagation();downloadRawCMSAudio('${chapId}','${showId}','${esc(ep.title||'Episode').replace(/'/g,'')}')" style="font-size:10px">🎵 Download Raw CMS Audio</button>
         ${ep.stitchedUrl?'<a class="se-dl" href="'+ep.stitchedUrl+'" download="stitched_'+chapId+'.wav">⬇ Stitched WAV</a>':''}
         <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
           <label style="font-family:var(--mono);font-size:10px;display:flex;align-items:center;gap:4px;cursor:pointer">
@@ -1242,6 +1266,37 @@ function renderSEShowDetail(group){
   }).join('');
 
   document.getElementById('seList').innerHTML=html;
+}
+
+async function downloadRawCMSAudio(chapId, showId, epTitle){
+  if(!authToken||!uid){
+    toast('Connect CMS credentials first to download raw audio','warn');
+    return;
+  }
+  toast('Fetching CMS audio URL...','ok');
+  try{
+    const muResp=await fetch(`${CMS_BASE}/get_media_url?type=episode&media_type=audio&event=play&chapter_id=${chapId}&show_id=${showId}`,{headers:hdrs()});
+    if(!muResp.ok) throw new Error('CMS API error: '+muResp.status);
+    const muData=await muResp.json();
+    const audioUrl=muData.result?.media_url||muData.result?.url||muData.media_url||muData.url;
+    if(!audioUrl) throw new Error('No audio URL in CMS response');
+    toast('Downloading raw audio...','ok');
+    const audioResp=await fetch(audioUrl);
+    if(!audioResp.ok) throw new Error('Audio fetch failed: '+audioResp.status);
+    const blob=await audioResp.blob();
+    const url=URL.createObjectURL(blob);
+    const ext=audioUrl.match(/\.(mp3|wav|m4a|aac)(\?|$)/i)?.[1]||'mp3';
+    const cleanTitle=(epTitle||'Episode').replace(/[^a-zA-ZÀ-ÿ0-9 ]/g,'').replace(/ /g,'_');
+    const a=document.createElement('a');
+    a.href=url;
+    a.download=`raw_${cleanTitle}_${chapId}.${ext}`;
+    document.body.appendChild(a);a.click();document.body.removeChild(a);
+    setTimeout(()=>URL.revokeObjectURL(url),1000);
+    toast('Raw audio downloaded','ok');
+  }catch(e){
+    console.error('downloadRawCMSAudio failed:',e);
+    toast('Failed: '+e.message,'err');
+  }
 }
 
 async function downloadAllPatches(chapId){
