@@ -1425,35 +1425,47 @@ function renderSEShowDetail(group){
   document.getElementById('seList').innerHTML=html;
 }
 
+let _rawDlQueue=[], _rawDlRunning=false;
 async function downloadRawCMSAudio(chapId, showId, epTitle){
   if(!authToken||!uid){
     toast('Connect CMS credentials first to download raw audio','warn');
     return;
   }
-  toast('Fetching CMS audio URL...','ok');
-  try{
-    const muResp=await fetch(`${CMS_BASE}/get_media_url?type=episode&media_type=audio&event=play&chapter_id=${chapId}&show_id=${showId}`,{headers:hdrs()});
-    if(!muResp.ok) throw new Error('CMS API error: '+muResp.status);
-    const muData=await muResp.json();
-    const audioUrl=muData.result?.media_url||muData.result?.url||muData.media_url||muData.url;
-    if(!audioUrl) throw new Error('No audio URL in CMS response');
-    toast('Downloading raw audio...','ok');
-    const audioResp=await fetch(audioUrl);
-    if(!audioResp.ok) throw new Error('Audio fetch failed: '+audioResp.status);
-    const blob=await audioResp.blob();
-    const url=URL.createObjectURL(blob);
-    const ext=audioUrl.match(/\.(mp3|wav|m4a|aac)(\?|$)/i)?.[1]||'mp3';
-    const cleanTitle=(epTitle||'Episode').replace(/[^a-zA-ZÀ-ÿ0-9 ]/g,'').replace(/ /g,'_');
-    const a=document.createElement('a');
-    a.href=url;
-    a.download=`raw_${cleanTitle}_${chapId}.${ext}`;
-    document.body.appendChild(a);a.click();document.body.removeChild(a);
-    setTimeout(()=>URL.revokeObjectURL(url),1000);
-    toast('Raw audio downloaded','ok');
-  }catch(e){
-    console.error('downloadRawCMSAudio failed:',e);
-    toast('Failed: '+e.message,'err');
+  _rawDlQueue.push({chapId, showId, epTitle});
+  toast(`Queued: ${epTitle||chapId} (${_rawDlQueue.length} in queue)`,'ok');
+  if(!_rawDlRunning) _processRawDlQueue();
+}
+async function _processRawDlQueue(){
+  _rawDlRunning=true;
+  while(_rawDlQueue.length){
+    const {chapId, showId, epTitle}=_rawDlQueue.shift();
+    toast(`Downloading: ${epTitle||chapId} (${_rawDlQueue.length} remaining)...`,'ok');
+    try{
+      const muResp=await fetch(`${CMS_BASE}/get_media_url?type=episode&media_type=audio&event=play&chapter_id=${chapId}&show_id=${showId}`,{headers:hdrs()});
+      if(!muResp.ok) throw new Error('CMS API error: '+muResp.status);
+      const muData=await muResp.json();
+      const audioUrl=muData.result?.media_url||muData.result?.url||muData.media_url||muData.url;
+      if(!audioUrl) throw new Error('No audio URL in CMS response');
+      const audioResp=await fetch(audioUrl);
+      if(!audioResp.ok) throw new Error('Audio fetch failed: '+audioResp.status);
+      const blob=await audioResp.blob();
+      const url=URL.createObjectURL(blob);
+      const ext=audioUrl.match(/\.(mp3|wav|m4a|aac)(\?|$)/i)?.[1]||'mp3';
+      const cleanTitle=(epTitle||'Episode').replace(/[^a-zA-ZÀ-ÿ0-9 ]/g,'').replace(/ /g,'_');
+      const a=document.createElement('a');
+      a.href=url;
+      a.download=`raw_${cleanTitle}_${chapId}.${ext}`;
+      document.body.appendChild(a);a.click();document.body.removeChild(a);
+      setTimeout(()=>URL.revokeObjectURL(url),1000);
+      toast(`Downloaded: ${epTitle||chapId}`,'ok');
+    }catch(e){
+      console.error('downloadRawCMSAudio failed:',e);
+      toast(`Failed: ${epTitle||chapId} — ${e.message}`,'err');
+    }
+    // Wait 3 seconds before next download to avoid 429
+    if(_rawDlQueue.length) await sleep(3000);
   }
+  _rawDlRunning=false;
 }
 
 async function downloadAllPatches(chapId){
