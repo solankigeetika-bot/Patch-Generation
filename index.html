@@ -1468,13 +1468,30 @@ async function _processRawDlQueue(){
   _rawDlRunning=false;
 }
 
-async function downloadAllPatches(chapId){
+let _patchDlQueue=[], _patchDlRunning=false;
+function downloadAllPatches(chapId){
+  _patchDlQueue.push(chapId);
   const seData=getSEData();
   const ep=seData[chapId];
-  if(!ep?.patches?.length){toast('No patches to download','warn');return;}
+  toast(`Queued patches for "${ep?.title||chapId}" (${_patchDlQueue.length} in queue)`,'ok');
+  if(!_patchDlRunning) _processPatchDlQueue();
+}
+async function _processPatchDlQueue(){
+  _patchDlRunning=true;
+  while(_patchDlQueue.length){
+    const chapId=_patchDlQueue.shift();
+    await _doDownloadAllPatches(chapId);
+    if(_patchDlQueue.length) await sleep(800);
+  }
+  _patchDlRunning=false;
+}
+async function _doDownloadAllPatches(chapId){
+  const seData=getSEData();
+  const ep=seData[chapId];
+  if(!ep?.patches?.length){toast('No patches for '+chapId,'warn');return;}
   const patchesWithAudio=ep.patches.filter(p=>p.audioBase64&&p.time);
   if(!patchesWithAudio.length){toast('No audio available','warn');return;}
-  toast('Placing '+patchesWithAudio.length+' patches at timestamps...','ok');
+  toast(`Placing ${patchesWithAudio.length} patches at timestamps for "${ep.title||''}"...`,'ok');
 
   try{
     // Decode all patches and parse their timestamps
@@ -1484,10 +1501,18 @@ async function downloadAllPatches(chapId){
       const blob=await resp.blob();
       const buf=await blobToAudioBuf(blob);
       const startSec=parseTime(p.time);
-      items.push({buf, startSec});
+      console.log(`Patch ${p.time} → ${startSec}s, duration ${buf.duration.toFixed(2)}s`);
+      items.push({buf, startSec, time:p.time});
     }
     // Sort by timestamp
     items.sort((a,b)=>a.startSec-b.startSec);
+
+    // Warn if all timestamps are 0 (parseTime failed)
+    const uniqueStarts=new Set(items.map(i=>i.startSec));
+    if(uniqueStarts.size===1 && items[0].startSec===0){
+      console.warn('All patches have startSec=0 — timestamps may be missing!');
+      toast('Warning: patches have no timestamps, will be placed sequentially','warn');
+    }
 
     // Get target sample rate and channels from first buffer
     const sr=items[0].buf.sampleRate, ch=items[0].buf.numberOfChannels;
@@ -1496,6 +1521,7 @@ async function downloadAllPatches(chapId){
     const lastItem=items[items.length-1];
     const totalSec=lastItem.startSec+lastItem.buf.duration+0.5;
     const totalLen=Math.ceil(totalSec*sr);
+    console.log(`Output: ${totalSec.toFixed(1)}s, ${items.length} patches, sr=${sr}, ch=${ch}`);
 
     const outCtx=new OfflineAudioContext(ch,totalLen,sr);
     for(const item of items){
@@ -1514,10 +1540,11 @@ async function downloadAllPatches(chapId){
     a.href=url;
     a.download='all_patches_'+(ep.title||'episode').replace(/[^a-zA-ZÀ-ÿ0-9 ]/g,'').replace(/ /g,'_')+'.wav';
     document.body.appendChild(a);a.click();document.body.removeChild(a);
-    toast('Downloaded patches at timestamps','ok');
+    setTimeout(()=>URL.revokeObjectURL(url),2000);
+    toast(`Downloaded: ${ep.title||chapId} (${_patchDlQueue.length} remaining)`,'ok');
   }catch(e){
     toast('Failed to combine: '+e.message,'err');
-    console.error(e);
+    console.error('downloadAllPatches error:',e);
   }
 }
 
