@@ -1501,17 +1501,20 @@ async function _doDownloadAllPatches(chapId){
       const blob=await resp.blob();
       const buf=await blobToAudioBuf(blob);
       const startSec=parseTime(p.time);
-      console.log(`Patch ${p.time} → ${startSec}s, duration ${buf.duration.toFixed(2)}s`);
+      console.log(`Patch time="${p.time}" → ${startSec}s, duration ${buf.duration.toFixed(2)}s`);
       items.push({buf, startSec, time:p.time});
     }
     // Sort by timestamp
     items.sort((a,b)=>a.startSec-b.startSec);
 
+    // Show visible summary of parsed times
+    const timeSummary=items.map(i=>`${i.time}→${Math.floor(i.startSec/60)}m${Math.floor(i.startSec%60)}s`).join(', ');
+    console.log('TIMES:',timeSummary);
+
     // Warn if all timestamps are 0 (parseTime failed)
     const uniqueStarts=new Set(items.map(i=>i.startSec));
-    if(uniqueStarts.size===1 && items[0].startSec===0){
-      console.warn('All patches have startSec=0 — timestamps may be missing!');
-      toast('Warning: patches have no timestamps, will be placed sequentially','warn');
+    if(uniqueStarts.size===1){
+      alert(`⚠️ All ${items.length} patches have the same timestamp (${items[0].startSec}s)!\n\nRaw times: ${items.map(i=>'"'+i.time+'"').join(', ')}\n\nThey will be placed sequentially. Check console for details.`);
     }
 
     // Get target sample rate and channels from first buffer
@@ -2590,8 +2593,14 @@ function audioBufToBlob(buf){
 }
 
 function parseTime(t){
-  const s=t.split('-')[0].trim().split(':').map(Number);
-  return (s[0]||0)*60+(s[1]||0);
+  if(t==null) return 0;
+  const str=String(t).split('-')[0].split('–')[0].split('—')[0].trim();
+  // If pure number like "65", treat as seconds
+  if(/^\d+(\.\d+)?$/.test(str)) return parseFloat(str);
+  const parts=str.split(':').map(s=>parseInt(s,10)||0);
+  if(parts.length===3) return parts[0]*3600+parts[1]*60+parts[2]; // HH:MM:SS
+  if(parts.length===2) return parts[0]*60+parts[1]; // MM:SS
+  return parts[0]||0;
 }
 function parseTimeRange(t){
   const parts=t.split('-').map(p=>p.trim());
