@@ -1538,13 +1538,14 @@ async function _doDownloadAllPatches(chapId){
     const wav=bufToWav(rendered);
     const url=URL.createObjectURL(wav);
 
-    // Trigger download
+    // Trigger download with timestamp in filename so each download is unique
+    const ts=new Date().toISOString().replace(/[-:T]/g,'').substring(0,13); // YYYYMMDDhhmm
     const a=document.createElement('a');
     a.href=url;
-    a.download='all_patches_'+(ep.title||'episode').replace(/[^a-zA-ZÀ-ÿ0-9 ]/g,'').replace(/ /g,'_')+'.wav';
+    a.download='all_patches_'+(ep.title||'episode').replace(/[^a-zA-ZÀ-ÿ0-9 ]/g,'').replace(/ /g,'_')+'_v'+ts+'.wav';
     document.body.appendChild(a);a.click();document.body.removeChild(a);
     setTimeout(()=>URL.revokeObjectURL(url),2000);
-    toast(`Downloaded: ${ep.title||chapId} (${_patchDlQueue.length} remaining)`,'ok');
+    toast(`Downloaded v${ts}: ${ep.title||chapId} — ${items.length} patches over ${Math.floor(totalSec/60)}m${Math.floor(totalSec%60)}s (${_patchDlQueue.length} remaining)`,'ok');
   }catch(e){
     toast('Failed to combine: '+e.message,'err');
     console.error('downloadAllPatches error:',e);
