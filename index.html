@@ -256,6 +256,11 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
     <button class="btn btn-g btn-sm" onclick="goPage('se')" style="width:100%;margin-bottom:4px;justify-content:flex-start">🎧 SE Panel</button>
     <button class="btn btn-g btn-sm" onclick="goPage('dict')" style="width:100%;margin-bottom:4px;justify-content:flex-start">📖 Dictionary</button>
     <button class="btn btn-g btn-sm" onclick="goPage('agents')" style="width:100%;margin-bottom:4px;justify-content:flex-start">👤 QC Agent Report</button>
+    <button class="btn btn-g btn-sm" onclick="goPage('prod')" style="width:100%;margin-bottom:4px;justify-content:flex-start">📊 SE Productivity</button>
+    <div style="margin-top:10px;padding:10px;background:var(--surface2);border-radius:7px">
+      <label class="fl" style="margin-bottom:3px">Logged in as (SE/QC)</label>
+      <input class="inp" id="currentUserInp" placeholder="e.g. Marine" style="font-size:11px" oninput="setCurrentUser(this.value)"/>
+    </div>
     <div id="sbShowNav"></div>
   </div>
 
@@ -323,6 +328,10 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
     <div class="pg" id="page-agents">
       <div id="agentReport"></div>
     </div>
+    <!-- PAGE: SE/Reviewer Productivity -->
+    <div class="pg" id="page-prod">
+      <div id="prodReport"></div>
+    </div>
     <!-- PAGE: Dictionary -->
     <div class="pg" id="page-dict">
       <div id="dictSummary"></div>
@@ -356,6 +365,24 @@ const AS_BASE  = 'https://v2.api.audio';
 const DB_NAME  = 'PatchStudioDB';
 
 let authToken='', uid='', asKey='', asVoice='', voiceType='standard', cmsWin=null;
+let currentUser = localStorage.getItem('ps_current_user') || '';
+function setCurrentUser(v){
+  currentUser = (v||'').trim();
+  localStorage.setItem('ps_current_user', currentUser);
+}
+function requireUser(){
+  if(!currentUser){
+    const name = prompt('Please enter your name (e.g. Marine) to track your work:');
+    if(name){ setCurrentUser(name); const el=document.getElementById('currentUserInp'); if(el) el.value=name; }
+  }
+  return currentUser;
+}
+function logAction(chapId, action, data){
+  if(!currentUser) return;
+  const entry = {user: currentUser, action, chapId, ts: Date.now(), ...data};
+  const key = Date.now() + '_' + Math.random().toString(36).substr(2,6);
+  fbDb.ref('productivity/'+key).set(entry);
+}
 let episodes=[], activeEp=null, activeShowId='';
 let remarks=[], RS={};
 let db=null, finalAudioUrl=null, finalAudioBlob=null;
@@ -429,6 +456,8 @@ window.onload = async () => {
   document.getElementById('asVoiceInp').value=asVoice;
   document.getElementById('voiceType').value=voiceType;
   if(savedShow) document.getElementById('showInp').value=savedShow;
+  const cuEl=document.getElementById('currentUserInp');
+  if(cuEl && currentUser) cuEl.value=currentUser;
   await initShows();
   initSESync();
   initDictSync();
@@ -542,6 +571,12 @@ function goPage(name){
     genBtn.style.display='none';
     stitchBtn.style.display='none';
     renderAgentReport();
+  } else if(name==='prod'){
+    back.style.display='inline-flex';
+    document.getElementById('topTitle').textContent='SE / Reviewer Productivity';
+    genBtn.style.display='none';
+    stitchBtn.style.display='none';
+    renderProductivityReport();
   } else if(name==='dict'){
     back.style.display='inline-flex';
     document.getElementById('topTitle').textContent='Mispronunciation Dictionary';
@@ -561,6 +596,7 @@ function goBack(){
   else if(currentPage==='se') goPage('dashboard');
   else if(currentPage==='dict') goPage('dashboard');
   else if(currentPage==='agents') goPage('dashboard');
+  else if(currentPage==='prod') goPage('dashboard');
 }
 
 // ── Sidebar Nav ─────────────────────────────────────────────
@@ -1119,6 +1155,152 @@ async function renderAgentReport(){
   }
 }
 
+// ── SE / Reviewer Productivity Report ───────────────────────
+async function renderProductivityReport(){
+  const el=document.getElementById('prodReport');
+  el.innerHTML='<div style="font-size:12px;color:var(--muted);padding:12px">Loading productivity data...</div>';
+
+  try{
+    const prodSnap=await fbDb.ref('productivity').once('value');
+    const prodData=prodSnap.val()||{};
+    const seDataSnap=await fbDb.ref('seData').once('value');
+    const seData=seDataSnap.val()||{};
+
+    // Aggregate per user
+    const users={};
+    function getUser(name){
+      if(!users[name]) users[name]={
+        name, reviews:0, rejects:0, stitched:0, unstitched:0,
+        qcDone:0, uploaded:0, dispositions:0,
+        episodes:new Set(), shows:new Set(),
+        firstActionTs:Infinity, lastActionTs:0,
+        byShow:{}, byDay:{}
+      };
+      return users[name];
+    }
+
+    // Map chapId → show name for per-show stats
+    const chapToShow={};
+    for(const [chapId, ep] of Object.entries(seData)){
+      const showId=ep.showId||'';
+      const showConfig=shows.find(s=>{
+        const sid=s.showInput?.match(/show_id=([a-f0-9]+)/i)?.[1]||s.showInput||'';
+        return sid===showId;
+      });
+      chapToShow[chapId]=showConfig?.name||showId||'Unknown';
+    }
+
+    const logEntries=Object.values(prodData).filter(e=>e&&e.user);
+    if(!logEntries.length){
+      el.innerHTML=`<div style="padding:20px;text-align:center;color:var(--muted)">
+        <div style="font-size:36px;margin-bottom:10px">📊</div>
+        <div style="font-weight:700;margin-bottom:6px">No productivity data yet</div>
+        <div style="font-size:11px">Enter your name in the sidebar, then accept/reject patches or mark stitched — all actions will be tracked here.</div>
+      </div>`;
+      return;
+    }
+
+    for(const e of logEntries){
+      const u=getUser(e.user);
+      const show=chapToShow[e.chapId]||'Unknown';
+      u.episodes.add(e.chapId);
+      u.shows.add(show);
+      if(e.ts<u.firstActionTs) u.firstActionTs=e.ts;
+      if(e.ts>u.lastActionTs) u.lastActionTs=e.ts;
+      // Per-show
+      if(!u.byShow[show]) u.byShow[show]={reviews:0, stitched:0, qcDone:0, uploaded:0, episodes:new Set()};
+      u.byShow[show].episodes.add(e.chapId);
+      // Per-day
+      const day=new Date(e.ts).toISOString().substring(0,10);
+      if(!u.byDay[day]) u.byDay[day]={actions:0};
+      u.byDay[day].actions++;
+
+      if(e.action==='review_accept'){u.reviews++;u.byShow[show].reviews++;}
+      else if(e.action==='review_reject') u.rejects++;
+      else if(e.action==='stitch'){
+        if(e.value==='yes'){u.stitched++;u.byShow[show].stitched++;}
+        else if(e.value==='no') u.unstitched++;
+      }
+      else if(e.action==='qc_done'&&e.value){u.qcDone++;u.byShow[show].qcDone++;}
+      else if(e.action==='upload'&&e.value){u.uploaded++;u.byShow[show].uploaded++;}
+      else if(e.action==='disposition') u.dispositions++;
+    }
+
+    const userArr=Object.values(users).sort((a,b)=>(b.reviews+b.stitched)-(a.reviews+a.stitched));
+
+    // Render
+    let html=`<div style="font-size:16px;font-weight:800;margin-bottom:6px">SE / Reviewer Productivity</div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:14px">Tracks patch reviews (accept/reject), stitching, QC Done, and uploads. ${logEntries.length} actions logged.</div>`;
+
+    // Summary table
+    html+=`<div style="overflow-x:auto;margin-bottom:24px">
+    <table style="width:100%;border-collapse:collapse;font-size:11px;font-family:var(--mono)">
+      <thead><tr style="background:var(--surface2);border-bottom:2px solid var(--border)">
+        <th style="padding:8px 10px;text-align:left">User</th>
+        <th style="padding:8px 10px;text-align:center">Shows</th>
+        <th style="padding:8px 10px;text-align:center">Episodes</th>
+        <th style="padding:8px 10px;text-align:center;background:#E3F2FD">Patches Reviewed</th>
+        <th style="padding:8px 10px;text-align:center;background:#E8F5E9">Patches Stitched</th>
+        <th style="padding:8px 10px;text-align:center;background:#F3E5F5">QC Done</th>
+        <th style="padding:8px 10px;text-align:center;background:#FFF3E0">Uploaded</th>
+        <th style="padding:8px 10px;text-align:center">First Action</th>
+        <th style="padding:8px 10px;text-align:center">Last Action</th>
+      </tr></thead><tbody>`;
+
+    for(const u of userArr){
+      const days=Object.keys(u.byDay).length;
+      const fmtDate=(ts)=>ts===Infinity||!ts?'—':new Date(ts).toLocaleDateString('en-GB',{day:'2-digit',month:'short'});
+      html+=`<tr style="border-bottom:1px solid var(--border)">
+        <td style="padding:6px 10px;font-weight:700">${esc(u.name)}</td>
+        <td style="padding:6px 10px;text-align:center">${u.shows.size}</td>
+        <td style="padding:6px 10px;text-align:center">${u.episodes.size}</td>
+        <td style="padding:6px 10px;text-align:center;background:#E3F2FD;font-weight:700">${u.reviews}${u.rejects?` <span style="font-size:9px;color:var(--red);font-weight:400">(-${u.rejects})</span>`:''}</td>
+        <td style="padding:6px 10px;text-align:center;background:#E8F5E9;font-weight:700">${u.stitched}${u.unstitched?` <span style="font-size:9px;color:var(--red);font-weight:400">(-${u.unstitched})</span>`:''}</td>
+        <td style="padding:6px 10px;text-align:center;background:#F3E5F5;font-weight:700">${u.qcDone}</td>
+        <td style="padding:6px 10px;text-align:center;background:#FFF3E0;font-weight:700">${u.uploaded}</td>
+        <td style="padding:6px 10px;text-align:center;font-size:9px">${fmtDate(u.firstActionTs)}</td>
+        <td style="padding:6px 10px;text-align:center;font-size:9px">${fmtDate(u.lastActionTs)}</td>
+      </tr>`;
+    }
+    html+=`</tbody></table></div>`;
+
+    // Per-user detail cards (with per-show breakdown)
+    html+=`<div style="font-size:14px;font-weight:800;margin-bottom:10px">User Details</div>`;
+    for(const u of userArr){
+      const days=Object.keys(u.byDay).sort();
+      const totalActions=Object.values(u.byDay).reduce((s,d)=>s+d.actions,0);
+      const avgPerDay=days.length?Math.round(totalActions/days.length):0;
+      html+=`<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:14px 16px;margin-bottom:12px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px">
+          <div style="font-weight:700;font-size:14px">${esc(u.name)}</div>
+          <div style="display:flex;gap:14px;font-family:var(--mono);font-size:11px">
+            <span><span style="color:var(--accent);font-weight:700">${u.reviews}</span> reviewed</span>
+            <span><span style="color:var(--green);font-weight:700">${u.stitched}</span> stitched</span>
+            <span><span style="color:var(--purple);font-weight:700">${u.qcDone}</span> QC done</span>
+            <span><span style="color:var(--orange);font-weight:700">${u.uploaded}</span> uploaded</span>
+            <span>${days.length} days · ${avgPerDay}/day</span>
+          </div>
+        </div>
+        <div style="font-size:10px;color:var(--muted);margin-bottom:6px">Per-show breakdown:</div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          ${Object.entries(u.byShow).map(([sn,st])=>`<div style="background:var(--surface2);border:1px solid var(--border);border-radius:7px;padding:6px 10px;font-size:10px;font-family:var(--mono)">
+            <div style="font-weight:700;margin-bottom:2px">${esc(sn)} <span style="color:var(--muted);font-weight:400">(${st.episodes.size}ep)</span></div>
+            <div style="color:var(--accent)">${st.reviews} reviewed</div>
+            <div style="color:var(--green)">${st.stitched} stitched</div>
+            <div style="color:var(--purple)">${st.qcDone} QC done</div>
+            <div style="color:var(--orange)">${st.uploaded} uploaded</div>
+          </div>`).join('')}
+        </div>
+      </div>`;
+    }
+
+    el.innerHTML=html;
+  }catch(e){
+    console.error('Productivity report failed:',e);
+    el.innerHTML='<div style="color:var(--red);padding:12px">Failed: '+e.message+'</div>';
+  }
+}
+
 // ── Show View (episodes list) ───────────────────────────────
 let epFilter='', epFilterMode='all';
 function renderShowView(){
@@ -1218,13 +1400,25 @@ function initSESync(){
 }
 
 function setPatchStitch(chapId, patchIdx, val){
+  if(!requireUser()){toast('Enter your name in sidebar first','warn');return;}
   fbDb.ref('seData/'+chapId+'/patches/'+patchIdx+'/stitched').set(val);
+  fbDb.ref('seData/'+chapId+'/patches/'+patchIdx+'/stitchedBy').set(currentUser);
+  fbDb.ref('seData/'+chapId+'/patches/'+patchIdx+'/stitchedAt').set(Date.now());
+  logAction(chapId, 'stitch', {patchIdx, value:val});
 }
 function setEpQCDone(chapId, val){
+  if(!requireUser()){toast('Enter your name in sidebar first','warn');return;}
   fbDb.ref('seData/'+chapId+'/qcDone').set(val);
+  fbDb.ref('seData/'+chapId+'/qcDoneBy').set(val?currentUser:null);
+  fbDb.ref('seData/'+chapId+'/qcDoneAt').set(val?Date.now():null);
+  logAction(chapId, 'qc_done', {value:val});
 }
 function setEpUploaded(chapId, val){
+  if(!requireUser()){toast('Enter your name in sidebar first','warn');return;}
   fbDb.ref('seData/'+chapId+'/uploadedCMS').set(val);
+  fbDb.ref('seData/'+chapId+'/uploadedBy').set(val?currentUser:null);
+  fbDb.ref('seData/'+chapId+'/uploadedAt').set(val?Date.now():null);
+  logAction(chapId, 'upload', {value:val});
 }
 function toggleSEEp(chapId){
   const el=document.getElementById('se-ep-'+chapId);
@@ -2171,10 +2365,15 @@ async function genOneTake(text,ri,ti,chapId){
 }
 
 async function accTake(ri,ti){
+  if(!requireUser()){toast('Enter your name in sidebar first','warn');return;}
   RS[ri].acceptedTake=ti; RS[ri].status='accepted';
+  RS[ri].reviewedBy=currentUser;
+  RS[ri].reviewedAt=Date.now();
   await dbSet('config',`${activeEp.chapter_id}_r${ri}_acc`,ti);
+  // Save reviewer info to Firebase
+  fbDb.ref('episodeRemarks/'+activeEp.chapter_id+'/reviews/'+ri).set({user:currentUser, take:ti, action:'accept', ts:Date.now()});
+  logAction(activeEp.chapter_id, 'review_accept', {remarkIdx:ri, take:ti});
   refreshCard(ri); updateStitchBtn();
-  // Save to SE data (await to ensure Base64 conversion completes)
   toast(`Take ${ti+1} accepted — saving audio...`,'ok');
   await updateSEDataForCurrentEp();
   toast(`Patch audio saved ✓`,'ok');
@@ -2206,10 +2405,16 @@ async function updateSEDataForCurrentEp(){
   saveSEData(chapId, title, patchesData, null);
 }
 async function setDisposition(ri, disp){
+  if(disp && !requireUser()){toast('Enter your name in sidebar first','warn');return;}
   RS[ri].disposition=disp;
-  if(activeEp) await dbSet('config',`${activeEp.chapter_id}_r${ri}_disp`,disp);
-  // Save to Firebase so other users see it
-  if(activeEp) fbDb.ref('episodeRemarks/'+activeEp.chapter_id+'/dispositions/'+ri).set(disp||null);
+  if(activeEp){
+    await dbSet('config',`${activeEp.chapter_id}_r${ri}_disp`,disp);
+    fbDb.ref('episodeRemarks/'+activeEp.chapter_id+'/dispositions/'+ri).set(disp||null);
+    if(disp){
+      fbDb.ref('episodeRemarks/'+activeEp.chapter_id+'/dispositionMeta/'+ri).set({user:currentUser, ts:Date.now()});
+      logAction(activeEp.chapter_id, 'disposition', {remarkIdx:ri, disp});
+    }
+  }
   refreshCard(ri); updateStitchBtn();
   if(disp==='no_patch') toast('Marked: no patch required','ok');
   else if(disp==='wrong_error') toast('Marked: wrong error','ok');
@@ -2217,11 +2422,16 @@ async function setDisposition(ri, disp){
 }
 
 async function disTake(ri,ti){
+  if(!requireUser()){toast('Enter your name in sidebar first','warn');return;}
   if(!RS[ri].discarded) RS[ri].discarded=[];
   if(!RS[ri].discarded.includes(ti)) RS[ri].discarded.push(ti);
   const wasAccepted=RS[ri].acceptedTake===ti;
   if(wasAccepted){RS[ri].acceptedTake=-1;RS[ri].status='done';}
   await dbSet('config',`${activeEp.chapter_id}_r${ri}_acc`,-1);
+  if(activeEp){
+    fbDb.ref('episodeRemarks/'+activeEp.chapter_id+'/reviews/'+ri).set({user:currentUser, take:ti, action:'reject', ts:Date.now()});
+    logAction(activeEp.chapter_id, 'review_reject', {remarkIdx:ri, take:ti});
+  }
   refreshCard(ri); updateStitchBtn();
   if(wasAccepted){
     await updateSEDataForCurrentEp();
