@@ -1600,6 +1600,7 @@ function renderSEShowDetail(group){
       </div>
       <div class="se-actions">
         <button class="btn btn-p btn-sm" onclick="event.stopPropagation();downloadAllPatches('${chapId}')" style="font-size:10px">⬇ Download All Patches</button>
+        <button class="btn btn-g btn-sm" onclick="event.stopPropagation();retryPatchDownload('${chapId}')" style="font-size:10px" title="Re-generate and download again">🔁 Retry</button>
         <button class="btn btn-orange btn-sm" onclick="event.stopPropagation();downloadRawCMSAudio('${chapId}','${showId}','${esc(ep.title||'Episode').replace(/'/g,'')}')" style="font-size:10px">🎵 Download Raw CMS Audio</button>
         ${ep.stitchedUrl?'<a class="se-dl" href="'+ep.stitchedUrl+'" download="stitched_'+chapId+'.wav">⬇ Stitched WAV</a>':''}
         <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
@@ -1696,19 +1697,38 @@ async function _doDownloadAllPatches(chapId){
       const buf=await blobToAudioBuf(blob);
       const startSec=parseTime(p.time);
       console.log(`Patch time="${p.time}" → ${startSec}s, duration ${buf.duration.toFixed(2)}s`);
-      items.push({buf, startSec, time:p.time});
+      items.push({buf, startSec, origStart:startSec, time:p.time});
     }
-    // Sort by timestamp
-    items.sort((a,b)=>a.startSec-b.startSec);
+    // Sort by original timestamp
+    items.sort((a,b)=>a.origStart-b.origStart);
 
-    // Show visible summary of parsed times
+    // Resolve overlaps: if a patch would overlap with the previous one, push it after
+    const GAP=0.3; // minimum 300ms gap between patches
+    const shifted=[];
+    for(let i=1;i<items.length;i++){
+      const prevEnd=items[i-1].startSec+items[i-1].buf.duration;
+      if(items[i].startSec < prevEnd+GAP){
+        const newStart=prevEnd+GAP;
+        shifted.push(`${items[i].time}: ${items[i].startSec.toFixed(1)}s → ${newStart.toFixed(1)}s`);
+        items[i].startSec=newStart;
+      }
+    }
+    if(shifted.length){
+      console.warn(`${shifted.length} overlapping patches shifted:`,shifted);
+      toast(`⚠️ ${shifted.length} overlapping patches shifted to avoid clash`,'warn');
+    }
+
+    // Visible summary
     const timeSummary=items.map(i=>`${i.time}→${Math.floor(i.startSec/60)}m${Math.floor(i.startSec%60)}s`).join(', ');
     console.log('TIMES:',timeSummary);
 
-    // Warn if all timestamps are 0 (parseTime failed)
-    const uniqueStarts=new Set(items.map(i=>i.startSec));
-    if(uniqueStarts.size===1){
-      alert(`⚠️ All ${items.length} patches have the same timestamp (${items[0].startSec}s)!\n\nRaw times: ${items.map(i=>'"'+i.time+'"').join(', ')}\n\nThey will be placed sequentially. Check console for details.`);
+    // Warn if all timestamps are 0 (parseTime failed) — force sequential
+    const uniqueOrig=new Set(items.map(i=>i.origStart));
+    if(uniqueOrig.size===1){
+      console.warn('All patches had same timestamp — placing sequentially');
+      let cursor=items[0].origStart;
+      for(const it of items){ it.startSec=cursor; cursor+=it.buf.duration+GAP; }
+      toast(`⚠️ All patches had same timestamp — placed sequentially`,'warn');
     }
 
     // Get target sample rate and channels from first buffer
@@ -1743,7 +1763,21 @@ async function _doDownloadAllPatches(chapId){
   }catch(e){
     toast('Failed to combine: '+e.message,'err');
     console.error('downloadAllPatches error:',e);
+    // Remember last failed chapId for retry
+    window._lastFailedPatchDl=chapId;
+    throw e;
   }
+}
+
+function retryLastPatchDownload(){
+  const last=window._lastFailedPatchDl;
+  if(!last){toast('No failed download to retry','warn');return;}
+  toast('Retrying last failed download...','ok');
+  downloadAllPatches(last);
+}
+function retryPatchDownload(chapId){
+  toast('Retrying download for this episode...','ok');
+  downloadAllPatches(chapId);
 }
 
 async function downloadAllIndividual(chapId){
