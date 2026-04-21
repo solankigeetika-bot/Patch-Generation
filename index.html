@@ -738,6 +738,7 @@ async function loadErrorSummary(){
       <table style="width:100%;border-collapse:collapse;font-size:11px;font-family:var(--mono)">
         <thead><tr style="background:var(--surface2);border-bottom:2px solid var(--border)">
           <th style="padding:8px 10px;text-align:left;color:var(--text2)">Show</th>
+          <th style="padding:8px 10px;text-align:left;color:var(--text2)">Show ID</th>
           <th style="padding:8px 10px;text-align:center;color:var(--text2)">Voice</th>
           <th style="padding:8px 10px;text-align:center;color:var(--text2)">M/F</th>
           <th style="padding:8px 10px;text-align:center;color:var(--text2)">Episodes</th>
@@ -753,6 +754,7 @@ async function loadErrorSummary(){
     for(const sm of Object.values(showMap)){
       html+=`<tr style="border-bottom:1px solid var(--border)">
         <td style="padding:8px 10px;font-weight:600;color:var(--text)">${esc(sm.name)}</td>
+        <td style="padding:8px 10px;font-size:9px;color:var(--muted);font-family:var(--mono)" title="${esc(sm.showInput)}">${esc(sm.showInput).substring(0,12)}${sm.showInput.length>12?'…':''}</td>
         <td style="padding:8px 10px;text-align:center;font-size:10px">${esc(sm.voiceName)||'—'}</td>
         <td style="padding:8px 10px;text-align:center;font-weight:700;color:${sm.voiceGender==='F'?'#E91E63':'#1565C0'}">${esc(sm.voiceGender)||'—'}</td>
         <td style="padding:8px 10px;text-align:center">${sm.episodes||'—'}</td>
@@ -767,6 +769,7 @@ async function loadErrorSummary(){
     const grandTotal=Object.values(showMap).reduce((s,m)=>s+m.totalErrors,0);
     html+=`<tr style="border-top:2px solid var(--border);background:var(--surface2);font-weight:800">
       <td style="padding:8px 10px">TOTAL</td>
+      <td style="padding:8px 10px"></td>
       <td style="padding:8px 10px"></td>
       <td style="padding:8px 10px"></td>
       <td style="padding:8px 10px;text-align:center">${Object.values(showMap).reduce((s,m)=>s+(m.episodes||0),0)}</td>
