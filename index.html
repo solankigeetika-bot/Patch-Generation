@@ -656,6 +656,35 @@ function renderDashboard(){
 }
 
 // ── Error Summary ───────────────────────────────────────────
+let errSumDateFrom='';
+let errSumDateTo='';
+function updateErrSumDate(which,val){
+  if(which==='from') errSumDateFrom=val;
+  else errSumDateTo=val;
+  loadErrorSummary();
+}
+function clearErrSumDates(){
+  errSumDateFrom='';
+  errSumDateTo='';
+  loadErrorSummary();
+}
+// Tolerant date parser — returns ms since epoch, or NaN
+function parseRemarkTs(ts){
+  if(!ts && ts!==0) return NaN;
+  if(typeof ts==='number'){
+    // Treat < 1e12 as unix seconds
+    return ts<1e12 ? ts*1000 : ts;
+  }
+  const s=String(ts).trim();
+  if(!s) return NaN;
+  // Try numeric string
+  if(/^\d+$/.test(s)){
+    const n=parseInt(s,10);
+    return n<1e12 ? n*1000 : n;
+  }
+  const ms=Date.parse(s);
+  return ms;
+}
 async function loadErrorSummary(){
   const el=document.getElementById('errorSummary');
   if(!el) return;
@@ -666,6 +695,17 @@ async function loadErrorSummary(){
     const allRemarks=remarksSnap.val()||{};
     const epsSnap=await fbDb.ref('showEpisodes').once('value');
     const allEps=epsSnap.val()||{};
+
+    // Date filter bounds
+    const fromMs=errSumDateFrom?new Date(errSumDateFrom+'T00:00:00').getTime():-Infinity;
+    const toMs=errSumDateTo?new Date(errSumDateTo+'T23:59:59.999').getTime():Infinity;
+    const hasDateFilter=!!(errSumDateFrom||errSumDateTo);
+    const inRange=(ts)=>{
+      if(!hasDateFilter) return true;
+      const ms=parseRemarkTs(ts);
+      if(isNaN(ms)) return false;
+      return ms>=fromMs && ms<=toMs;
+    };
 
     // Build show→episodes mapping
     const showMap={};
@@ -701,6 +741,19 @@ async function loadErrorSummary(){
       const match=Object.values(showMap).find(sm=>sm.showInput===showId);
       const target=match||{errorTypes:{},totalErrors:0,epWithQC:0,qcTillEp:0};
 
+      // Episode-level fallback date (last sync time)
+      const epFallbackTs=epData.updatedAt||0;
+
+      // Filter remarks by date; use per-remark timestamp if present, else episode updatedAt
+      const filteredRemarks=remarks.filter(r=>{
+        if(!r) return false;
+        if(!hasDateFilter) return true;
+        return inRange(r.timestamp||epFallbackTs);
+      });
+
+      // Skip this episode entirely if nothing passes the filter
+      if(hasDateFilter && !filteredRemarks.length) continue;
+
       if(match){
         match.epWithQC++;
         // Find episode sequence number from cached episodes
@@ -708,8 +761,7 @@ async function loadErrorSummary(){
         if(seq>match.qcTillEp) match.qcTillEp=seq;
       }
 
-      for(const r of remarks){
-        if(!r) continue;
+      for(const r of filteredRemarks){
         const type=(r.issueType||'Unknown').trim();
         if(!target.errorTypes[type]) target.errorTypes[type]=0;
         target.errorTypes[type]++;
@@ -726,14 +778,32 @@ async function loadErrorSummary(){
     for(const sm of Object.values(showMap)) for(const t of Object.keys(sm.errorTypes)) allTypes.add(t);
     const typeArr=[...allTypes].sort();
 
+    // Reusable filter bar (always rendered so the user can change dates)
+    const filterBar=`<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px;font-family:var(--mono);font-size:11px">
+        <span style="color:var(--text2);font-weight:700">Filter by date:</span>
+        <label style="display:flex;align-items:center;gap:5px;color:var(--muted)">From
+          <input type="date" id="errSumFrom" value="${esc(errSumDateFrom)}" onchange="updateErrSumDate('from',this.value)" style="padding:4px 6px;border:1px solid var(--border);border-radius:4px;font-family:var(--mono);font-size:11px"/>
+        </label>
+        <label style="display:flex;align-items:center;gap:5px;color:var(--muted)">To
+          <input type="date" id="errSumTo" value="${esc(errSumDateTo)}" onchange="updateErrSumDate('to',this.value)" style="padding:4px 6px;border:1px solid var(--border);border-radius:4px;font-family:var(--mono);font-size:11px"/>
+        </label>
+        ${(errSumDateFrom||errSumDateTo)?`<button onclick="clearErrSumDates()" style="padding:4px 10px;border:1px solid var(--border);background:var(--surface);border-radius:4px;font-family:var(--mono);font-size:11px;cursor:pointer;color:var(--text2)">Clear</button>`:''}
+        ${hasDateFilter?`<span style="color:var(--accent);font-size:10px">Showing errors${errSumDateFrom?` from ${errSumDateFrom}`:''}${errSumDateTo?` to ${errSumDateTo}`:''}</span>`:''}
+      </div>`;
+
     if(!typeArr.length){
-      el.innerHTML='<div style="font-size:12px;color:var(--muted);padding:12px">No QC data available yet. Load episodes from CMS to populate error summary.</div>';
+      el.innerHTML=`<div style="margin:16px 0">
+        <div style="font-size:14px;font-weight:800;margin-bottom:10px;color:var(--text)">QC Error Summary</div>
+        ${filterBar}
+        <div style="font-size:12px;color:var(--muted);padding:12px">${hasDateFilter?'No errors in the selected date range.':'No QC data available yet. Load episodes from CMS to populate error summary.'}</div>
+      </div>`;
       return;
     }
 
     // Render table
     let html=`<div style="margin:16px 0">
       <div style="font-size:14px;font-weight:800;margin-bottom:10px;color:var(--text)">QC Error Summary</div>
+      ${filterBar}
       <div style="overflow-x:auto">
       <table style="width:100%;border-collapse:collapse;font-size:11px;font-family:var(--mono)">
         <thead><tr style="background:var(--surface2);border-bottom:2px solid var(--border)">
@@ -2137,6 +2207,7 @@ async function loadChapter(chapId, idx){
       idx:r2.idx, time:r2.time, issueType:r2.issueType,
       userEmail:r2.userEmail, scriptLine:r2.scriptLine,
       note:r2.note, rawRemarks:r2.rawRemarks, needsPatch:r2.needsPatch,
+      timestamp:r2.timestamp||'',
     }));
     await fbDb.ref('episodeRemarks/'+chapId).set({
       title: ch.chapter_title||'Episode',
