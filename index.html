@@ -255,7 +255,6 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
     <button class="btn btn-g btn-sm" onclick="goPage('dashboard')" style="width:100%;margin-bottom:4px;justify-content:flex-start">🏠 Dashboard</button>
     <button class="btn btn-g btn-sm" onclick="goPage('se')" style="width:100%;margin-bottom:4px;justify-content:flex-start">🎧 SE Panel</button>
     <button class="btn btn-g btn-sm" onclick="goPage('dict')" style="width:100%;margin-bottom:4px;justify-content:flex-start">📖 Dictionary</button>
-    <button class="btn btn-g btn-sm" onclick="goPage('agents')" style="width:100%;margin-bottom:4px;justify-content:flex-start">👤 QC Agent Report</button>
     <button class="btn btn-g btn-sm" onclick="goPage('prod')" style="width:100%;margin-bottom:4px;justify-content:flex-start">📊 SE Productivity</button>
     <div style="margin-top:10px;padding:10px;background:var(--surface2);border-radius:7px">
       <label class="fl" style="margin-bottom:3px">Logged in as (SE/QC)</label>
@@ -323,10 +322,6 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
     <div class="pg" id="page-se">
       <div id="seSummary"></div>
       <div id="seList"></div>
-    </div>
-    <!-- PAGE: QC Agent Report -->
-    <div class="pg" id="page-agents">
-      <div id="agentReport"></div>
     </div>
     <!-- PAGE: SE/Reviewer Productivity -->
     <div class="pg" id="page-prod">
@@ -565,12 +560,6 @@ function goPage(name){
     genBtn.style.display='none';
     stitchBtn.style.display='none';
     renderSEPanel();
-  } else if(name==='agents'){
-    back.style.display='inline-flex';
-    document.getElementById('topTitle').textContent='QC Agent Report';
-    genBtn.style.display='none';
-    stitchBtn.style.display='none';
-    renderAgentReport();
   } else if(name==='prod'){
     back.style.display='inline-flex';
     document.getElementById('topTitle').textContent='SE / Reviewer Productivity';
@@ -808,7 +797,6 @@ async function loadErrorSummary(){
       <table style="width:100%;border-collapse:collapse;font-size:11px;font-family:var(--mono)">
         <thead><tr style="background:var(--surface2);border-bottom:2px solid var(--border)">
           <th style="padding:8px 10px;text-align:left;color:var(--text2)">Show</th>
-          <th style="padding:8px 10px;text-align:left;color:var(--text2)">Show ID</th>
           <th style="padding:8px 10px;text-align:center;color:var(--text2)">Voice</th>
           <th style="padding:8px 10px;text-align:center;color:var(--text2)">M/F</th>
           <th style="padding:8px 10px;text-align:center;color:var(--text2)">Episodes</th>
@@ -824,7 +812,6 @@ async function loadErrorSummary(){
     for(const sm of Object.values(showMap)){
       html+=`<tr style="border-bottom:1px solid var(--border)">
         <td style="padding:8px 10px;font-weight:600;color:var(--text)">${esc(sm.name)}</td>
-        <td style="padding:8px 10px;font-size:9px;color:var(--muted);font-family:var(--mono)" title="${esc(sm.showInput)}">${esc(sm.showInput).substring(0,12)}${sm.showInput.length>12?'…':''}</td>
         <td style="padding:8px 10px;text-align:center;font-size:10px">${esc(sm.voiceName)||'—'}</td>
         <td style="padding:8px 10px;text-align:center;font-weight:700;color:${sm.voiceGender==='F'?'#E91E63':'#1565C0'}">${esc(sm.voiceGender)||'—'}</td>
         <td style="padding:8px 10px;text-align:center">${sm.episodes||'—'}</td>
@@ -839,7 +826,6 @@ async function loadErrorSummary(){
     const grandTotal=Object.values(showMap).reduce((s,m)=>s+m.totalErrors,0);
     html+=`<tr style="border-top:2px solid var(--border);background:var(--surface2);font-weight:800">
       <td style="padding:8px 10px">TOTAL</td>
-      <td style="padding:8px 10px"></td>
       <td style="padding:8px 10px"></td>
       <td style="padding:8px 10px"></td>
       <td style="padding:8px 10px;text-align:center">${Object.values(showMap).reduce((s,m)=>s+(m.episodes||0),0)}</td>
