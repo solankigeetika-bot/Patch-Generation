@@ -559,7 +559,13 @@ function goPage(name){
     document.getElementById('topTitle').textContent='Sound Engineer Panel';
     genBtn.style.display='none';
     stitchBtn.style.display='none';
-    renderSEPanel();
+    (async()=>{
+      const seListEl=document.getElementById('seList');
+      if(seListEl && !_seDataLoaded) seListEl.innerHTML='<div style="font-size:12px;color:var(--muted);padding:18px">Loading SE data (first load downloads audio patches, may take a moment)…</div>';
+      await ensureSEData();
+      await ensureShowEpsCache();
+      renderSEPanel();
+    })();
   } else if(name==='prod'){
     back.style.display='inline-flex';
     document.getElementById('topTitle').textContent='SE / Reviewer Productivity';
@@ -647,14 +653,22 @@ function renderDashboard(){
 // ── Error Summary ───────────────────────────────────────────
 let errSumDateFrom='';
 let errSumDateTo='';
+// Cache the two biggest Firebase fetches so switching back to the dashboard
+// is instant. Manual refresh button forces a reload.
+let _errSumCache=null;     // { allRemarks, allEps, ts }
+const ERR_SUM_TTL_MS=5*60*1000; // 5 min
 function updateErrSumDate(which,val){
   if(which==='from') errSumDateFrom=val;
   else errSumDateTo=val;
-  loadErrorSummary();
+  loadErrorSummary();  // uses cache — fast
 }
 function clearErrSumDates(){
   errSumDateFrom='';
   errSumDateTo='';
+  loadErrorSummary();
+}
+function refreshErrorSummary(){
+  _errSumCache=null;
   loadErrorSummary();
 }
 // Tolerant date parser — returns ms since epoch, or NaN
@@ -677,13 +691,24 @@ function parseRemarkTs(ts){
 async function loadErrorSummary(){
   const el=document.getElementById('errorSummary');
   if(!el) return;
-  el.innerHTML='<div style="font-size:12px;color:var(--muted);padding:12px">Loading error summary...</div>';
 
   try{
-    const remarksSnap=await fbDb.ref('episodeRemarks').once('value');
-    const allRemarks=remarksSnap.val()||{};
-    const epsSnap=await fbDb.ref('showEpisodes').once('value');
-    const allEps=epsSnap.val()||{};
+    // Use cache if fresh; otherwise pull from Firebase.
+    let allRemarks, allEps;
+    const cacheFresh = _errSumCache && (Date.now()-_errSumCache.ts < ERR_SUM_TTL_MS);
+    if(cacheFresh){
+      allRemarks = _errSumCache.allRemarks;
+      allEps = _errSumCache.allEps;
+    } else {
+      el.innerHTML='<div style="font-size:12px;color:var(--muted);padding:12px">Loading error summary...</div>';
+      const [remarksSnap, epsSnap] = await Promise.all([
+        fbDb.ref('episodeRemarks').once('value'),
+        fbDb.ref('showEpisodes').once('value')
+      ]);
+      allRemarks = remarksSnap.val()||{};
+      allEps = epsSnap.val()||{};
+      _errSumCache = { allRemarks, allEps, ts: Date.now() };
+    }
 
     // Date filter bounds
     const fromMs=errSumDateFrom?new Date(errSumDateFrom+'T00:00:00').getTime():-Infinity;
@@ -777,6 +802,8 @@ async function loadErrorSummary(){
           <input type="date" id="errSumTo" value="${esc(errSumDateTo)}" onchange="updateErrSumDate('to',this.value)" style="padding:4px 6px;border:1px solid var(--border);border-radius:4px;font-family:var(--mono);font-size:11px"/>
         </label>
         ${(errSumDateFrom||errSumDateTo)?`<button onclick="clearErrSumDates()" style="padding:4px 10px;border:1px solid var(--border);background:var(--surface);border-radius:4px;font-family:var(--mono);font-size:11px;cursor:pointer;color:var(--text2)">Clear</button>`:''}
+        <button onclick="refreshErrorSummary()" title="Re-fetch from Firebase" style="padding:4px 10px;border:1px solid var(--border);background:var(--surface);border-radius:4px;font-family:var(--mono);font-size:11px;cursor:pointer;color:var(--text2)">↻ Refresh</button>
+        ${_errSumCache?`<span style="color:var(--muted);font-size:10px">cached · ${new Date(_errSumCache.ts).toLocaleTimeString()}</span>`:''}
         ${hasDateFilter?`<span style="color:var(--accent);font-size:10px">Showing errors${errSumDateFrom?` from ${errSumDateFrom}`:''}${errSumDateTo?` to ${errSumDateTo}`:''}</span>`:''}
       </div>`;
 
@@ -1433,30 +1460,36 @@ function renderEpCards(){
 // Data shape in localStorage ps_se_data:
 // { chapterId: { title, patches: [{time, remark, scriptLine, blobUrl, stitched:'yes'|'no'|''}], stitchedUrl, qcDone:bool, uploadedCMS:bool } }
 
-// In-memory cache, synced with Firebase in real-time
+// In-memory cache, loaded lazily when SE Panel is opened.
+// Previously this used fbDb.ref('seData').on('value') which was catastrophic —
+// seData stores base64-encoded audio patches (hundreds of MB) and was
+// re-downloaded on every page load, even when the user never opened SE Panel.
 let _seDataCache = {};
+let _seDataLoaded = false;
 function getSEData(){ return _seDataCache; }
 function saveSEDataRaw(d){ _seDataCache=d; fbDb.ref('seData').set(d); }
 
-function initSESync(){
-  fbDb.ref('seData').on('value', snapshot => {
-    _seDataCache = snapshot.val() || {};
-    if(currentPage === 'se') renderSEPanel();
-  });
-  // Also cache showEpisodes for sequence numbers (for SE panel sorting)
-  fbDb.ref('showEpisodes').on('value', snap => {
-    const all = snap.val() || {};
-    window._showEpsCache = {};
-    for(const [sid, eps] of Object.entries(all)){
-      const arr = Array.isArray(eps) ? eps : Object.values(eps||{});
-      window._showEpsCache[sid] = {};
-      for(const e of arr){
-        if(e && e.chapter_id) window._showEpsCache[sid][e.chapter_id] = e.natural_sequence_number || e.seq_number || 0;
-      }
-    }
-    if(currentPage === 'se') renderSEPanel();
-  });
+async function ensureSEData(force=false){
+  if(_seDataLoaded && !force) return;
+  const snap = await fbDb.ref('seData').once('value');
+  _seDataCache = snap.val() || {};
+  _seDataLoaded = true;
 }
+async function ensureShowEpsCache(force=false){
+  if(window._showEpsCache && !force) return;
+  const snap = await fbDb.ref('showEpisodes').once('value');
+  const all = snap.val() || {};
+  window._showEpsCache = {};
+  for(const [sid, eps] of Object.entries(all)){
+    const arr = Array.isArray(eps) ? eps : Object.values(eps||{});
+    window._showEpsCache[sid] = {};
+    for(const e of arr){
+      if(e && e.chapter_id) window._showEpsCache[sid][e.chapter_id] = e.natural_sequence_number || e.seq_number || 0;
+    }
+  }
+}
+// Kept as a no-op for backward compatibility; data now loads on demand.
+function initSESync(){}
 
 function setPatchStitch(chapId, patchIdx, val){
   if(!requireUser()){toast('Enter your name in sidebar first','warn');return;}
