@@ -1469,11 +1469,102 @@ let _seDataLoaded = false;
 function getSEData(){ return _seDataCache; }
 function saveSEDataRaw(d){ _seDataCache=d; fbDb.ref('seData').set(d); }
 
+// Path B: fetch ONLY per-episode metadata, not the patches subtree (which contains huge base64 audio).
+// Patches for a given show are lazy-loaded when the user clicks a show card.
+const SE_DB_URL = 'https://patch-generation-default-rtdb.firebaseio.com';
 async function ensureSEData(force=false){
   if(_seDataLoaded && !force) return;
-  const snap = await fbDb.ref('seData').once('value');
-  _seDataCache = snap.val() || {};
+
+  const statusEl = document.getElementById('seList');
+  const setLoadMsg = (msg) => {
+    const el = document.getElementById('seLoadStatus');
+    if(el) el.textContent = msg;
+    else if(statusEl) statusEl.innerHTML = `<div id="seLoadStatus" style="padding:18px;font-family:var(--mono);font-size:12px;color:var(--muted)">${msg}</div>`;
+  };
+  setLoadMsg('Loading episode index…');
+
+  // Step 1: shallow fetch of episode keys (~few KB regardless of total size)
+  let epIds = [];
+  try{
+    const resp = await fetch(`${SE_DB_URL}/seData.json?shallow=true`);
+    const data = await resp.json() || {};
+    epIds = Object.keys(data);
+  }catch(e){
+    console.warn('Shallow fetch failed, falling back to full load', e);
+    const snap = await fbDb.ref('seData').once('value');
+    _seDataCache = snap.val() || {};
+    _seDataLoaded = true;
+    return;
+  }
+
+  _seDataCache = {};
+  if(!epIds.length){ _seDataLoaded = true; return; }
+
+  // Step 2: per-episode fetch of ONLY metadata fields (skips patches subtree = no audio download)
+  let done = 0;
+  const total = epIds.length;
+  setLoadMsg(`Loading SE data… 0/${total} episodes`);
+
+  const BATCH = 15;
+  for(let i = 0; i < epIds.length; i += BATCH){
+    const chunk = epIds.slice(i, i+BATCH);
+    await Promise.all(chunk.map(async chapId => {
+      const ref = fbDb.ref('seData/'+chapId);
+      const [titleS, showIdS, qcDoneS, upS, stitchedUrlS, updS, patchCountS, stitchedCountS] = await Promise.all([
+        ref.child('title').once('value'),
+        ref.child('showId').once('value'),
+        ref.child('qcDone').once('value'),
+        ref.child('uploadedCMS').once('value'),
+        ref.child('stitchedUrl').once('value'),
+        ref.child('updatedAt').once('value'),
+        ref.child('patchCount').once('value'),
+        ref.child('stitchedCount').once('value'),
+      ]);
+      _seDataCache[chapId] = {
+        title: titleS.val() || '',
+        showId: showIdS.val() || '',
+        qcDone: qcDoneS.val() || false,
+        uploadedCMS: upS.val() || false,
+        stitchedUrl: stitchedUrlS.val() || null,
+        updatedAt: updS.val() || 0,
+        patches: [],  // placeholder — loaded lazily
+        patchCount: (patchCountS.val() != null) ? patchCountS.val() : null,
+        stitchedCount: (stitchedCountS.val() != null) ? stitchedCountS.val() : null,
+        _patchesLoaded: false,
+      };
+      done++;
+    }));
+    setLoadMsg(`Loading SE data… ${done}/${total} episodes`);
+  }
   _seDataLoaded = true;
+}
+
+// Lazy-load full patches (including audio) for a single episode
+async function loadEpisodePatches(chapId){
+  const ep = _seDataCache[chapId];
+  if(!ep) return;
+  if(ep._patchesLoaded) return;
+  const snap = await fbDb.ref('seData/'+chapId+'/patches').once('value');
+  const raw = snap.val() || [];
+  const arr = Array.isArray(raw) ? raw : Object.values(raw);
+  ep.patches = arr.filter(p => p != null);
+  ep._patchesLoaded = true;
+  // Backfill counts if they weren't denormalized
+  if(ep.patchCount == null) ep.patchCount = ep.patches.length;
+  if(ep.stitchedCount == null) ep.stitchedCount = ep.patches.filter(p => p?.stitched === 'yes').length;
+}
+
+// Load patches for every episode in a given show (for the show-detail view)
+async function loadShowPatches(showId){
+  const ids = Object.keys(_seDataCache).filter(id => {
+    const ep = _seDataCache[id];
+    return ep && (ep.showId === showId) && !ep._patchesLoaded;
+  });
+  if(!ids.length) return;
+  const BATCH = 5;  // audio is heavy; small batch to avoid browser memory spike
+  for(let i = 0; i < ids.length; i += BATCH){
+    await Promise.all(ids.slice(i, i+BATCH).map(id => loadEpisodePatches(id)));
+  }
 }
 async function ensureShowEpsCache(force=false){
   if(window._showEpsCache && !force) return;
@@ -1493,9 +1584,18 @@ function initSESync(){}
 
 function setPatchStitch(chapId, patchIdx, val){
   if(!requireUser()){toast('Enter your name in sidebar first','warn');return;}
+  const ep = _seDataCache[chapId];
+  const prevVal = ep?.patches?.[patchIdx]?.stitched || '';
   fbDb.ref('seData/'+chapId+'/patches/'+patchIdx+'/stitched').set(val);
   fbDb.ref('seData/'+chapId+'/patches/'+patchIdx+'/stitchedBy').set(currentUser);
   fbDb.ref('seData/'+chapId+'/patches/'+patchIdx+'/stitchedAt').set(Date.now());
+  // Keep in-memory cache + denormalized count in sync
+  if(ep?.patches?.[patchIdx]) ep.patches[patchIdx].stitched = val;
+  const delta = (val==='yes'?1:0) - (prevVal==='yes'?1:0);
+  if(ep && delta !== 0){
+    ep.stitchedCount = (ep.stitchedCount||0) + delta;
+    fbDb.ref('seData/'+chapId+'/stitchedCount').set(ep.stitchedCount);
+  }
   logAction(chapId, 'stitch', {patchIdx, value:val});
 }
 function setEpQCDone(chapId, val){
@@ -1518,22 +1618,49 @@ function toggleSEEp(chapId){
 }
 
 let seActiveShowId=null; // which show is expanded in SE panel
+let _seLastGroups={}; // last computed showGroups — used by openSEShowDetail to look up chapIds
 
 function pct(n,d){ return d>0?Math.round(n/d*100):0; }
 function pctBar(val,color){ return `<div style="height:4px;background:var(--border);border-radius:2px;overflow:hidden;margin-top:3px"><div style="height:100%;width:${val}%;background:${color};border-radius:2px"></div></div>`; }
+
+async function openSEShowDetail(groupKey){
+  seActiveShowId = groupKey;
+  const el = document.getElementById('seList');
+  if(el) el.innerHTML = `<div style="padding:18px;font-family:var(--mono);font-size:12px;color:var(--muted)" id="seLoadStatus">Loading patches for this show…</div>`;
+  try{
+    const group = _seLastGroups[groupKey];
+    const chapIds = group ? group.episodes.map(e => e.chapId) : [];
+    const toLoad = chapIds.filter(id => _seDataCache[id] && !_seDataCache[id]._patchesLoaded);
+    let done = 0;
+    const setMsg = (d) => { const s = document.getElementById('seLoadStatus'); if(s) s.textContent = `Loading patches… ${d}/${toLoad.length} episodes`; };
+    const BATCH = 5;
+    for(let i = 0; i < toLoad.length; i += BATCH){
+      const chunk = toLoad.slice(i, i+BATCH);
+      await Promise.all(chunk.map(async id => { await loadEpisodePatches(id); done++; setMsg(done); }));
+    }
+  }catch(e){
+    console.error('Failed to load show patches', e);
+    toast('Failed to load patches: '+e.message, 'err');
+  }
+  renderSEPanel();
+}
 
 function renderSEPanel(){
   const seData=getSEData();
   const epIds=Object.keys(seData);
 
-  // Global pipeline counts
+  // Global pipeline counts. Prefer denormalized counts if present;
+  // else fall back to what's in memory (0 until user opens the show).
   let totalPatches=0, reviewedPatches=0, stitchedPatches=0, qcDoneEps=0, uploadedEps=0;
+  let countsPartial=false;
   epIds.forEach(id=>{
     const ep=seData[id];
-    const patches=ep.patches||[];
-    totalPatches+=patches.length;
-    reviewedPatches+=patches.length;
-    stitchedPatches+=patches.filter(p=>p.stitched==='yes').length;
+    const pc = (ep.patchCount != null) ? ep.patchCount : (ep.patches||[]).length;
+    const sc = (ep.stitchedCount != null) ? ep.stitchedCount : (ep.patches||[]).filter(p=>p?.stitched==='yes').length;
+    if(ep.patchCount == null && !ep._patchesLoaded) countsPartial=true;
+    totalPatches+=pc;
+    reviewedPatches+=pc;
+    stitchedPatches+=sc;
     if(ep.qcDone) qcDoneEps++;
     if(ep.uploadedCMS) uploadedEps++;
   });
@@ -1584,6 +1711,7 @@ function renderSEPanel(){
     if(!showGroups[groupKey]) showGroups[groupKey]={show:matchedShow||{name:showId.substring(0,20)+'...',showInput:showId}, episodes:[]};
     showGroups[groupKey].episodes.push({chapId,...ep});
   });
+  _seLastGroups = showGroups;  // cache for openSEShowDetail
 
   // If a show is selected, show its episodes detail
   if(seActiveShowId && showGroups[seActiveShowId]){
@@ -1604,7 +1732,7 @@ function renderSEPanel(){
     const pQC=pct(qcD,eps.length);
     const pUploaded=pct(uplD,eps.length);
 
-    return `<div class="show-card" onclick="seActiveShowId='${esc(showId)}';renderSEPanel()">
+    return `<div class="show-card" onclick="openSEShowDetail('${esc(showId)}')">
       <div class="sc-body">
         <div class="sc-top">
           <div class="sc-icon">🎧</div>
@@ -1911,7 +2039,11 @@ function saveSEData(chapId, title, patchesData, stitchedUrl){
     stitchedUrl: stitchedUrl||seData[chapId]?.stitchedUrl||null,
     qcDone: seData[chapId]?.qcDone||false,
     uploadedCMS: seData[chapId]?.uploadedCMS||false,
-    updatedAt:Date.now()
+    updatedAt:Date.now(),
+    // Denormalized counts so the SE Panel landing page can show stats
+    // without downloading the patches subtree (which contains heavy audio).
+    patchCount: mergedPatches.length,
+    stitchedCount: mergedPatches.filter(p=>p?.stitched==='yes').length,
   };
   fbDb.ref('seData/'+chapId).set(epData);
 }
