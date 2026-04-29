@@ -386,7 +386,7 @@ const COUNTRY_META = {
   it: { name: 'Italy',  flag: '🇮🇹' },
 };
 function dbPath(p){ return currentCountry === 'it' ? 'it/' + p : p; }
-function dbRef(p){ return dbRef(dbPath(p)); }
+function dbRef(p){ return fbDb.ref(dbPath(p)); }
 let _showsListenerRef = null;
 let _dictListenerRef  = null;
 async function setCountry(c, opts={}){
