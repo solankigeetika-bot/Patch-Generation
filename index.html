@@ -251,6 +251,8 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
   </div>
 
   <div class="sb-section" style="flex:1;overflow-y:auto;border-bottom:none">
+    <label class="fl">Geography</label>
+    <button id="countryChip" onclick="openCountryPicker()" style="width:100%;margin-bottom:10px;padding:8px 12px;border:1px solid var(--border);background:var(--surface2);border-radius:7px;cursor:pointer;font-family:Syne,sans-serif;font-size:12px;font-weight:700;text-align:left">🌐 Choose…</button>
     <label class="fl">Navigation</label>
     <button class="btn btn-g btn-sm" onclick="goPage('dashboard')" style="width:100%;margin-bottom:4px;justify-content:flex-start">🏠 Dashboard</button>
     <button class="btn btn-g btn-sm" onclick="goPage('se')" style="width:100%;margin-bottom:4px;justify-content:flex-start">🎧 SE Panel</button>
@@ -269,6 +271,26 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
   <input type="hidden" id="asVoiceInp" value="5438303f-36ed-42f7-af4c-4007453faf26"/>
   <input type="hidden" id="voiceType" value="standard"/>
 </aside>
+
+<!-- COUNTRY PICKER MODAL -->
+<div id="countryModal" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.85);z-index:400;align-items:center;justify-content:center;backdrop-filter:blur(6px)">
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:32px;width:480px;max-width:95vw;box-shadow:var(--shadow-lg);text-align:center">
+    <div style="font-size:22px;font-weight:800;margin-bottom:6px">Choose Geography</div>
+    <div style="font-family:var(--mono);font-size:11px;color:var(--muted);margin-bottom:24px">Pick a country — all shows, episodes and SE data are scoped per-country.</div>
+    <div style="display:flex;gap:14px;justify-content:center">
+      <button onclick="pickCountry('fr')" style="flex:1;max-width:180px;padding:24px 12px;border:2px solid var(--border);background:var(--surface2);border-radius:14px;cursor:pointer;transition:all .18s;font-family:Syne,sans-serif" onmouseover="this.style.borderColor='var(--accent)';this.style.background='var(--accent-light)'" onmouseout="this.style.borderColor='var(--border)';this.style.background='var(--surface2)'">
+        <div style="font-size:48px;margin-bottom:8px">🇫🇷</div>
+        <div style="font-size:16px;font-weight:800">France</div>
+        <div style="font-family:var(--mono);font-size:10px;color:var(--muted);margin-top:4px">Existing data</div>
+      </button>
+      <button onclick="pickCountry('it')" style="flex:1;max-width:180px;padding:24px 12px;border:2px solid var(--border);background:var(--surface2);border-radius:14px;cursor:pointer;transition:all .18s;font-family:Syne,sans-serif" onmouseover="this.style.borderColor='var(--accent)';this.style.background='var(--accent-light)'" onmouseout="this.style.borderColor='var(--border)';this.style.background='var(--surface2)'">
+        <div style="font-size:48px;margin-bottom:8px">🇮🇹</div>
+        <div style="font-size:16px;font-weight:800">Italy</div>
+        <div style="font-family:var(--mono);font-size:10px;color:var(--muted);margin-top:4px">Empty — start fresh</div>
+      </button>
+    </div>
+  </div>
+</div>
 
 <!-- ADD SHOW MODAL -->
 <div id="addShowModal" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:300;align-items:center;justify-content:center;backdrop-filter:blur(4px)">
@@ -355,6 +377,59 @@ firebase.initializeApp({
 });
 const fbDb = firebase.database();
 
+// ── Geography (country) scoping ─────────────────────────────
+// All Firebase data is scoped per-country. France keeps the root paths
+// (no migration of existing data). Italy lives under 'it/<path>'.
+let currentCountry = localStorage.getItem('ps_country') || ''; // '', 'fr', 'it'
+const COUNTRY_META = {
+  fr: { name: 'France', flag: '🇫🇷' },
+  it: { name: 'Italy',  flag: '🇮🇹' },
+};
+function dbPath(p){ return currentCountry === 'it' ? 'it/' + p : p; }
+function dbRef(p){ return dbRef(dbPath(p)); }
+let _showsListenerRef = null;
+let _dictListenerRef  = null;
+async function setCountry(c, opts={}){
+  if(!COUNTRY_META[c]) return;
+  if(c === currentCountry && !opts.force) return;
+  currentCountry = c;
+  localStorage.setItem('ps_country', c);
+  // Detach old listeners so they don't keep updating cross-country state
+  try{ if(_showsListenerRef) _showsListenerRef.off('value'); }catch(_){ }
+  try{ if(_dictListenerRef)  _dictListenerRef.off('value');  }catch(_){ }
+  _showsListenerRef = null;
+  _dictListenerRef  = null;
+  // Wipe in-memory caches that hold the previous country's data
+  _seDataCache = {};
+  _seDataLoaded = false;
+  window._showEpsCache = null;
+  _errSumCache = null;
+  _dictCache = {};
+  shows = [];
+  // Reflect the choice in the topbar / sidebar chip
+  updateCountryChip();
+  // Re-attach shows + dictionary listeners under the new namespace
+  await initShows();
+  initDictSync();
+  // Always return to dashboard on country switch to avoid stale detail views
+  seActiveShowId = null;
+  if(typeof goPage === 'function') goPage('dashboard');
+  else renderDashboard();
+}
+function updateCountryChip(){
+  const el = document.getElementById('countryChip');
+  if(!el) return;
+  const m = COUNTRY_META[currentCountry];
+  el.innerHTML = m ? `${m.flag} ${m.name} <span style="opacity:.55;margin-left:6px">change</span>` : '🌐 Choose…';
+}
+function openCountryPicker(){
+  document.getElementById('countryModal').style.display = 'flex';
+}
+function pickCountry(c){
+  document.getElementById('countryModal').style.display = 'none';
+  setCountry(c);
+}
+
 const CMS_BASE = 'https://api.cms.pocketfm.com/v2/content_api';
 const AS_BASE  = 'https://v2.api.audio';
 const DB_NAME  = 'PatchStudioDB';
@@ -376,7 +451,7 @@ function logAction(chapId, action, data){
   if(!currentUser) return;
   const entry = {user: currentUser, action, chapId, ts: Date.now(), ...data};
   const key = Date.now() + '_' + Math.random().toString(36).substr(2,6);
-  fbDb.ref('productivity/'+key).set(entry);
+  dbRef('productivity/'+key).set(entry);
 }
 let episodes=[], activeEp=null, activeShowId='';
 let remarks=[], RS={};
@@ -453,6 +528,14 @@ window.onload = async () => {
   if(savedShow) document.getElementById('showInp').value=savedShow;
   const cuEl=document.getElementById('currentUserInp');
   if(cuEl && currentUser) cuEl.value=currentUser;
+
+  // Geography: prompt for country on first load, otherwise apply saved choice.
+  updateCountryChip();
+  if(!currentCountry){
+    document.getElementById('countryModal').style.display = 'flex';
+    return; // initShows / initDictSync run when the user picks a country
+  }
+
   await initShows();
   initSESync();
   initDictSync();
@@ -517,21 +600,26 @@ let activeShowConfig = null;
 let _dictCache = {}; // {chapId_remarkIdx: {word, phonetic, classification, ...}}
 
 async function initShows(){
-  // Real-time listener: whenever any client writes shows, everyone gets updated
-  fbDb.ref('shows').on('value', snapshot => {
+  // Real-time listener: whenever any client writes shows, everyone gets updated.
+  // Re-attach against the current country namespace.
+  _showsListenerRef = dbRef('shows');
+  _showsListenerRef.on('value', snapshot => {
     shows = snapshot.val() ? Object.values(snapshot.val()) : [];
     renderDashboard();
     renderSidebarNav();
   });
 
-  // One-time migration: push local shows to Firebase if Firebase is empty
-  const localShows = await dbGet('config','shows') || [];
-  if(localShows.length){
-    const snap = await fbDb.ref('shows').once('value');
-    if(!snap.val()){
-      const obj = {};
-      localShows.forEach(s => obj[s.id] = s);
-      await fbDb.ref('shows').set(obj);
+  // One-time migration: push local shows to Firebase if Firebase is empty.
+  // Only runs for France (root namespace) — Italy starts intentionally empty.
+  if(currentCountry === 'fr'){
+    const localShows = await dbGet('config','shows') || [];
+    if(localShows.length){
+      const snap = await dbRef('shows').once('value');
+      if(!snap.val()){
+        const obj = {};
+        localShows.forEach(s => obj[s.id] = s);
+        await dbRef('shows').set(obj);
+      }
     }
   }
 }
@@ -702,8 +790,8 @@ async function loadErrorSummary(){
     } else {
       el.innerHTML='<div style="font-size:12px;color:var(--muted);padding:12px">Loading error summary...</div>';
       const [remarksSnap, epsSnap] = await Promise.all([
-        fbDb.ref('episodeRemarks').once('value'),
-        fbDb.ref('showEpisodes').once('value')
+        dbRef('episodeRemarks').once('value'),
+        dbRef('showEpisodes').once('value')
       ]);
       allRemarks = remarksSnap.val()||{};
       allEps = epsSnap.val()||{};
@@ -899,7 +987,7 @@ async function renderDictionary(){
 
   try{
     // Load from Firebase dictionary collection (manually added entries)
-    const dictSnap=await fbDb.ref('dictionary').once('value');
+    const dictSnap=await dbRef('dictionary').once('value');
     const dictEntries=dictSnap.val()||{};
 
     const dictByShow={};
@@ -1047,7 +1135,8 @@ function renderDictTable(entries){
 
 // ── Dictionary: Add from QC card ──
 function initDictSync(){
-  fbDb.ref('dictionary').on('value', snap=>{
+  _dictListenerRef = dbRef('dictionary');
+  _dictListenerRef.on('value', snap=>{
     _dictCache=snap.val()||{};
   });
 }
@@ -1076,7 +1165,7 @@ async function addToDict(ri){
     note:r?.note||'',
     addedAt:Date.now()
   };
-  await fbDb.ref('dictionary/'+key).set(entry);
+  await dbRef('dictionary/'+key).set(entry);
   toast(`"${word}" added to dictionary`,'ok');
   refreshCard(ri);
 }
@@ -1102,9 +1191,9 @@ async function renderAgentReport(){
   el.innerHTML='<div style="font-size:12px;color:var(--muted);padding:12px">Loading agent report...</div>';
 
   try{
-    const remarksSnap=await fbDb.ref('episodeRemarks').once('value');
+    const remarksSnap=await dbRef('episodeRemarks').once('value');
     const allRemarks=remarksSnap.val()||{};
-    const epsSnap=await fbDb.ref('showEpisodes').once('value');
+    const epsSnap=await dbRef('showEpisodes').once('value');
     const allEps=epsSnap.val()||{};
 
     // Build chapId→{showName, duration, seq} mapping
@@ -1247,9 +1336,9 @@ async function renderProductivityReport(){
   el.innerHTML='<div style="font-size:12px;color:var(--muted);padding:12px">Loading productivity data...</div>';
 
   try{
-    const prodSnap=await fbDb.ref('productivity').once('value');
+    const prodSnap=await dbRef('productivity').once('value');
     const prodData=prodSnap.val()||{};
-    const seDataSnap=await fbDb.ref('seData').once('value');
+    const seDataSnap=await dbRef('seData').once('value');
     const seData=seDataSnap.val()||{};
 
     // Aggregate per user
@@ -1467,7 +1556,7 @@ function renderEpCards(){
 let _seDataCache = {};
 let _seDataLoaded = false;
 function getSEData(){ return _seDataCache; }
-function saveSEDataRaw(d){ _seDataCache=d; fbDb.ref('seData').set(d); }
+function saveSEDataRaw(d){ _seDataCache=d; dbRef('seData').set(d); }
 
 // Path B: fetch ONLY per-episode metadata, not the patches subtree (which contains huge base64 audio).
 // Patches for a given show are lazy-loaded when the user clicks a show card.
@@ -1486,12 +1575,12 @@ async function ensureSEData(force=false){
   // Step 1: shallow fetch of episode keys (~few KB regardless of total size)
   let epIds = [];
   try{
-    const resp = await fetch(`${SE_DB_URL}/seData.json?shallow=true`);
+    const resp = await fetch(`${SE_DB_URL}/${dbPath('seData')}.json?shallow=true`);
     const data = await resp.json() || {};
     epIds = Object.keys(data);
   }catch(e){
     console.warn('Shallow fetch failed, falling back to full load', e);
-    const snap = await fbDb.ref('seData').once('value');
+    const snap = await dbRef('seData').once('value');
     _seDataCache = snap.val() || {};
     _seDataLoaded = true;
     return;
@@ -1509,7 +1598,7 @@ async function ensureSEData(force=false){
   for(let i = 0; i < epIds.length; i += BATCH){
     const chunk = epIds.slice(i, i+BATCH);
     await Promise.all(chunk.map(async chapId => {
-      const ref = fbDb.ref('seData/'+chapId);
+      const ref = dbRef('seData/'+chapId);
       const [titleS, showIdS, qcDoneS, upS, stitchedUrlS, updS, patchCountS, stitchedCountS] = await Promise.all([
         ref.child('title').once('value'),
         ref.child('showId').once('value'),
@@ -1544,7 +1633,7 @@ async function loadEpisodePatches(chapId){
   const ep = _seDataCache[chapId];
   if(!ep) return;
   if(ep._patchesLoaded) return;
-  const snap = await fbDb.ref('seData/'+chapId+'/patches').once('value');
+  const snap = await dbRef('seData/'+chapId+'/patches').once('value');
   const raw = snap.val() || [];
   const arr = Array.isArray(raw) ? raw : Object.values(raw);
   ep.patches = arr.filter(p => p != null);
@@ -1568,7 +1657,7 @@ async function loadShowPatches(showId){
 }
 async function ensureShowEpsCache(force=false){
   if(window._showEpsCache && !force) return;
-  const snap = await fbDb.ref('showEpisodes').once('value');
+  const snap = await dbRef('showEpisodes').once('value');
   const all = snap.val() || {};
   window._showEpsCache = {};
   for(const [sid, eps] of Object.entries(all)){
@@ -1586,30 +1675,30 @@ function setPatchStitch(chapId, patchIdx, val){
   if(!requireUser()){toast('Enter your name in sidebar first','warn');return;}
   const ep = _seDataCache[chapId];
   const prevVal = ep?.patches?.[patchIdx]?.stitched || '';
-  fbDb.ref('seData/'+chapId+'/patches/'+patchIdx+'/stitched').set(val);
-  fbDb.ref('seData/'+chapId+'/patches/'+patchIdx+'/stitchedBy').set(currentUser);
-  fbDb.ref('seData/'+chapId+'/patches/'+patchIdx+'/stitchedAt').set(Date.now());
+  dbRef('seData/'+chapId+'/patches/'+patchIdx+'/stitched').set(val);
+  dbRef('seData/'+chapId+'/patches/'+patchIdx+'/stitchedBy').set(currentUser);
+  dbRef('seData/'+chapId+'/patches/'+patchIdx+'/stitchedAt').set(Date.now());
   // Keep in-memory cache + denormalized count in sync
   if(ep?.patches?.[patchIdx]) ep.patches[patchIdx].stitched = val;
   const delta = (val==='yes'?1:0) - (prevVal==='yes'?1:0);
   if(ep && delta !== 0){
     ep.stitchedCount = (ep.stitchedCount||0) + delta;
-    fbDb.ref('seData/'+chapId+'/stitchedCount').set(ep.stitchedCount);
+    dbRef('seData/'+chapId+'/stitchedCount').set(ep.stitchedCount);
   }
   logAction(chapId, 'stitch', {patchIdx, value:val});
 }
 function setEpQCDone(chapId, val){
   if(!requireUser()){toast('Enter your name in sidebar first','warn');return;}
-  fbDb.ref('seData/'+chapId+'/qcDone').set(val);
-  fbDb.ref('seData/'+chapId+'/qcDoneBy').set(val?currentUser:null);
-  fbDb.ref('seData/'+chapId+'/qcDoneAt').set(val?Date.now():null);
+  dbRef('seData/'+chapId+'/qcDone').set(val);
+  dbRef('seData/'+chapId+'/qcDoneBy').set(val?currentUser:null);
+  dbRef('seData/'+chapId+'/qcDoneAt').set(val?Date.now():null);
   logAction(chapId, 'qc_done', {value:val});
 }
 function setEpUploaded(chapId, val){
   if(!requireUser()){toast('Enter your name in sidebar first','warn');return;}
-  fbDb.ref('seData/'+chapId+'/uploadedCMS').set(val);
-  fbDb.ref('seData/'+chapId+'/uploadedBy').set(val?currentUser:null);
-  fbDb.ref('seData/'+chapId+'/uploadedAt').set(val?Date.now():null);
+  dbRef('seData/'+chapId+'/uploadedCMS').set(val);
+  dbRef('seData/'+chapId+'/uploadedBy').set(val?currentUser:null);
+  dbRef('seData/'+chapId+'/uploadedAt').set(val?Date.now():null);
   logAction(chapId, 'upload', {value:val});
 }
 function toggleSEEp(chapId){
@@ -2029,7 +2118,7 @@ function saveSEData(chapId, title, patchesData, stitchedUrl){
   });
   // If no patches and no stitched URL, remove episode from SE data entirely
   if(!mergedPatches.length && !stitchedUrl && !seData[chapId]?.stitchedUrl){
-    fbDb.ref('seData/'+chapId).remove();
+    dbRef('seData/'+chapId).remove();
     return;
   }
   const epData={
@@ -2045,7 +2134,7 @@ function saveSEData(chapId, title, patchesData, stitchedUrl){
     patchCount: mergedPatches.length,
     stitchedCount: mergedPatches.filter(p=>p?.stitched==='yes').length,
   };
-  fbDb.ref('seData/'+chapId).set(epData);
+  dbRef('seData/'+chapId).set(epData);
 }
 
 function openAddShow(){
@@ -2090,17 +2179,17 @@ async function saveShow(){
   if(editId){
     const show = shows.find(x=>x.id==editId) || {};
     const updated = {...show, name, showInput, asKey:asKeyVal, voiceId, voiceName, voiceGender, voiceType};
-    await fbDb.ref('shows/'+editId).set(updated);
+    await dbRef('shows/'+editId).set(updated);
   } else {
     const id = Date.now();
-    await fbDb.ref('shows/'+id).set({ id, name, showInput, asKey:asKeyVal, voiceId, voiceName, voiceGender, voiceType });
+    await dbRef('shows/'+id).set({ id, name, showInput, asKey:asKeyVal, voiceId, voiceName, voiceGender, voiceType });
   }
   closeAddShow();
   toast(editId ? 'Show updated ✓' : 'Show added ✓','ok');
 }
 
 async function deleteShow(id){
-  await fbDb.ref('shows/'+id).remove();
+  await dbRef('shows/'+id).remove();
   if(activeShowConfig?.id===id){ activeShowConfig=null; goPage('dashboard'); }
   toast('Show removed','ok');
 }
@@ -2130,7 +2219,7 @@ async function loadShow(directInput, forceRefresh){
 
   // Try loading from Firebase cache first (no CMS login needed)
   if(!forceRefresh){
-    const snap = await fbDb.ref('showEpisodes/'+activeShowId).once('value');
+    const snap = await dbRef('showEpisodes/'+activeShowId).once('value');
     const rawCached = snap.val();
     const cached = rawCached ? (Array.isArray(rawCached) ? rawCached : Object.values(rawCached)) : [];
     if(cached.length){
@@ -2205,7 +2294,7 @@ async function loadShow(directInput, forceRefresh){
               note:extractNote(qc.remarks), rawRemarks:qc.remarks,
               needsPatch:!!extractLine(qc.remarks),
             }));
-            fbDb.ref('episodeRemarks/'+chapId).set({
+            dbRef('episodeRemarks/'+chapId).set({
               title:ch.chapter_title||'Episode', showId:activeShowId,
               remarks:remarkData, updatedAt:Date.now()
             });
@@ -2220,7 +2309,7 @@ async function loadShow(directInput, forceRefresh){
     // Save stats + enriched episode list to Firebase
     if(activeShowConfig){
       activeShowConfig.stats = {...(activeShowConfig.stats||{}), total: eps.length, qc: qcCount};
-      await fbDb.ref('shows/'+activeShowConfig.id+'/stats').set(activeShowConfig.stats);
+      await dbRef('shows/'+activeShowConfig.id+'/stats').set(activeShowConfig.stats);
       const epData = eps.map(ep=>{
         const cd=ep.chapter_details||ep;
         return {
@@ -2233,7 +2322,7 @@ async function loadShow(directInput, forceRefresh){
           hasQC: cd.hasQC||false,
         };
       });
-      await fbDb.ref('showEpisodes/'+activeShowId).set(epData);
+      await dbRef('showEpisodes/'+activeShowId).set(epData);
     }
     renderShowView();
     setStatus('ready', `${episodes.length} eps loaded — ${qcCount} with QC issues`);
@@ -2253,7 +2342,7 @@ async function loadChapter(chapId, idx){
 
   try{
     // Try Firebase cache first (no CMS login needed)
-    const fbSnap = await fbDb.ref('episodeRemarks/'+chapId).once('value');
+    const fbSnap = await dbRef('episodeRemarks/'+chapId).once('value');
     const fbData = fbSnap.val();
 
     if(!authToken||!uid){
@@ -2265,7 +2354,7 @@ async function loadChapter(chapId, idx){
       remarks = (fbData.remarks||[]).map((r,i)=>({...r, idx:i}));
 
       // Load accepted patch audio from SE data in Firebase
-      const seSnap = await fbDb.ref('seData/'+chapId).once('value');
+      const seSnap = await dbRef('seData/'+chapId).once('value');
       const seEp = seSnap.val();
       const sePatches = seEp?.patches||[];
 
@@ -2330,7 +2419,7 @@ async function loadChapter(chapId, idx){
     }
 
     // Fallback: load accepted patches from Firebase SE data if not found locally
-    const seSnap2=await fbDb.ref('seData/'+chapId).once('value');
+    const seSnap2=await dbRef('seData/'+chapId).once('value');
     const seEp2=seSnap2.val();
     const sePatches2=seEp2?.patches||[];
     console.log('Firebase SE fallback:', sePatches2.length, 'patches found');
@@ -2360,7 +2449,7 @@ async function loadChapter(chapId, idx){
       note:r2.note, rawRemarks:r2.rawRemarks, needsPatch:r2.needsPatch,
       timestamp:r2.timestamp||'',
     }));
-    await fbDb.ref('episodeRemarks/'+chapId).set({
+    await dbRef('episodeRemarks/'+chapId).set({
       title: ch.chapter_title||'Episode',
       showId: activeShowId,
       remarks: remarkData,
@@ -2630,7 +2719,7 @@ async function accTake(ri,ti){
   RS[ri].reviewedAt=Date.now();
   await dbSet('config',`${activeEp.chapter_id}_r${ri}_acc`,ti);
   // Save reviewer info to Firebase
-  fbDb.ref('episodeRemarks/'+activeEp.chapter_id+'/reviews/'+ri).set({user:currentUser, take:ti, action:'accept', ts:Date.now()});
+  dbRef('episodeRemarks/'+activeEp.chapter_id+'/reviews/'+ri).set({user:currentUser, take:ti, action:'accept', ts:Date.now()});
   logAction(activeEp.chapter_id, 'review_accept', {remarkIdx:ri, take:ti});
   refreshCard(ri); updateStitchBtn();
   toast(`Take ${ti+1} accepted — saving audio...`,'ok');
@@ -2668,9 +2757,9 @@ async function setDisposition(ri, disp){
   RS[ri].disposition=disp;
   if(activeEp){
     await dbSet('config',`${activeEp.chapter_id}_r${ri}_disp`,disp);
-    fbDb.ref('episodeRemarks/'+activeEp.chapter_id+'/dispositions/'+ri).set(disp||null);
+    dbRef('episodeRemarks/'+activeEp.chapter_id+'/dispositions/'+ri).set(disp||null);
     if(disp){
-      fbDb.ref('episodeRemarks/'+activeEp.chapter_id+'/dispositionMeta/'+ri).set({user:currentUser, ts:Date.now()});
+      dbRef('episodeRemarks/'+activeEp.chapter_id+'/dispositionMeta/'+ri).set({user:currentUser, ts:Date.now()});
       logAction(activeEp.chapter_id, 'disposition', {remarkIdx:ri, disp});
     }
   }
@@ -2688,7 +2777,7 @@ async function disTake(ri,ti){
   if(wasAccepted){RS[ri].acceptedTake=-1;RS[ri].status='done';}
   await dbSet('config',`${activeEp.chapter_id}_r${ri}_acc`,-1);
   if(activeEp){
-    fbDb.ref('episodeRemarks/'+activeEp.chapter_id+'/reviews/'+ri).set({user:currentUser, take:ti, action:'reject', ts:Date.now()});
+    dbRef('episodeRemarks/'+activeEp.chapter_id+'/reviews/'+ri).set({user:currentUser, take:ti, action:'reject', ts:Date.now()});
     logAction(activeEp.chapter_id, 'review_reject', {remarkIdx:ri, take:ti});
   }
   refreshCard(ri); updateStitchBtn();
