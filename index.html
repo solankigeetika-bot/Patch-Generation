@@ -301,7 +301,14 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
     <div style="display:flex;flex-direction:column;gap:12px">
       <div><label class="fl" style="margin-bottom:3px">Show Name *</label><input class="inp" id="m_name" placeholder="e.g. Mech Touch S2"/></div>
       <div><label class="fl" style="margin-bottom:3px">Show ID or CMS URL *</label><input class="inp" id="m_showid" placeholder="show_id or full CMS URL..."/></div>
-      <div><label class="fl" style="margin-bottom:3px">AudioStack API Key *</label><input type="password" class="inp" id="m_askey" placeholder="a8b654d7-..." value="a8b654d7-aeed-40dc-8e3b-4f6181c26cb6"/></div>
+      <div><label class="fl" style="margin-bottom:3px">TTS Provider</label>
+        <select class="inp" id="m_ttsprovider" onchange="onTtsProviderChange()">
+          <option value="audiostack">AudioStack</option>
+          <option value="elevenlabs">ElevenLabs (v3)</option>
+        </select>
+      </div>
+      <div id="m_askey_row"><label class="fl" style="margin-bottom:3px">AudioStack API Key *</label><input type="password" class="inp" id="m_askey" placeholder="a8b654d7-..." value="a8b654d7-aeed-40dc-8e3b-4f6181c26cb6"/></div>
+      <div id="m_elkey_row" style="display:none"><label class="fl" style="margin-bottom:3px">ElevenLabs API Key *</label><input type="password" class="inp" id="m_elkey" placeholder="sk_..."/></div>
       <div><label class="fl" style="margin-bottom:3px">Voice ID</label><input class="inp" id="m_voice" placeholder="Auto-detected from CMS · or paste manually"/></div>
       <div style="display:flex;gap:8px">
         <div style="flex:2"><label class="fl" style="margin-bottom:3px">Voice Name</label><input class="inp" id="m_voicename" placeholder="e.g. Charles Moreau"/></div>
@@ -2137,16 +2144,26 @@ function saveSEData(chapId, title, patchesData, stitchedUrl){
   dbRef('seData/'+chapId).set(epData);
 }
 
+// Toggle which API-key row is visible based on the chosen TTS provider
+function onTtsProviderChange(){
+  const p = document.getElementById('m_ttsprovider').value;
+  document.getElementById('m_askey_row').style.display = (p==='audiostack') ? '' : 'none';
+  document.getElementById('m_elkey_row').style.display = (p==='elevenlabs') ? '' : 'none';
+}
+
 function openAddShow(){
   document.getElementById('editShowId').value = '';
   document.getElementById('addShowTitle').textContent = 'Add New Show';
   document.getElementById('m_name').value = '';
   document.getElementById('m_showid').value = '';
   document.getElementById('m_askey').value = asKey || 'a8b654d7-aeed-40dc-8e3b-4f6181c26cb6';
+  document.getElementById('m_elkey').value = '';
+  document.getElementById('m_ttsprovider').value = 'audiostack';
   document.getElementById('m_voice').value = '';
   document.getElementById('m_voicename').value = '';
   document.getElementById('m_voicegender').value = '';
   document.getElementById('m_voicetype').value = 'standard';
+  onTtsProviderChange();
   document.getElementById('addShowModal').style.display = 'flex';
 }
 function closeAddShow(){ document.getElementById('addShowModal').style.display = 'none'; }
@@ -2159,10 +2176,13 @@ function editShow(id){
   document.getElementById('m_name').value = s.name;
   document.getElementById('m_showid').value = s.showInput;
   document.getElementById('m_askey').value = s.asKey||'';
+  document.getElementById('m_elkey').value = s.elKey||'';
+  document.getElementById('m_ttsprovider').value = s.ttsProvider||'audiostack';
   document.getElementById('m_voice').value = s.voiceId||'';
   document.getElementById('m_voicename').value = s.voiceName||'';
   document.getElementById('m_voicegender').value = s.voiceGender||'';
   document.getElementById('m_voicetype').value = s.voiceType||'standard';
+  onTtsProviderChange();
   document.getElementById('addShowModal').style.display = 'flex';
 }
 
@@ -2170,19 +2190,24 @@ async function saveShow(){
   const editId = document.getElementById('editShowId').value;
   const name = document.getElementById('m_name').value.trim();
   const showInput = document.getElementById('m_showid').value.trim();
+  const ttsProvider = document.getElementById('m_ttsprovider').value || 'audiostack';
   const asKeyVal = document.getElementById('m_askey').value.trim();
+  const elKey = document.getElementById('m_elkey').value.trim();
   const voiceId = document.getElementById('m_voice').value.trim();
   const voiceName = document.getElementById('m_voicename').value.trim();
   const voiceGender = document.getElementById('m_voicegender').value;
   const voiceType = document.getElementById('m_voicetype').value;
   if(!name||!showInput){ toast('Name and Show ID are required','warn'); return; }
+  if(ttsProvider==='elevenlabs' && !elKey){ toast('ElevenLabs API key is required for ElevenLabs provider','warn'); return; }
+  if(ttsProvider==='audiostack' && !asKeyVal){ toast('AudioStack API key is required for AudioStack provider','warn'); return; }
+  const baseFields = { name, showInput, ttsProvider, asKey:asKeyVal, elKey, voiceId, voiceName, voiceGender, voiceType };
   if(editId){
     const show = shows.find(x=>x.id==editId) || {};
-    const updated = {...show, name, showInput, asKey:asKeyVal, voiceId, voiceName, voiceGender, voiceType};
+    const updated = {...show, ...baseFields};
     await dbRef('shows/'+editId).set(updated);
   } else {
     const id = Date.now();
-    await dbRef('shows/'+id).set({ id, name, showInput, asKey:asKeyVal, voiceId, voiceName, voiceGender, voiceType });
+    await dbRef('shows/'+id).set({ id, ...baseFields });
   }
   closeAddShow();
   toast(editId ? 'Show updated ✓' : 'Show added ✓','ok');
@@ -2662,10 +2687,35 @@ async function genTakes(ri){
   toast(`3 takes generated for remark ${ri+1}`,'ok');
 }
 
+// \u2500\u2500 ElevenLabs TTS (model: eleven_v3) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+async function elevenLabsTTS(text, voiceId, apiKey){
+  if(!apiKey) throw new Error('ElevenLabs API key not set for this show');
+  if(!voiceId) throw new Error('No ElevenLabs Voice ID set for this show');
+  const r = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceId)}`, {
+    method: 'POST',
+    headers: {
+      'xi-api-key': apiKey,
+      'Content-Type': 'application/json',
+      'Accept': 'audio/mpeg'
+    },
+    body: JSON.stringify({
+      text,
+      model_id: 'eleven_v3',
+      voice_settings: { stability: 0.5, similarity_boost: 0.75, style: 0, use_speaker_boost: true }
+    })
+  });
+  if(!r.ok){
+    const err = await r.text();
+    throw new Error('ElevenLabs ' + r.status + ': ' + err.substring(0, 250));
+  }
+  return await r.blob();
+}
+
 async function genOneTake(text,ri,ti,chapId){
-  const st=RS[ri], h={'x-api-key':asKey,'Content-Type':'application/json'};
+  const st=RS[ri];
+  const provider = activeShowConfig?.ttsProvider || 'audiostack';
   try{
-    // Clean text: remove bracketed tags, strip AudioStack invalid chars, normalize quotes
+    // Clean text: remove bracketed tags, strip invalid chars, normalize quotes
     let cleanText=text
       .replace(/\[[^\]]*\]/g,'')
       .replace(/[\u00ab\u00bb]/g,'"')
@@ -2675,33 +2725,44 @@ async function genOneTake(text,ri,ti,chapId){
       .replace(/[\[\]^{}>\-#|<\\{}]/g,'')
       .replace(/\s+/g,' ').trim();
     if(!cleanText){cleanText=text.replace(/[\[\]^{}>\-#|<\\{}]/g,'').replace(/\s+/g,' ').trim();}
-    console.log(`Take ${ti} sending text:`, cleanText.substring(0,100));
-    const sr=await fetch(`${AS_BASE}/content/script`,{method:'POST',headers:h,body:JSON.stringify({scriptText:cleanText,projectName:'PatchStudio'})});
-    const srText=await sr.text();
-    if(!sr.ok){console.error(`Script API ${sr.status}:`,srText); throw new Error('Script API error: '+sr.status+' '+srText.substring(0,200));}
-    const sd=JSON.parse(srText);
-    const scriptId=sd.scriptId||sd.script_id||sd.id||(sd.data&&(sd.data.scriptId||sd.data.script_id||sd.data.id))||(sd.response&&(sd.response.scriptId||sd.response.script_id));
-    if(!scriptId) throw new Error('No scriptId in response: '+srText.substring(0,200));
-
-    const ttsBody={scriptId,voice:asVoice,sync:true};
-    if(voiceType==='expressive') ttsBody.voiceIntelligence=true;
-    const tr=await fetch(`${AS_BASE}/speech/tts`,{method:'POST',headers:h,body:JSON.stringify(ttsBody)});
-    const td=JSON.parse(await tr.text());
-    let audioUrl=td.url||td.audioUrl||td.data?.url||td.data?.sections?.[0]?.url||td.sections?.[0]?.url;
-    const speechId=td.speechId||td.speech_id||td.data?.speechId;
-
-    if(!audioUrl&&speechId){
-      for(let i=0;i<20;i++){
-        await sleep(2500);
-        const p=await fetch(`${AS_BASE}/speech/tts/${speechId}`,{headers:h});
-        if(p.ok){const pd=await p.json(); audioUrl=pd.url||pd.audioUrl||pd.data?.url||pd.data?.sections?.[0]?.url; if(audioUrl) break;}
-      }
-    }
-    if(!audioUrl) throw new Error('No audio URL');
+    console.log(`Take ${ti} (${provider}) sending text:`, cleanText.substring(0,100));
 
     let blob;
-    const dl=await fetch(audioUrl,{headers:{'x-api-key':asKey}});
-    if(dl.ok){ blob=await dl.blob(); } else { const dl2=await fetch(audioUrl); if(!dl2.ok) throw new Error('Download failed'); blob=await dl2.blob(); }
+
+    if(provider === 'elevenlabs'){
+      // \u2500\u2500 ElevenLabs path \u2500\u2500
+      const elKey = activeShowConfig?.elKey || '';
+      const voiceId = activeShowConfig?.voiceId || '';
+      blob = await elevenLabsTTS(cleanText, voiceId, elKey);
+    } else {
+      // \u2500\u2500 AudioStack path (existing behavior) \u2500\u2500
+      const h = {'x-api-key':asKey,'Content-Type':'application/json'};
+      const sr=await fetch(`${AS_BASE}/content/script`,{method:'POST',headers:h,body:JSON.stringify({scriptText:cleanText,projectName:'PatchStudio'})});
+      const srText=await sr.text();
+      if(!sr.ok){console.error(`Script API ${sr.status}:`,srText); throw new Error('Script API error: '+sr.status+' '+srText.substring(0,200));}
+      const sd=JSON.parse(srText);
+      const scriptId=sd.scriptId||sd.script_id||sd.id||(sd.data&&(sd.data.scriptId||sd.data.script_id||sd.data.id))||(sd.response&&(sd.response.scriptId||sd.response.script_id));
+      if(!scriptId) throw new Error('No scriptId in response: '+srText.substring(0,200));
+
+      const ttsBody={scriptId,voice:asVoice,sync:true};
+      if(voiceType==='expressive') ttsBody.voiceIntelligence=true;
+      const tr=await fetch(`${AS_BASE}/speech/tts`,{method:'POST',headers:h,body:JSON.stringify(ttsBody)});
+      const td=JSON.parse(await tr.text());
+      let audioUrl=td.url||td.audioUrl||td.data?.url||td.data?.sections?.[0]?.url||td.sections?.[0]?.url;
+      const speechId=td.speechId||td.speech_id||td.data?.speechId;
+
+      if(!audioUrl&&speechId){
+        for(let i=0;i<20;i++){
+          await sleep(2500);
+          const p=await fetch(`${AS_BASE}/speech/tts/${speechId}`,{headers:h});
+          if(p.ok){const pd=await p.json(); audioUrl=pd.url||pd.audioUrl||pd.data?.url||pd.data?.sections?.[0]?.url; if(audioUrl) break;}
+        }
+      }
+      if(!audioUrl) throw new Error('No audio URL');
+
+      const dl=await fetch(audioUrl,{headers:{'x-api-key':asKey}});
+      if(dl.ok){ blob=await dl.blob(); } else { const dl2=await fetch(audioUrl); if(!dl2.ok) throw new Error('Download failed'); blob=await dl2.blob(); }
+    }
 
     await dbSetBlob(`${chapId}_r${ri}_t${ti}`,blob);
     st.takes[ti]=URL.createObjectURL(blob);
