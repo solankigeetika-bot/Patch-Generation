@@ -2704,6 +2704,13 @@ async function genTakes(ri){
 async function elevenLabsTTS(text, voiceId, apiKey, modelId){
   if(!apiKey) throw new Error('ElevenLabs API key not set for this show');
   if(!voiceId) throw new Error('No ElevenLabs Voice ID set for this show');
+  const model = modelId || 'eleven_v3';
+  // eleven_v3 does not support style or use_speaker_boost \u2014 sending them
+  // makes the API return a misleading "invalid_api_key" error.
+  const supportsStyleAndBoost = model !== 'eleven_v3' && !model.includes('flash') && !model.includes('turbo');
+  const voice_settings = supportsStyleAndBoost
+    ? { stability: 0.5, similarity_boost: 0.75, style: 0, use_speaker_boost: true }
+    : { stability: 0.5, similarity_boost: 0.75 };
   const r = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceId)}`, {
     method: 'POST',
     headers: {
@@ -2711,11 +2718,7 @@ async function elevenLabsTTS(text, voiceId, apiKey, modelId){
       'Content-Type': 'application/json',
       'Accept': 'audio/mpeg'
     },
-    body: JSON.stringify({
-      text,
-      model_id: modelId || 'eleven_v3',
-      voice_settings: { stability: 0.5, similarity_boost: 0.75, style: 0, use_speaker_boost: true }
-    })
+    body: JSON.stringify({ text, model_id: model, voice_settings })
   });
   if(!r.ok){
     const err = await r.text();
