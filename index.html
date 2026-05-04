@@ -308,7 +308,17 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
         </select>
       </div>
       <div id="m_askey_row"><label class="fl" style="margin-bottom:3px">AudioStack API Key *</label><input type="password" class="inp" id="m_askey" placeholder="a8b654d7-..." value="a8b654d7-aeed-40dc-8e3b-4f6181c26cb6"/></div>
-      <div id="m_elkey_row" style="display:none"><label class="fl" style="margin-bottom:3px">ElevenLabs API Key *</label><input type="password" class="inp" id="m_elkey" placeholder="sk_..."/></div>
+      <div id="m_elkey_row" style="display:none">
+        <label class="fl" style="margin-bottom:3px">ElevenLabs API Key *</label>
+        <input type="password" class="inp" id="m_elkey" placeholder="sk_..." value="sk_299988874fc84dbc247c67fb3eff597c87929c1036f7cfa5"/>
+        <label class="fl" style="margin-top:8px;margin-bottom:3px">ElevenLabs Model</label>
+        <select class="inp" id="m_elmodel">
+          <option value="eleven_v3">Eleven v3 (Alpha)</option>
+          <option value="eleven_multilingual_v2">Eleven Multilingual v2</option>
+          <option value="eleven_turbo_v2_5">Eleven Turbo v2.5</option>
+          <option value="eleven_monolingual_v1">Eleven Monolingual v1</option>
+        </select>
+      </div>
       <div><label class="fl" style="margin-bottom:3px">Voice ID</label><input class="inp" id="m_voice" placeholder="Auto-detected from CMS · or paste manually"/></div>
       <div style="display:flex;gap:8px">
         <div style="flex:2"><label class="fl" style="margin-bottom:3px">Voice Name</label><input class="inp" id="m_voicename" placeholder="e.g. Charles Moreau"/></div>
@@ -2157,7 +2167,8 @@ function openAddShow(){
   document.getElementById('m_name').value = '';
   document.getElementById('m_showid').value = '';
   document.getElementById('m_askey').value = asKey || 'a8b654d7-aeed-40dc-8e3b-4f6181c26cb6';
-  document.getElementById('m_elkey').value = '';
+  document.getElementById('m_elkey').value = 'sk_299988874fc84dbc247c67fb3eff597c87929c1036f7cfa5';
+  document.getElementById('m_elmodel').value = 'eleven_v3';
   document.getElementById('m_ttsprovider').value = 'audiostack';
   document.getElementById('m_voice').value = '';
   document.getElementById('m_voicename').value = '';
@@ -2176,7 +2187,8 @@ function editShow(id){
   document.getElementById('m_name').value = s.name;
   document.getElementById('m_showid').value = s.showInput;
   document.getElementById('m_askey').value = s.asKey||'';
-  document.getElementById('m_elkey').value = s.elKey||'';
+  document.getElementById('m_elkey').value = s.elKey || 'sk_299988874fc84dbc247c67fb3eff597c87929c1036f7cfa5';
+  document.getElementById('m_elmodel').value = s.elModel || 'eleven_v3';
   document.getElementById('m_ttsprovider').value = s.ttsProvider||'audiostack';
   document.getElementById('m_voice').value = s.voiceId||'';
   document.getElementById('m_voicename').value = s.voiceName||'';
@@ -2193,6 +2205,7 @@ async function saveShow(){
   const ttsProvider = document.getElementById('m_ttsprovider').value || 'audiostack';
   const asKeyVal = document.getElementById('m_askey').value.trim();
   const elKey = document.getElementById('m_elkey').value.trim();
+  const elModel = document.getElementById('m_elmodel').value || 'eleven_v3';
   const voiceId = document.getElementById('m_voice').value.trim();
   const voiceName = document.getElementById('m_voicename').value.trim();
   const voiceGender = document.getElementById('m_voicegender').value;
@@ -2200,7 +2213,7 @@ async function saveShow(){
   if(!name||!showInput){ toast('Name and Show ID are required','warn'); return; }
   if(ttsProvider==='elevenlabs' && !elKey){ toast('ElevenLabs API key is required for ElevenLabs provider','warn'); return; }
   if(ttsProvider==='audiostack' && !asKeyVal){ toast('AudioStack API key is required for AudioStack provider','warn'); return; }
-  const baseFields = { name, showInput, ttsProvider, asKey:asKeyVal, elKey, voiceId, voiceName, voiceGender, voiceType };
+  const baseFields = { name, showInput, ttsProvider, asKey:asKeyVal, elKey, elModel, voiceId, voiceName, voiceGender, voiceType };
   if(editId){
     const show = shows.find(x=>x.id==editId) || {};
     const updated = {...show, ...baseFields};
@@ -2687,8 +2700,8 @@ async function genTakes(ri){
   toast(`3 takes generated for remark ${ri+1}`,'ok');
 }
 
-// \u2500\u2500 ElevenLabs TTS (model: eleven_v3) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
-async function elevenLabsTTS(text, voiceId, apiKey){
+// \u2500\u2500 ElevenLabs TTS \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+async function elevenLabsTTS(text, voiceId, apiKey, modelId){
   if(!apiKey) throw new Error('ElevenLabs API key not set for this show');
   if(!voiceId) throw new Error('No ElevenLabs Voice ID set for this show');
   const r = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceId)}`, {
@@ -2700,7 +2713,7 @@ async function elevenLabsTTS(text, voiceId, apiKey){
     },
     body: JSON.stringify({
       text,
-      model_id: 'eleven_v3',
+      model_id: modelId || 'eleven_v3',
       voice_settings: { stability: 0.5, similarity_boost: 0.75, style: 0, use_speaker_boost: true }
     })
   });
@@ -2731,9 +2744,10 @@ async function genOneTake(text,ri,ti,chapId){
 
     if(provider === 'elevenlabs'){
       // \u2500\u2500 ElevenLabs path \u2500\u2500
-      const elKey = activeShowConfig?.elKey || '';
+      const elKey = activeShowConfig?.elKey || 'sk_299988874fc84dbc247c67fb3eff597c87929c1036f7cfa5';
       const voiceId = activeShowConfig?.voiceId || '';
-      blob = await elevenLabsTTS(cleanText, voiceId, elKey);
+      const elModel = activeShowConfig?.elModel || 'eleven_v3';
+      blob = await elevenLabsTTS(cleanText, voiceId, elKey, elModel);
     } else {
       // \u2500\u2500 AudioStack path (existing behavior) \u2500\u2500
       const h = {'x-api-key':asKey,'Content-Type':'application/json'};
