@@ -2704,6 +2704,11 @@ async function genTakes(ri){
 async function elevenLabsTTS(text, voiceId, apiKey, modelId){
   if(!apiKey) throw new Error('ElevenLabs API key not set for this show');
   if(!voiceId) throw new Error('No ElevenLabs Voice ID set for this show');
+  // Defensive: strip whitespace & any trailing junk pasted alongside the key.
+  // Real EL keys are sk_<48 hex chars>, so take only the first sk_-prefixed token.
+  const keyMatch = String(apiKey).match(/sk_[a-f0-9]{40,}/i);
+  apiKey = keyMatch ? keyMatch[0] : String(apiKey).trim();
+  voiceId = String(voiceId).trim();
   const model = modelId || 'eleven_v3';
   // eleven_v3 does not support style or use_speaker_boost \u2014 sending them
   // makes the API return a misleading "invalid_api_key" error.
