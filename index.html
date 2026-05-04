@@ -922,20 +922,31 @@ async function loadErrorSummary(){
     }
 
     // Render table
+    // Sticky-cell helpers: header row (top), Show col (left:0), Voice col (left:180px)
+    const STICKY_SHOW_W = 180;       // px reserved for the Show column
+    const STICKY_VOICE_W = 120;      // px reserved for the Voice column
+    const stickyTopHdr = `position:sticky;top:0;z-index:3;background:var(--surface2)`;
+    const stickyShowHdr  = `position:sticky;top:0;left:0;z-index:5;background:var(--surface2);min-width:${STICKY_SHOW_W}px`;
+    const stickyVoiceHdr = `position:sticky;top:0;left:${STICKY_SHOW_W}px;z-index:5;background:var(--surface2);min-width:${STICKY_VOICE_W}px;box-shadow:2px 0 0 var(--border)`;
+    const stickyShowCell  = `position:sticky;left:0;z-index:1;background:var(--surface);min-width:${STICKY_SHOW_W}px`;
+    const stickyVoiceCell = `position:sticky;left:${STICKY_SHOW_W}px;z-index:1;background:var(--surface);min-width:${STICKY_VOICE_W}px;box-shadow:2px 0 0 var(--border)`;
+    const stickyShowTotal  = `position:sticky;left:0;z-index:2;background:var(--surface2);min-width:${STICKY_SHOW_W}px`;
+    const stickyVoiceTotal = `position:sticky;left:${STICKY_SHOW_W}px;z-index:2;background:var(--surface2);min-width:${STICKY_VOICE_W}px;box-shadow:2px 0 0 var(--border)`;
+
     let html=`<div style="margin:16px 0">
       <div style="font-size:14px;font-weight:800;margin-bottom:10px;color:var(--text)">QC Error Summary</div>
       ${filterBar}
-      <div style="overflow-x:auto">
-      <table style="width:100%;border-collapse:collapse;font-size:11px;font-family:var(--mono)">
+      <div style="overflow:auto;max-height:70vh;border:1px solid var(--border);border-radius:6px">
+      <table style="width:100%;border-collapse:separate;border-spacing:0;font-size:11px;font-family:var(--mono)">
         <thead><tr style="background:var(--surface2);border-bottom:2px solid var(--border)">
-          <th style="padding:8px 10px;text-align:left;color:var(--text2)">Show</th>
-          <th style="padding:8px 10px;text-align:center;color:var(--text2)">Voice</th>
-          <th style="padding:8px 10px;text-align:center;color:var(--text2)">M/F</th>
-          <th style="padding:8px 10px;text-align:center;color:var(--text2)">Episodes</th>
-          <th style="padding:8px 10px;text-align:center;color:var(--text2);background:#E8F5E9">QC'd Till Ep</th>
-          <th style="padding:8px 10px;text-align:center;color:var(--text2)">Total Errors</th>
-          <th style="padding:8px 10px;text-align:center;color:var(--text2);background:#FFF3E0">Errors/Ep</th>
-          ${typeArr.map(t=>`<th style="padding:8px 10px;text-align:center;color:var(--text2)">${esc(t)}</th>`).join('')}
+          <th style="padding:8px 10px;text-align:left;color:var(--text2);${stickyShowHdr}">Show</th>
+          <th style="padding:8px 10px;text-align:center;color:var(--text2);${stickyVoiceHdr}">Voice</th>
+          <th style="padding:8px 10px;text-align:center;color:var(--text2);${stickyTopHdr}">M/F</th>
+          <th style="padding:8px 10px;text-align:center;color:var(--text2);${stickyTopHdr}">Episodes</th>
+          <th style="padding:8px 10px;text-align:center;color:var(--text2);${stickyTopHdr};background:#E8F5E9">QC'd Till Ep</th>
+          <th style="padding:8px 10px;text-align:center;color:var(--text2);${stickyTopHdr}">Total Errors</th>
+          <th style="padding:8px 10px;text-align:center;color:var(--text2);${stickyTopHdr};background:#FFF3E0">Errors/Ep</th>
+          ${typeArr.map(t=>`<th style="padding:8px 10px;text-align:center;color:var(--text2);${stickyTopHdr}">${esc(t)}</th>`).join('')}
         </tr></thead>
         <tbody>`;
 
@@ -943,8 +954,8 @@ async function loadErrorSummary(){
 
     for(const sm of Object.values(showMap)){
       html+=`<tr style="border-bottom:1px solid var(--border)">
-        <td style="padding:8px 10px;font-weight:600;color:var(--text)">${esc(sm.name)}</td>
-        <td style="padding:8px 10px;text-align:center;font-size:10px">${esc(sm.voiceName)||'—'}</td>
+        <td style="padding:8px 10px;font-weight:600;color:var(--text);${stickyShowCell}">${esc(sm.name)}</td>
+        <td style="padding:8px 10px;text-align:center;font-size:10px;${stickyVoiceCell}">${esc(sm.voiceName)||'—'}</td>
         <td style="padding:8px 10px;text-align:center;font-weight:700;color:${sm.voiceGender==='F'?'#E91E63':'#1565C0'}">${esc(sm.voiceGender)||'—'}</td>
         <td style="padding:8px 10px;text-align:center">${sm.episodes||'—'}</td>
         <td style="padding:8px 10px;text-align:center;font-weight:700;color:var(--green);background:#E8F5E9">${sm.qcTillEp||'—'}</td>
@@ -957,8 +968,8 @@ async function loadErrorSummary(){
     // Totals row
     const grandTotal=Object.values(showMap).reduce((s,m)=>s+m.totalErrors,0);
     html+=`<tr style="border-top:2px solid var(--border);background:var(--surface2);font-weight:800">
-      <td style="padding:8px 10px">TOTAL</td>
-      <td style="padding:8px 10px"></td>
+      <td style="padding:8px 10px;${stickyShowTotal}">TOTAL</td>
+      <td style="padding:8px 10px;${stickyVoiceTotal}"></td>
       <td style="padding:8px 10px"></td>
       <td style="padding:8px 10px;text-align:center">${Object.values(showMap).reduce((s,m)=>s+(m.episodes||0),0)}</td>
       <td style="padding:8px 10px;text-align:center;background:#E8F5E9"></td>
