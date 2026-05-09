@@ -448,7 +448,12 @@ function pickCountry(c){
 }
 
 const CMS_BASE = 'https://api.cms.pocketfm.com/v2/content_api';
-const AS_BASE  = 'https://v2.api.audio';
+// All TTS calls route through this proxy. The proxy verifies our PocketFM
+// CMS auth (access-token + uid) and attaches the provider's secret API key
+// server-side, so the real keys never live in this HTML or any browser.
+const PROXY_BASE = 'https://patchproxy.solanki-geetika.workers.dev';
+const AS_BASE    = `${PROXY_BASE}/audiostack`;
+const EL_BASE    = `${PROXY_BASE}/elevenlabs`;
 const DB_NAME  = 'PatchStudioDB';
 
 let authToken='', uid='', asKey='', asVoice='', voiceType='standard', cmsWin=null;
@@ -2711,14 +2716,10 @@ async function genTakes(ri){
   toast(`3 takes generated for remark ${ri+1}`,'ok');
 }
 
-// \u2500\u2500 ElevenLabs TTS \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
-async function elevenLabsTTS(text, voiceId, apiKey, modelId){
-  if(!apiKey) throw new Error('ElevenLabs API key not set for this show');
+// \u2500\u2500 ElevenLabs TTS (via proxy \u2014 secret key lives on Cloudflare Worker) \u2500\u2500
+async function elevenLabsTTS(text, voiceId, _apiKeyIgnored, modelId){
+  if(!authToken || !uid) throw new Error('Sign into PocketFM CMS first (paste credentials via bookmarklet)');
   if(!voiceId) throw new Error('No ElevenLabs Voice ID set for this show');
-  // Defensive: strip whitespace & any trailing junk pasted alongside the key.
-  // Real EL keys are sk_<48 hex chars>, so take only the first sk_-prefixed token.
-  const keyMatch = String(apiKey).match(/sk_[a-f0-9]{40,}/i);
-  apiKey = keyMatch ? keyMatch[0] : String(apiKey).trim();
   voiceId = String(voiceId).trim();
   const model = modelId || 'eleven_v3';
   // eleven_v3 does not support style or use_speaker_boost \u2014 sending them
@@ -2727,10 +2728,12 @@ async function elevenLabsTTS(text, voiceId, apiKey, modelId){
   const voice_settings = supportsStyleAndBoost
     ? { stability: 0.5, similarity_boost: 0.75, style: 0, use_speaker_boost: true }
     : { stability: 0.5, similarity_boost: 0.75 };
-  const r = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceId)}`, {
+  const r = await fetch(`${EL_BASE}/v1/text-to-speech/${encodeURIComponent(voiceId)}`, {
     method: 'POST',
     headers: {
-      'xi-api-key': apiKey,
+      // CMS auth \u2014 proxy verifies these and attaches the real ElevenLabs key
+      'access-token': authToken,
+      'uid': uid,
       'Content-Type': 'application/json',
       'Accept': 'audio/mpeg'
     },
@@ -2768,8 +2771,10 @@ async function genOneTake(text,ri,ti,chapId){
       const elModel = activeShowConfig?.elModel || 'eleven_v3';
       blob = await elevenLabsTTS(cleanText, voiceId, elKey, elModel);
     } else {
-      // \u2500\u2500 AudioStack path (existing behavior) \u2500\u2500
-      const h = {'x-api-key':asKey,'Content-Type':'application/json'};
+      // \u2500\u2500 AudioStack path (via proxy \u2014 secret key lives on Cloudflare Worker) \u2500\u2500
+      if(!authToken || !uid) throw new Error('Sign into PocketFM CMS first (paste credentials via bookmarklet)');
+      // Proxy verifies these and attaches the real AudioStack API key server-side.
+      const h = {'access-token':authToken,'uid':uid,'Content-Type':'application/json'};
       const sr=await fetch(`${AS_BASE}/content/script`,{method:'POST',headers:h,body:JSON.stringify({scriptText:cleanText,projectName:'PatchStudio'})});
       const srText=await sr.text();
       if(!sr.ok){console.error(`Script API ${sr.status}:`,srText); throw new Error('Script API error: '+sr.status+' '+srText.substring(0,200));}
@@ -2793,8 +2798,11 @@ async function genOneTake(text,ri,ti,chapId){
       }
       if(!audioUrl) throw new Error('No audio URL');
 
-      const dl=await fetch(audioUrl,{headers:{'x-api-key':asKey}});
-      if(dl.ok){ blob=await dl.blob(); } else { const dl2=await fetch(audioUrl); if(!dl2.ok) throw new Error('Download failed'); blob=await dl2.blob(); }
+      // AudioStack returns a presigned audioUrl that doesn't need a key —
+      // we no longer have asKey in the browser anyway (it lives in the proxy).
+      const dl=await fetch(audioUrl);
+      if(!dl.ok) throw new Error('Download failed: '+dl.status);
+      blob=await dl.blob();
     }
 
     await dbSetBlob(`${chapId}_r${ri}_t${ti}`,blob);
