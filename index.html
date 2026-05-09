@@ -267,7 +267,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
 
   <!-- Hidden inputs -->
   <input type="hidden" id="showInp"/>
-  <input type="hidden" id="asKeyInp" value="a8b654d7-aeed-40dc-8e3b-4f6181c26cb6"/>
+  <input type="hidden" id="asKeyInp" value=""/>
   <input type="hidden" id="asVoiceInp" value="5438303f-36ed-42f7-af4c-4007453faf26"/>
   <input type="hidden" id="voiceType" value="standard"/>
 </aside>
@@ -307,10 +307,10 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
           <option value="elevenlabs">ElevenLabs (v3)</option>
         </select>
       </div>
-      <div id="m_askey_row"><label class="fl" style="margin-bottom:3px">AudioStack API Key *</label><input type="password" class="inp" id="m_askey" placeholder="a8b654d7-..." value="a8b654d7-aeed-40dc-8e3b-4f6181c26cb6"/></div>
+      <div id="m_askey_row" style="display:none"><label class="fl" style="margin-bottom:3px">AudioStack API Key (managed by proxy — leave blank)</label><input type="password" class="inp" id="m_askey" placeholder="(handled by proxy)" value=""/></div>
       <div id="m_elkey_row" style="display:none">
         <label class="fl" style="margin-bottom:3px">ElevenLabs API Key *</label>
-        <input type="password" class="inp" id="m_elkey" placeholder="sk_..." value="sk_299988874fc84dbc247c67fb3eff597c87929c1036f7cfa5"/>
+        <input type="password" class="inp" id="m_elkey" placeholder="(handled by proxy — leave blank)" value=""/>
         <label class="fl" style="margin-top:8px;margin-bottom:3px">ElevenLabs Model</label>
         <select class="inp" id="m_elmodel">
           <option value="eleven_v3">Eleven v3 (Alpha)</option>
@@ -535,7 +535,10 @@ window.onload = async () => {
 
   // Load other settings from IndexedDB
   try {
-    asKey     = await dbGet('config','asKey') || 'a8b654d7-aeed-40dc-8e3b-4f6181c26cb6';
+    // asKey is no longer used by the browser — TTS calls go through the proxy,
+    // which holds the real keys server-side. Kept here for backward compat
+    // with old saved config; defaults to empty.
+    asKey     = await dbGet('config','asKey') || '';
     asVoice   = await dbGet('config','asVoice') || '5438303f-36ed-42f7-af4c-4007453faf26';
     voiceType = await dbGet('config','voiceType') || 'standard';
   } catch(e) { console.error('DB read failed:', e); }
@@ -2182,8 +2185,8 @@ function openAddShow(){
   document.getElementById('addShowTitle').textContent = 'Add New Show';
   document.getElementById('m_name').value = '';
   document.getElementById('m_showid').value = '';
-  document.getElementById('m_askey').value = asKey || 'a8b654d7-aeed-40dc-8e3b-4f6181c26cb6';
-  document.getElementById('m_elkey').value = 'sk_299988874fc84dbc247c67fb3eff597c87929c1036f7cfa5';
+  document.getElementById('m_askey').value = ''; // proxy handles AS key
+  document.getElementById('m_elkey').value = ''; // proxy handles EL key
   document.getElementById('m_elmodel').value = 'eleven_v3';
   document.getElementById('m_ttsprovider').value = 'audiostack';
   document.getElementById('m_voice').value = '';
@@ -2203,7 +2206,7 @@ function editShow(id){
   document.getElementById('m_name').value = s.name;
   document.getElementById('m_showid').value = s.showInput;
   document.getElementById('m_askey').value = s.asKey||'';
-  document.getElementById('m_elkey').value = s.elKey || 'sk_299988874fc84dbc247c67fb3eff597c87929c1036f7cfa5';
+  document.getElementById('m_elkey').value = s.elKey || ''; // proxy handles EL key
   document.getElementById('m_elmodel').value = s.elModel || 'eleven_v3';
   document.getElementById('m_ttsprovider').value = s.ttsProvider||'audiostack';
   document.getElementById('m_voice').value = s.voiceId||'';
@@ -2227,8 +2230,9 @@ async function saveShow(){
   const voiceGender = document.getElementById('m_voicegender').value;
   const voiceType = document.getElementById('m_voicetype').value;
   if(!name||!showInput){ toast('Name and Show ID are required','warn'); return; }
-  if(ttsProvider==='elevenlabs' && !elKey){ toast('ElevenLabs API key is required for ElevenLabs provider','warn'); return; }
-  if(ttsProvider==='audiostack' && !asKeyVal){ toast('AudioStack API key is required for AudioStack provider','warn'); return; }
+  // API keys are no longer required in the show config — the Cloudflare
+  // Worker proxy holds them server-side. The fields are kept for backward
+  // compat but can be empty.
   const baseFields = { name, showInput, ttsProvider, asKey:asKeyVal, elKey, elModel, voiceId, voiceName, voiceGender, voiceType };
   if(editId){
     const show = shows.find(x=>x.id==editId) || {};
@@ -2766,7 +2770,8 @@ async function genOneTake(text,ri,ti,chapId){
 
     if(provider === 'elevenlabs'){
       // \u2500\u2500 ElevenLabs path \u2500\u2500
-      const elKey = activeShowConfig?.elKey || 'sk_299988874fc84dbc247c67fb3eff597c87929c1036f7cfa5';
+      // elKey is unused now (proxy attaches the real key), kept for signature compat
+      const elKey = activeShowConfig?.elKey || '';
       const voiceId = activeShowConfig?.voiceId || '';
       const elModel = activeShowConfig?.elModel || 'eleven_v3';
       blob = await elevenLabsTTS(cleanText, voiceId, elKey, elModel);
