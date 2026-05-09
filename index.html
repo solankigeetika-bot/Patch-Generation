@@ -309,9 +309,11 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
       </div>
       <div id="m_askey_row" style="display:none"><label class="fl" style="margin-bottom:3px">AudioStack API Key (managed by proxy — leave blank)</label><input type="password" class="inp" id="m_askey" placeholder="(handled by proxy)" value=""/></div>
       <div id="m_elkey_row" style="display:none">
-        <label class="fl" style="margin-bottom:3px">ElevenLabs API Key *</label>
-        <input type="password" class="inp" id="m_elkey" placeholder="(handled by proxy — leave blank)" value=""/>
-        <label class="fl" style="margin-top:8px;margin-bottom:3px">ElevenLabs Model</label>
+        <!-- API key field is hidden — the proxy holds the real key server-side.
+             We keep the input in the DOM so save/load logic doesn't break. -->
+        <div style="display:none"><input type="password" id="m_elkey" value=""/></div>
+        <div style="font-family:var(--mono);font-size:10px;color:var(--muted);background:var(--surface2);padding:6px 8px;border-radius:4px;margin-bottom:6px">🔒 ElevenLabs key managed by proxy — no key needed</div>
+        <label class="fl" style="margin-bottom:3px">ElevenLabs Model</label>
         <select class="inp" id="m_elmodel">
           <option value="eleven_v3">Eleven v3 (Alpha)</option>
           <option value="eleven_multilingual_v2">Eleven Multilingual v2</option>
