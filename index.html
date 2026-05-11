@@ -258,6 +258,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
     <button class="btn btn-g btn-sm" onclick="goPage('se')" style="width:100%;margin-bottom:4px;justify-content:flex-start">🎧 SE Panel</button>
     <button class="btn btn-g btn-sm" onclick="goPage('dict')" style="width:100%;margin-bottom:4px;justify-content:flex-start">📖 Dictionary</button>
     <button class="btn btn-g btn-sm" onclick="goPage('prod')" style="width:100%;margin-bottom:4px;justify-content:flex-start">📊 SE Productivity</button>
+    <button class="btn btn-g btn-sm" onclick="goPage('proof')" style="width:100%;margin-bottom:4px;justify-content:flex-start">👂 Proof Listeners</button>
     <div style="margin-top:10px;padding:10px;background:var(--surface2);border-radius:7px">
       <label class="fl" style="margin-bottom:3px">Logged in as (SE/QC)</label>
       <input class="inp" id="currentUserInp" placeholder="e.g. Marine" style="font-size:11px" oninput="setCurrentUser(this.value)"/>
@@ -367,6 +368,10 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
     <!-- PAGE: SE/Reviewer Productivity -->
     <div class="pg" id="page-prod">
       <div id="prodReport"></div>
+    </div>
+    <!-- PAGE: Proof Listeners Productivity -->
+    <div class="pg" id="page-proof">
+      <div id="proofReport"></div>
     </div>
     <!-- PAGE: Dictionary -->
     <div class="pg" id="page-dict">
@@ -687,6 +692,12 @@ function goPage(name){
     genBtn.style.display='none';
     stitchBtn.style.display='none';
     renderProductivityReport();
+  } else if(name==='proof'){
+    back.style.display='inline-flex';
+    document.getElementById('topTitle').textContent='Proof Listeners Productivity';
+    genBtn.style.display='none';
+    stitchBtn.style.display='none';
+    renderProofListenersReport();
   } else if(name==='dict'){
     back.style.display='inline-flex';
     document.getElementById('topTitle').textContent='Mispronunciation Dictionary';
@@ -707,6 +718,7 @@ function goBack(){
   else if(currentPage==='dict') goPage('dashboard');
   else if(currentPage==='agents') goPage('dashboard');
   else if(currentPage==='prod') goPage('dashboard');
+  else if(currentPage==='proof') goPage('dashboard');
 }
 
 // ── Sidebar Nav ─────────────────────────────────────────────
@@ -1039,7 +1051,8 @@ async function renderDictionary(){
       const entry={
         show:showName, episode:d.episode||'', time:d.time||'',
         word:d.word, phonetic:d.phonetic||'', classification:d.classification||classifyWord(d.word,'',''),
-        note:d.note||'', agent:d.agent||''
+        note:d.note||'', agent:d.agent||'',
+        _key:key
       };
       dictByShow[showName].entries.push(entry);
       allWords.push(entry);
@@ -1111,7 +1124,9 @@ async function renderDictionary(){
             <option value="all">All Shows</option>
             ${showNames.map(s=>`<option value="${esc(s)}">${esc(s)}</option>`).join('')}
           </select>
+          <button class="btn btn-green btn-sm" onclick="addDictWord()" style="font-size:10px">+ Add Word</button>
           <button class="btn btn-p btn-sm" onclick="downloadDictCSV()" style="font-size:10px">⬇ Download CSV</button>
+          <button class="btn btn-g btn-sm" onclick="clearAllDict()" style="font-size:10px;color:var(--red);border-color:#fca5a5">🗑 Clear All</button>
         </div>
       </div>`;
 
@@ -1133,18 +1148,17 @@ function filterDict(){
 function renderDictTable(entries){
   const el=document.getElementById('dictContent');
   if(!entries.length){
-    el.innerHTML='<div style="padding:20px;text-align:center;color:var(--muted)">No mispronunciation entries found. Load episodes with QC data first.</div>';
+    el.innerHTML='<div style="padding:20px;text-align:center;color:var(--muted)">No mispronunciation entries found. Load episodes with QC data first, or click "+ Add Word" above.</div>';
     return;
   }
-  // Deduplicate by word (keep first occurrence per show)
-  const seen=new Set();
-  const deduped=entries.filter(e=>{
-    if(!e.word) return true;
-    const key=e.show+'|'+e.word.toLowerCase();
-    if(seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
+  // Group duplicates (same show+word) so deletion removes all of them at once.
+  const grouped={};
+  for(const e of entries){
+    const k=e.word ? ((e.show||'')+'|'+e.word.toLowerCase()) : ('__nw__|'+e._key);
+    if(!grouped[k]) grouped[k]={...e, _allKeys:[]};
+    if(e._key) grouped[k]._allKeys.push(e._key);
+  }
+  const deduped=Object.values(grouped);
 
   let html=`<div style="overflow-x:auto">
     <table style="width:100%;border-collapse:collapse;font-size:11px;font-family:var(--mono)">
@@ -1155,9 +1169,12 @@ function renderDictTable(entries){
         <th style="padding:8px 10px;text-align:left">Show</th>
         <th style="padding:8px 10px;text-align:left">Episode</th>
         <th style="padding:8px 10px;text-align:left">QC Note</th>
+        <th style="padding:8px 6px;text-align:center;width:40px"></th>
       </tr></thead><tbody>`;
   for(const e of deduped){
     const cls=e.classification==='Noun'?'color:var(--accent)':e.classification==='Verb'?'color:var(--green)':'color:var(--muted)';
+    const keysAttr=esc(JSON.stringify(e._allKeys||[]));
+    const wordAttr=esc(e.word||'this entry');
     html+=`<tr style="border-bottom:1px solid var(--border)">
       <td style="padding:6px 10px;font-weight:700">${esc(e.word)||'<span style="color:var(--muted);font-weight:400">\u2014</span>'}</td>
       <td style="padding:6px 10px;font-style:italic;color:var(--text2)">${esc(e.phonetic)||'<span style="color:var(--muted)">\u2014</span>'}</td>
@@ -1165,10 +1182,49 @@ function renderDictTable(entries){
       <td style="padding:6px 10px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(e.show)}</td>
       <td style="padding:6px 10px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(e.episode)}</td>
       <td style="padding:6px 10px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(e.note)}">${esc(e.note).substring(0,60)}${e.note.length>60?'...':''}</td>
+      <td style="padding:6px 6px;text-align:center"><button onclick="deleteDictEntry('${keysAttr}','${wordAttr}')" title="Delete entry" style="background:transparent;border:none;cursor:pointer;color:var(--muted);font-size:14px;padding:2px 6px;border-radius:4px" onmouseover="this.style.background='var(--red-light)';this.style.color='var(--red)'" onmouseout="this.style.background='transparent';this.style.color='var(--muted)'">\u00d7</button></td>
     </tr>`;
   }
   html+=`</tbody></table></div>`;
   el.innerHTML=html;
+}
+
+async function addDictWord(){
+  const word=(prompt('Mispronounced word (correct spelling):')||'').trim();
+  if(!word) return;
+  const phonetic=(prompt('Phonetically correct spelling:')||'').trim();
+  if(!phonetic) return;
+  const show=(prompt('Show name (optional \u2014 leave blank to skip):')||'').trim();
+  const key='manual_'+Date.now()+'_'+word.toLowerCase().replace(/[^a-z0-9]/gi,'_').substring(0,20);
+  const classification=classifyWord(word,'','');
+  await dbRef('dictionary/'+key).set({
+    word, phonetic, classification,
+    show, showId:'', episode:'', episodeId:'',
+    time:'', agent:currentUser||'', note:'',
+    addedAt:Date.now(), manual:true
+  });
+  toast(`"${word}" added to dictionary`,'ok');
+  renderDictionary();
+}
+
+async function deleteDictEntry(keysJson, wordLabel){
+  let keys=[];
+  try{ keys=JSON.parse(keysJson); }catch(e){ return; }
+  if(!keys.length) return;
+  const label=wordLabel||'this entry';
+  const suffix=keys.length>1?` (${keys.length} duplicate entries)`:'';
+  if(!confirm(`Delete "${label}" from the dictionary?${suffix}`)) return;
+  await Promise.all(keys.map(k=>dbRef('dictionary/'+k).remove()));
+  toast(`Deleted "${label}"`,'ok');
+  renderDictionary();
+}
+
+async function clearAllDict(){
+  if(!confirm('Delete ALL dictionary entries for this country? This cannot be undone.')) return;
+  if(!confirm('Are you absolutely sure? Every word will be wiped.')) return;
+  await dbRef('dictionary').remove();
+  toast('Dictionary cleared','ok');
+  renderDictionary();
 }
 
 // ── Dictionary: Add from QC card ──
@@ -1512,6 +1568,194 @@ async function renderProductivityReport(){
     console.error('Productivity report failed:',e);
     el.innerHTML='<div style="color:var(--red);padding:12px">Failed: '+e.message+'</div>';
   }
+}
+
+// ── Proof Listeners Productivity ────────────────────────────
+function plKey(name){return(name||'').trim().replace(/[.#$/\[\]]/g,'_');}
+
+function _plWeekStart(d){
+  const x=new Date(d.getFullYear(),d.getMonth(),d.getDate());
+  const day=x.getDay(); // 0=Sun..6=Sat
+  const diff=day===0?-6:1-day;
+  x.setDate(x.getDate()+diff);
+  return x;
+}
+function _plDayKey(d){return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;}
+function _plMonthKey(d){return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;}
+
+async function renderProofListenersReport(){
+  const el=document.getElementById('proofReport');
+  el.innerHTML='<div style="font-size:12px;color:var(--muted);padding:12px">Loading proof listeners...</div>';
+  try{
+    const [prodSnap,plSnap]=await Promise.all([
+      dbRef('productivity').once('value'),
+      dbRef('proofListeners').once('value')
+    ]);
+    const prodData=prodSnap.val()||{};
+    const overrides=plSnap.val()||{};
+
+    // Build time buckets relative to today
+    const now=new Date();
+    const monthBuckets=[]; // last 3 completed months (excludes current)
+    for(let i=3;i>=1;i--){
+      const d=new Date(now.getFullYear(),now.getMonth()-i,1);
+      monthBuckets.push({
+        key:_plMonthKey(d),
+        label:d.toLocaleDateString('en-US',{month:'short'})+' '+String(d.getFullYear()).slice(-2)
+      });
+    }
+    const cwStart=_plWeekStart(now);
+    const weekBuckets=[]; // 4W,3W,2W,1W,CW
+    for(let i=4;i>=0;i--){
+      const ws=new Date(cwStart); ws.setDate(ws.getDate()-7*i);
+      weekBuckets.push({key:_plDayKey(ws), label:i===0?'CW':(i+'W Ago')});
+    }
+    const dayBuckets=[]; // 4D..Today
+    for(let i=4;i>=0;i--){
+      const d=new Date(now.getFullYear(),now.getMonth(),now.getDate()-i);
+      dayBuckets.push({
+        key:_plDayKey(d),
+        label:i===0?'Today':(i+'D Ago'),
+        dateLabel:`${d.getMonth()+1}/${d.getDate()}/${d.getFullYear()}`
+      });
+    }
+
+    // Aggregate qc_done events per user
+    const usersFromLog={};
+    function getU(n){
+      if(!usersFromLog[n]) usersFromLog[n]={
+        name:n, total:new Set(), byMonth:{}, byWeek:{}, byDay:{}
+      };
+      return usersFromLog[n];
+    }
+    for(const e of Object.values(prodData)){
+      if(!e||!e.user||e.action!=='qc_done'||!e.value) continue;
+      const u=getU(e.user);
+      u.total.add(e.chapId);
+      const d=new Date(e.ts);
+      const mk=_plMonthKey(d), dk=_plDayKey(d), wk=_plDayKey(_plWeekStart(d));
+      (u.byMonth[mk]=u.byMonth[mk]||new Set()).add(e.chapId);
+      (u.byWeek[wk]=u.byWeek[wk]||new Set()).add(e.chapId);
+      (u.byDay[dk]=u.byDay[dk]||new Set()).add(e.chapId);
+    }
+
+    // Merge with overrides (manual adds + role + hidden)
+    const allNames=new Set(Object.keys(usersFromLog));
+    for(const k of Object.keys(overrides)){
+      const o=overrides[k]; if(o&&o.name) allNames.add(o.name);
+    }
+    const rows=[];
+    for(const name of allNames){
+      const k=plKey(name);
+      const o=overrides[k]||{};
+      if(o.hidden) continue;
+      const s=usersFromLog[name]||{total:new Set(),byMonth:{},byWeek:{},byDay:{}};
+      rows.push({name, role:o.role||'', stats:s});
+    }
+    rows.sort((a,b)=>b.stats.total.size-a.stats.total.size||a.name.localeCompare(b.name));
+
+    // ── Render ──
+    const HEAD_BG='#3a6ea5', HEAD_COLOR='#fff';
+    const PINK='#fde2e4', YELLOW='#fff8b8', ORANGE='#ffe2b5', GREEN='#cce8cf';
+    const BORDER='1px solid #cbd5e1';
+
+    let html=`<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;gap:12px;flex-wrap:wrap">
+      <div>
+        <div style="font-size:16px;font-weight:800">Proof Listeners Productivity</div>
+        <div style="font-size:11px;color:var(--muted)">Episodes QC'd per proof listener — monthly, weekly, daily breakdown.</div>
+      </div>
+      <button class="btn btn-p btn-sm" onclick="addProofListener()">+ Add Proof Listener</button>
+    </div>`;
+
+    if(!rows.length){
+      html+=`<div style="padding:20px;text-align:center;color:var(--muted);background:var(--surface);border:1px solid var(--border);border-radius:var(--r)">
+        <div style="font-size:36px;margin-bottom:10px">👂</div>
+        <div style="font-weight:700;margin-bottom:6px">No proof listeners yet</div>
+        <div style="font-size:11px">Once someone marks an episode as QC Done, they'll appear here automatically. You can also add proof listeners manually.</div>
+      </div>`;
+      el.innerHTML=html;
+      return;
+    }
+
+    const cellSt=`padding:8px 10px;text-align:center;border:${BORDER};font-family:var(--mono);font-size:11px`;
+    const headSt=`padding:8px 10px;text-align:center;border:${BORDER};background:${HEAD_BG};color:${HEAD_COLOR};font-family:var(--sans);font-size:11px;font-weight:700`;
+
+    html+=`<div style="overflow-x:auto;background:var(--surface);border-radius:var(--r);box-shadow:var(--shadow)">
+      <table style="border-collapse:collapse;width:100%;min-width:1400px">
+        <thead>
+          <tr>
+            <th rowspan="2" style="${headSt};text-align:left;background:${HEAD_BG}">MONTHLY - WEEKLY - DAILY TRACKING</th>
+            <th rowspan="2" style="${headSt}">Role</th>
+            <th rowspan="2" style="${headSt}">Total Ep QC'd</th>
+            <th colspan="3" style="${headSt}">Monthly Level</th>
+            <th rowspan="2" style="${headSt}">Weekly<br/><span style="font-weight:400;font-size:10px">Last 3 Weeks RR</span></th>
+            <th colspan="5" style="${headSt}">Weekly Level</th>
+            <th colspan="5" style="${headSt}">Daily Level</th>
+            <th rowspan="2" style="${headSt}"></th>
+          </tr>
+          <tr>
+            ${monthBuckets.map(m=>`<th style="${headSt}">${m.label}</th>`).join('')}
+            ${weekBuckets.map(w=>`<th style="${headSt}">${w.label}</th>`).join('')}
+            ${dayBuckets.map(d=>`<th style="${headSt}">${d.label}<div style="font-weight:400;font-size:9px;opacity:.85">${d.dateLabel}</div></th>`).join('')}
+          </tr>
+        </thead>
+        <tbody>`;
+
+    for(const r of rows){
+      const s=r.stats;
+      const monthCounts=monthBuckets.map(m=>(s.byMonth[m.key]?.size)||0);
+      const weekCounts=weekBuckets.map(w=>(s.byWeek[w.key]?.size)||0);
+      // Last 3 Weeks RR = avg of 3W, 2W, 1W ago (indexes 1,2,3 in weekBuckets which is [4W,3W,2W,1W,CW])
+      const rr=Math.round((weekCounts[1]+weekCounts[2]+weekCounts[3])/3);
+      const dayCounts=dayBuckets.map(d=>(s.byDay[d.key]?.size)||0);
+      const nameEsc=esc(r.name);
+      html+=`<tr>
+        <td style="${cellSt};text-align:left;background:${GREEN};font-weight:700">${nameEsc}</td>
+        <td style="${cellSt};background:${GREEN}"><input class="pl-role-inp" data-name="${nameEsc}" value="${esc(r.role)}" placeholder="—" style="width:60px;text-align:center;background:transparent;border:1px solid transparent;border-radius:4px;font-family:var(--mono);font-size:11px;font-weight:700;padding:2px 4px" onfocus="this.style.borderColor='var(--border2)';this.style.background='#fff'" onblur="this.style.borderColor='transparent';this.style.background='transparent';saveProofListenerRole('${nameEsc.replace(/'/g,"\\'")}',this.value)"/></td>
+        <td style="${cellSt};font-weight:700">${s.total.size}</td>
+        ${monthCounts.map(c=>`<td style="${cellSt};background:${PINK};font-weight:600">${c}</td>`).join('')}
+        <td style="${cellSt};background:${YELLOW};font-weight:700">${rr}</td>
+        ${weekCounts.map(c=>`<td style="${cellSt};background:${ORANGE};font-weight:600">${c}</td>`).join('')}
+        ${dayCounts.map(c=>`<td style="${cellSt};background:${GREEN};font-weight:600">${c}</td>`).join('')}
+        <td style="${cellSt}"><button onclick="removeProofListener('${nameEsc.replace(/'/g,"\\'")}')" title="Remove from list" style="background:transparent;border:none;cursor:pointer;color:var(--muted);font-size:14px">×</button></td>
+      </tr>`;
+    }
+    html+=`</tbody></table></div>`;
+
+    html+=`<div style="margin-top:12px;font-size:10px;color:var(--muted);font-family:var(--mono)">
+      Last 3 Weeks RR = average of 3W Ago, 2W Ago, 1W Ago (excludes current week).
+      Weeks start Monday. Counts are unique episodes QC'd in each bucket.
+    </div>`;
+
+    el.innerHTML=html;
+  }catch(e){
+    console.error('Proof Listeners report failed:',e);
+    el.innerHTML='<div style="color:var(--red);padding:12px">Failed: '+esc(e.message)+'</div>';
+  }
+}
+
+async function addProofListener(){
+  const name=(prompt('Proof listener name:')||'').trim();
+  if(!name) return;
+  const role=(prompt('Role (e.g. RQC) — leave blank to skip:')||'').trim();
+  const k=plKey(name);
+  await dbRef('proofListeners/'+k).set({name, role, hidden:false});
+  renderProofListenersReport();
+}
+
+async function saveProofListenerRole(name, role){
+  const k=plKey(name);
+  const cur=(await dbRef('proofListeners/'+k).once('value')).val()||{};
+  await dbRef('proofListeners/'+k).set({...cur, name, role:(role||'').trim()});
+}
+
+async function removeProofListener(name){
+  if(!confirm(`Remove "${name}" from the proof listeners list?`)) return;
+  const k=plKey(name);
+  // Mark hidden so log-derived names don't reappear automatically.
+  const cur=(await dbRef('proofListeners/'+k).once('value')).val()||{};
+  await dbRef('proofListeners/'+k).set({...cur, name, hidden:true});
+  renderProofListenersReport();
 }
 
 // ── Show View (episodes list) ───────────────────────────────
@@ -2612,6 +2856,28 @@ function extractWord(raw){
   return wm?wm[1].replace(/["\u201d\u00bb\u201c\u00ab]/g,'').trim():'';
 }
 
+// Extract the phonetically-correct spelling from a QC note. Tries common
+// phrasings ("pronounce as 'X'", "should be X", etc.) and falls back to the
+// trimmed note if it's short enough to plausibly be just a phonetic word.
+function extractPhonetic(note){
+  if(!note) return '';
+  const cleaned=note.replace(/^["\u201c\u00ab]+|["\u201d\u00bb]+$/g,'').trim();
+  const patterns=[
+    /pronounce[d]?\s+(?:as|like)\s*[:\-]?\s*["\u201c\u00ab]?([^"\u201d\u00bb;,\n]+?)["\u201d\u00bb]?(?:[;,.\n]|$)/i,
+    /correct(?:ly)?\s+pronounc\w*\s*[:\-]?\s*["\u201c\u00ab]?([^"\u201d\u00bb;,\n]+?)["\u201d\u00bb]?(?:[;,.\n]|$)/i,
+    /should\s+be\s+(?:pronounced\s+)?["\u201c\u00ab]?([^"\u201d\u00bb;,\n]+?)["\u201d\u00bb]?(?:[;,.\n]|$)/i,
+    /correct\s*[:\-]\s*["\u201c\u00ab]?([^"\u201d\u00bb;,\n]+?)["\u201d\u00bb]?(?:[;,.\n]|$)/i,
+    /phonetic\w*\s*[:\-]\s*["\u201c\u00ab]?([^"\u201d\u00bb;,\n]+?)["\u201d\u00bb]?(?:[;,.\n]|$)/i
+  ];
+  for(const re of patterns){
+    const m=cleaned.match(re);
+    if(m && m[1].trim()) return m[1].trim();
+  }
+  // If the note is short and word-like (no sentence punctuation), use it directly.
+  if(cleaned.length<=40 && !/[.!?]/.test(cleaned)) return cleaned;
+  return '';
+}
+
 function mkCard(r){
   const st=RS[r.idx];
   const tc=r.issueType.toLowerCase().includes('misp')?'t-misp':r.issueType.toLowerCase().includes('mod')?'t-mod':'t-qual';
@@ -2652,7 +2918,7 @@ function mkCard(r){
           </div>
           <div style="flex:1;min-width:150px">
             <div style="font-size:9px;color:var(--muted);margin-bottom:2px">Phonetically Correct Spelling</div>
-            <input type="text" id="dp-${r.idx}" value="${esc(savedDict?.phonetic||'')}" style="width:100%;padding:5px 8px;border:1px solid var(--border);border-radius:5px;font-size:12px;font-style:italic" placeholder="Type phonetic spelling"/>
+            <input type="text" id="dp-${r.idx}" value="${esc(savedDict?.phonetic||extractPhonetic(r.note||''))}" style="width:100%;padding:5px 8px;border:1px solid var(--border);border-radius:5px;font-size:12px;font-style:italic" placeholder="Type phonetic spelling"/>
           </div>
           <button class="btn ${savedDict?'btn-g':'btn-p'} btn-sm" onclick="addToDict(${r.idx})" style="font-size:10px;white-space:nowrap">${savedDict?'✓ Update':'+ Add to Dictionary'}</button>
         </div>
@@ -2830,10 +3096,48 @@ async function accTake(ri,ti){
   // Save reviewer info to Firebase
   dbRef('episodeRemarks/'+activeEp.chapter_id+'/reviews/'+ri).set({user:currentUser, take:ti, action:'accept', ts:Date.now()});
   logAction(activeEp.chapter_id, 'review_accept', {remarkIdx:ri, take:ti});
+  // Auto-save to dictionary if this is a mispronunciation remark.
+  autoSaveDict(ri);
   refreshCard(ri); updateStitchBtn();
   toast(`Take ${ti+1} accepted — saving audio...`,'ok');
   await updateSEDataForCurrentEp();
   toast(`Patch audio saved ✓`,'ok');
+}
+
+// Silently save (or update) a dictionary entry for a mispronunciation remark.
+// Called on Accept Patch — no user click needed. Skips if word is missing.
+async function autoSaveDict(ri){
+  try{
+    if(!activeEp) return;
+    const r=remarks[ri];
+    if(!r||!r.issueType||!r.issueType.toLowerCase().includes('misp')) return;
+    const wordEl=document.getElementById('dw-'+ri);
+    const phoneticEl=document.getElementById('dp-'+ri);
+    const word=(wordEl?.value||extractWord(r.rawRemarks||'')).trim();
+    const phonetic=(phoneticEl?.value||extractPhonetic(r.note||'')).trim();
+    if(!word) return; // nothing to save
+    const chapId=activeEp.chapter_id;
+    const dictKey=`${chapId}_${ri}`;
+    const existing=_dictCache?.[dictKey];
+    if(existing&&existing.word===word&&existing.phonetic===phonetic) return; // nothing changed
+    const classification=classifyWord(word, r?.scriptLine||'', r?.note||'');
+    const entry={
+      word, phonetic, classification,
+      show:activeShowConfig?.name||'',
+      showId:activeShowId||'',
+      episode:activeEp.chapter_title||'',
+      episodeId:chapId,
+      time:r?.time||'',
+      agent:r?.userEmail||'',
+      note:r?.note||'',
+      addedAt:Date.now(),
+      autoSaved:true
+    };
+    await dbRef('dictionary/'+dictKey).set(entry);
+    toast(`📖 "${word}" auto-saved to dictionary`,'ok');
+  }catch(e){
+    console.warn('autoSaveDict failed:',e);
+  }
 }
 
 async function updateSEDataForCurrentEp(){
