@@ -2875,6 +2875,24 @@ function extractPhoneticFromScript(original, modified, mispWord){
     return (cur.length<=40 && !/[.!?]/.test(cur)) ? cur : '';
   }
   if(orig===cur) return '';
+
+  // String-substitution detection — most reliable when we know exactly which
+  // word changed. Locate mispWord in the original, then read whatever fills
+  // the same slot in the edited line. Handles cases the tokenizer misses
+  // (e.g. "o,1" → "one", where comma splits one token into two).
+  if(mispWord && orig.includes(mispWord) && !cur.includes(mispWord)){
+    const idx=orig.indexOf(mispWord);
+    const before=orig.substring(0,idx);
+    const after=orig.substring(idx+mispWord.length);
+    if(cur.startsWith(before)){
+      const afterIdx=after?cur.indexOf(after,idx):cur.length;
+      if(afterIdx>=idx){
+        const repl=cur.substring(idx,afterIdx).trim();
+        if(repl&&repl.length<=50&&!/\n/.test(repl)) return repl;
+      }
+    }
+  }
+
   // Tokenize on Unicode letters/digits, keep hyphens & apostrophes inside words.
   const tokenize=s=>(s.match(/[\p{L}\p{M}\p{N}][\p{L}\p{M}\p{N}'\-]*/gu)||[]);
   const o=tokenize(orig), m=tokenize(cur);
