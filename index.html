@@ -341,6 +341,31 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
   </div>
 </div>
 
+<!-- ADD DICTIONARY WORD MODAL -->
+<div id="addDictWordModal" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:300;align-items:center;justify-content:center;backdrop-filter:blur(4px)">
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:24px;width:460px;max-width:95vw;box-shadow:var(--shadow-lg)">
+    <div style="font-size:15px;font-weight:800;margin-bottom:4px">Add Dictionary Word</div>
+    <div style="font-family:var(--mono);font-size:10px;color:var(--muted);margin-bottom:18px">The QCer you pick gets credited €0.60 in the Payments tab.</div>
+    <div style="display:flex;flex-direction:column;gap:12px">
+      <div><label class="fl" style="margin-bottom:3px">Word (correct spelling) *</label><input class="inp" id="dw_word" placeholder="e.g. méchas"/></div>
+      <div><label class="fl" style="margin-bottom:3px">Phonetically Correct Spelling *</label><input class="inp" id="dw_phonetic" placeholder="e.g. méka"/></div>
+      <div><label class="fl" style="margin-bottom:3px">Show (optional)</label><input class="inp" id="dw_show" placeholder="e.g. Mech Touch"/></div>
+      <div>
+        <label class="fl" style="margin-bottom:3px">QCer to credit *</label>
+        <select class="inp" id="dw_qcer_select" onchange="_onDwQcerChange()">
+          <option value="__current__">(me — current user)</option>
+          <option value="__custom__">+ Type a new name…</option>
+        </select>
+        <input class="inp" id="dw_qcer_custom" placeholder="email or name" style="display:none;margin-top:6px"/>
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:18px">
+      <button class="btn btn-p" style="flex:1" onclick="saveDictWordModal()">Save Word</button>
+      <button class="btn btn-g" onclick="closeAddDictWordModal()">Cancel</button>
+    </div>
+  </div>
+</div>
+
 <main class="main">
   <div class="topbar">
     <button class="back-btn" id="backBtn" onclick="goBack()" style="display:none">← Back</button>
@@ -1041,6 +1066,19 @@ function classifyWord(word, scriptLine, note){
   return 'Noun';
 }
 
+// Convert a CMS email like "frl-joseph.chance@pocketfm.com" to "Joseph Chance".
+// Falls back to the original string when it doesn't look like a CMS email.
+function _friendlyName(s){
+  if(!s) return '';
+  const at=s.indexOf('@');
+  if(at<0) return s;
+  let local=s.substring(0,at);
+  local=local.replace(/^[a-z]{2,4}-/i,''); // strip "frl-" / "it-" etc.
+  const parts=local.split(/[._\-]+/).filter(Boolean);
+  if(!parts.length) return s;
+  return parts.map(p=>p.charAt(0).toUpperCase()+p.slice(1)).join(' ');
+}
+
 async function renderDictionary(){
   const sumEl=document.getElementById('dictSummary');
   const conEl=document.getElementById('dictContent');
@@ -1063,7 +1101,8 @@ async function renderDictionary(){
       const entry={
         show:showName, episode:d.episode||'', time:d.time||'',
         word:d.word, phonetic:d.phonetic||'', classification:d.classification||classifyWord(d.word,'',''),
-        note:d.note||'', agent:d.agent||'',
+        note:d.note||'', agent:d.agent||'', reviewer:d.reviewer||'',
+        autoSaved:!!d.autoSaved,
         _key:key
       };
       dictByShow[showName].entries.push(entry);
@@ -1178,6 +1217,8 @@ function renderDictTable(entries){
         <th style="padding:8px 10px;text-align:left">Correct Grammatical Spelling</th>
         <th style="padding:8px 10px;text-align:left">Phonetically Correct Spelling</th>
         <th style="padding:8px 10px;text-align:center">Classification</th>
+        <th style="padding:8px 10px;text-align:left">QCer <span style="font-weight:400;color:var(--muted);font-size:9px">(credited \u20ac0.60)</span></th>
+        <th style="padding:8px 10px;text-align:left">Reviewer</th>
         <th style="padding:8px 10px;text-align:left">Show</th>
         <th style="padding:8px 10px;text-align:left">Episode</th>
         <th style="padding:8px 10px;text-align:left">QC Note</th>
@@ -1187,10 +1228,15 @@ function renderDictTable(entries){
     const cls=e.classification==='Noun'?'color:var(--accent)':e.classification==='Verb'?'color:var(--green)':'color:var(--muted)';
     const keysAttr=esc(JSON.stringify(e._allKeys||[]));
     const wordAttr=esc(e.word||'this entry');
+    const qcerLabel=_friendlyName(e.agent||'');
+    const reviewerLabel=e.reviewer||'';
+    const approvedBadge=e.autoSaved?' <span title="Auto-saved on Accept Patch" style="font-size:9px;color:var(--green)">\u2713</span>':'';
     html+=`<tr style="border-bottom:1px solid var(--border)">
       <td style="padding:6px 10px;font-weight:700">${esc(e.word)||'<span style="color:var(--muted);font-weight:400">\u2014</span>'}</td>
       <td style="padding:6px 10px;font-style:italic;color:var(--text2)">${esc(e.phonetic)||'<span style="color:var(--muted)">\u2014</span>'}</td>
       <td style="padding:6px 10px;text-align:center;font-size:10px;${cls}">${esc(e.classification)}</td>
+      <td style="padding:6px 10px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(e.agent)}">${esc(qcerLabel)||'<span style="color:var(--muted)">\u2014</span>'}${approvedBadge}</td>
+      <td style="padding:6px 10px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(reviewerLabel)||'<span style="color:var(--muted)">\u2014</span>'}</td>
       <td style="padding:6px 10px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(e.show)}</td>
       <td style="padding:6px 10px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(e.episode)}</td>
       <td style="padding:6px 10px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(e.note)}">${esc(e.note).substring(0,60)}${e.note.length>60?'...':''}</td>
@@ -1202,20 +1248,74 @@ function renderDictTable(entries){
 }
 
 async function addDictWord(){
-  const word=(prompt('Mispronounced word (correct spelling):')||'').trim();
-  if(!word) return;
-  const phonetic=(prompt('Phonetically correct spelling:')||'').trim();
-  if(!phonetic) return;
-  const show=(prompt('Show name (optional \u2014 leave blank to skip):')||'').trim();
+  // Collect candidate QCers from proofListeners + existing dictionary entries.
+  const [plSnap, dictSnap]=await Promise.all([
+    dbRef('proofListeners').once('value'),
+    dbRef('dictionary').once('value')
+  ]);
+  const candidates=new Map(); // value (stored email/name) \u2192 display label
+  for(const v of Object.values(plSnap.val()||{})){
+    if(v&&v.name&&!v.hidden) candidates.set(v.name, v.name);
+  }
+  for(const d of Object.values(dictSnap.val()||{})){
+    if(d&&d.agent){
+      const label=_friendlyName(d.agent)||d.agent;
+      if(!candidates.has(d.agent)) candidates.set(d.agent, label);
+    }
+  }
+  // Populate the dropdown
+  const sel=document.getElementById('dw_qcer_select');
+  // Reset to the two static options
+  sel.innerHTML=`<option value="__current__">(me \u2014 ${esc(currentUser||'not set')})</option>`+
+    [...candidates.entries()].sort((a,b)=>a[1].localeCompare(b[1])).map(([val,label])=>
+      `<option value="${esc(val)}">${esc(label)}</option>`).join('')+
+    `<option value="__custom__">+ Type a new name\u2026</option>`;
+  // Clear other inputs
+  document.getElementById('dw_word').value='';
+  document.getElementById('dw_phonetic').value='';
+  document.getElementById('dw_show').value='';
+  document.getElementById('dw_qcer_custom').value='';
+  document.getElementById('dw_qcer_custom').style.display='none';
+  document.getElementById('addDictWordModal').style.display='flex';
+}
+
+function _onDwQcerChange(){
+  const sel=document.getElementById('dw_qcer_select');
+  const custom=document.getElementById('dw_qcer_custom');
+  if(sel.value==='__custom__'){
+    custom.style.display='block';
+    custom.focus();
+  } else {
+    custom.style.display='none';
+  }
+}
+
+function closeAddDictWordModal(){
+  document.getElementById('addDictWordModal').style.display='none';
+}
+
+async function saveDictWordModal(){
+  const word=(document.getElementById('dw_word').value||'').trim();
+  const phonetic=(document.getElementById('dw_phonetic').value||'').trim();
+  const show=(document.getElementById('dw_show').value||'').trim();
+  const sel=document.getElementById('dw_qcer_select');
+  let qcer=sel.value;
+  if(qcer==='__current__') qcer=currentUser||'';
+  else if(qcer==='__custom__') qcer=(document.getElementById('dw_qcer_custom').value||'').trim();
+  if(!word){toast('Word is required','warn');return;}
+  if(!phonetic){toast('Phonetic spelling is required','warn');return;}
+  if(!qcer){toast('Pick or type a QCer to credit','warn');return;}
   const key='manual_'+Date.now()+'_'+word.toLowerCase().replace(/[^a-z0-9]/gi,'_').substring(0,20);
   const classification=classifyWord(word,'','');
   await dbRef('dictionary/'+key).set({
     word, phonetic, classification,
     show, showId:'', episode:'', episodeId:'',
-    time:'', agent:currentUser||'', note:'',
-    addedAt:Date.now(), manual:true
+    time:'', agent:qcer, reviewer:currentUser||'',
+    note:'',
+    addedAt:Date.now(), approvedAt:Date.now(), manual:true
   });
-  toast(`"${word}" added to dictionary`,'ok');
+  toast(`"${word}" added \u2014 credit: ${_friendlyName(qcer)}`,'ok');
+  closeAddDictWordModal();
   renderDictionary();
 }
 
@@ -1268,6 +1368,10 @@ async function addToDict(ri){
     episodeId:chapId,
     time:r?.time||'',
     agent:r?.userEmail||'',
+    reviewer:currentUser||'',
+    // CMS timestamp of when the QCer originally reported the remark — this
+    // determines which billing cycle the €0.60 falls in.
+    qcReportedAt:r?.timestamp||r?.created_at||r?.qc_time||null,
     note:r?.note||'',
     addedAt:Date.now()
   };
@@ -1280,8 +1384,8 @@ function downloadDictCSV(){
   const sel=document.getElementById('dictShowFilter')?.value||'all';
   const data=sel==='all'?(window._dictData||[]):((window._dictByShow||{})[sel]?.entries||[]);
   if(!data.length){toast('No data to download','warn');return;}
-  const headers=['Correct Grammatical Spelling','Phonetically Correct Spelling','Classification','Show','Episode','Time','QC Note','Agent'];
-  const rows=data.map(e=>[e.word,e.phonetic,e.classification,e.show,e.episode,e.time,e.note,e.agent].map(v=>'"'+(v||'').replace(/"/g,'""')+'"').join(','));
+  const headers=['Correct Grammatical Spelling','Phonetically Correct Spelling','Classification','QCer','QCer Email','Reviewer','Show','Episode','Time','QC Note'];
+  const rows=data.map(e=>[e.word,e.phonetic,e.classification,_friendlyName(e.agent||''),e.agent,e.reviewer||'',e.show,e.episode,e.time,e.note].map(v=>'"'+String(v==null?'':v).replace(/"/g,'""')+'"').join(','));
   const csv=[headers.join(','),...rows].join('\n');
   const blob=new Blob(['\uFEFF'+csv],{type:'text/csv;charset=utf-8'});
   const a=document.createElement('a');
@@ -1905,10 +2009,19 @@ async function renderPaymentReport(){
       }
     }
 
-    // Dictionary words per user (€0.60 each)
+    // Dictionary words per user (€0.60 each).
+    // Period filter uses the QC remark's CMS timestamp (when the QCer
+    // originally reported the mispronunciation), not when the SE later
+    // accepted the patch. Falls back to addedAt for legacy entries that
+    // were saved before qcReportedAt was being captured.
+    function _parseDictTs(v){
+      if(!v) return 0;
+      if(typeof v==='number') return v<1e12?v*1000:v;
+      const n=Date.parse(v); return isNaN(n)?0:n;
+    }
     for(const d of Object.values(allDict)){
       if(!d||!d.agent||!d.word) continue;
-      const ts=d.addedAt||0;
+      const ts=_parseDictTs(d.qcReportedAt)||d.addedAt||0;
       if(ts&&(ts<fromTs||ts>toTs)) continue;
       const u=getU(d.agent);
       u.words++;
@@ -3809,12 +3922,16 @@ async function autoSaveDict(ri){
       episodeId:chapId,
       time:r?.time||'',
       agent:r?.userEmail||'',
+      reviewer:currentUser||'',
+      // CMS timestamp of the original QC remark — drives billing cycle.
+      qcReportedAt:r?.timestamp||r?.created_at||r?.qc_time||null,
       note:r?.note||'',
       addedAt:Date.now(),
-      autoSaved:true
+      autoSaved:true,
+      approvedAt:Date.now()
     };
     await dbRef('dictionary/'+dictKey).set(entry);
-    toast(`📖 "${word}" auto-saved to dictionary`,'ok');
+    toast(`📖 "${word}" auto-saved (credit: ${_friendlyName(r?.userEmail||'')})`,'ok');
   }catch(e){
     console.warn('autoSaveDict failed:',e);
   }
