@@ -2852,8 +2852,67 @@ function renderContent(){
 }
 
 function extractWord(raw){
-  const wm=(raw||'').match(/[Ww]ord\s*[:\-]\s*["\u201c\u00ab]?\s*([^"\u201d\u00bb\n;]+)/);
-  return wm?wm[1].replace(/["\u201d\u00bb\u201c\u00ab]/g,'').trim():'';
+  if(!raw) return '';
+  // Quoted form first: "Word: 'm\u00e9chas'" \u2014 take what's inside the quotes verbatim.
+  const q=raw.match(/[Ww]ord\s*[:\-]\s*["\u201c\u00ab]([^"\u201d\u00bb]+)["\u201d\u00bb]/);
+  if(q) return q[1].trim();
+  // Unquoted: capture a single token. Stop at whitespace, punctuation, or
+  // closing quote so we don't slurp the rest of the QC line (which was the
+  // bug behind the "qu..." dictionary row).
+  const u=raw.match(/[Ww]ord\s*[:\-]\s*([^\s"\u201c\u00ab\u201d\u00bb\n;,.()]+)/);
+  return u?u[1].trim():'';
+}
+
+// Detect the phonetic spelling by diffing the original QC script line against
+// the SE's edited version. If the SE replaced the mispronounced word with a
+// phonetic substitute (e.g. "méchas" → "meka"), return that substitute.
+function extractPhoneticFromScript(original, modified, mispWord){
+  const cur=(modified||'').trim();
+  const orig=(original||'').trim();
+  if(!cur) return '';
+  if(!orig){
+    // No original to diff against — accept a short, word-like modification.
+    return (cur.length<=40 && !/[.!?]/.test(cur)) ? cur : '';
+  }
+  if(orig===cur) return '';
+  // Tokenize on Unicode letters/digits, keep hyphens & apostrophes inside words.
+  const tokenize=s=>(s.match(/[\p{L}\p{M}\p{N}][\p{L}\p{M}\p{N}'\-]*/gu)||[]);
+  const o=tokenize(orig), m=tokenize(cur);
+  // If user collapsed the line to one or two tokens, treat that as the phonetic.
+  if(m.length && m.length<=2 && m.length<o.length) return m.join(' ');
+  // Equal-length: find positional differences.
+  if(o.length===m.length){
+    const diffs=[];
+    for(let i=0;i<o.length;i++){
+      if(o[i].toLowerCase()!==m[i].toLowerCase()) diffs.push({i,orig:o[i],mod:m[i]});
+    }
+    if(diffs.length===1) return diffs[0].mod;
+    if(diffs.length>1 && mispWord){
+      const mw=mispWord.toLowerCase();
+      const hit=diffs.find(d=>d.orig.toLowerCase()===mw)||diffs.find(d=>d.orig.toLowerCase().includes(mw));
+      if(hit) return hit.mod;
+    }
+  }
+  // Different length: look up mispWord position in the original, read same slot in modified.
+  if(mispWord){
+    const mw=mispWord.toLowerCase();
+    const idx=o.findIndex(t=>t.toLowerCase()===mw);
+    if(idx>=0 && idx<m.length && m[idx].toLowerCase()!==mw) return m[idx];
+  }
+  return '';
+}
+
+// Called from the script-line textarea's oninput. Keeps the phonetic input in
+// sync with the current edit, unless the SE has typed their own value.
+function onScriptLineEdit(ri){
+  const r=remarks[ri];
+  if(!r||!r.issueType||!r.issueType.toLowerCase().includes('misp')) return;
+  const dpEl=document.getElementById('dp-'+ri);
+  if(!dpEl) return;
+  // Only fill when the field is empty — preserves any manual entry.
+  if(dpEl.value.trim()) return;
+  const phon=extractPhoneticFromScript(r.scriptLine||'', RS[ri]?.scriptLine||'', extractWord(r.rawRemarks||''));
+  if(phon) dpEl.value=phon;
 }
 
 // Extract the phonetically-correct spelling from a QC note. Tries common
@@ -2918,14 +2977,14 @@ function mkCard(r){
           </div>
           <div style="flex:1;min-width:150px">
             <div style="font-size:9px;color:var(--muted);margin-bottom:2px">Phonetically Correct Spelling</div>
-            <input type="text" id="dp-${r.idx}" value="${esc(savedDict?.phonetic||extractPhonetic(r.note||''))}" style="width:100%;padding:5px 8px;border:1px solid var(--border);border-radius:5px;font-size:12px;font-style:italic" placeholder="Type phonetic spelling"/>
+            <input type="text" id="dp-${r.idx}" value="${esc(savedDict?.phonetic||extractPhoneticFromScript(r.scriptLine||'', st.scriptLine||'', mispWord)||extractPhonetic(r.note||''))}" style="width:100%;padding:5px 8px;border:1px solid var(--border);border-radius:5px;font-size:12px;font-style:italic" placeholder="Type phonetic spelling"/>
           </div>
           <button class="btn ${savedDict?'btn-g':'btn-p'} btn-sm" onclick="addToDict(${r.idx})" style="font-size:10px;white-space:nowrap">${savedDict?'✓ Update':'+ Add to Dictionary'}</button>
         </div>
       </div>`:''}
       <div style="margin-bottom:12px">
         <div class="script-lbl">Script Line <span class="edit-hint">✏ Click to edit</span></div>
-        <textarea class="script-ta" id="sl-${r.idx}" rows="2" oninput="RS[${r.idx}].scriptLine=this.value;if(!remarks[${r.idx}].needsPatch&&this.value.trim()){remarks[${r.idx}].needsPatch=true;refreshCard(${r.idx});}" placeholder="${r.needsPatch?'':'Type script line to enable patch generation...'}">${esc(st.scriptLine)}</textarea>
+        <textarea class="script-ta" id="sl-${r.idx}" rows="2" oninput="RS[${r.idx}].scriptLine=this.value;onScriptLineEdit(${r.idx});if(!remarks[${r.idx}].needsPatch&&this.value.trim()){remarks[${r.idx}].needsPatch=true;refreshCard(${r.idx});}" placeholder="${r.needsPatch?'':'Type script line to enable patch generation...'}">${esc(st.scriptLine)}</textarea>
       </div>
       ${r.needsPatch||st.scriptLine?`
         <div class="gen-row">
@@ -3114,8 +3173,15 @@ async function autoSaveDict(ri){
     const wordEl=document.getElementById('dw-'+ri);
     const phoneticEl=document.getElementById('dp-'+ri);
     const word=(wordEl?.value||extractWord(r.rawRemarks||'')).trim();
-    const phonetic=(phoneticEl?.value||extractPhonetic(r.note||'')).trim();
-    if(!word) return; // nothing to save
+    let phonetic=(phoneticEl?.value||'').trim();
+    if(!phonetic) phonetic=extractPhoneticFromScript(r.scriptLine||'', RS[ri]?.scriptLine||'', word).trim();
+    if(!phonetic) phonetic=extractPhonetic(r.note||'').trim();
+    // Guards: don't auto-save junk. Require both fields, a sane word length,
+    // and reject extractor noise like trailing ellipses. Manual "+ Add to
+    // Dictionary" still works for edge cases via addToDict().
+    if(!word||!phonetic) return;
+    if(word.length>50||word.length<2) return;
+    if(/\.{2,}$/.test(word)||/\.{2,}$/.test(phonetic)) return;
     const chapId=activeEp.chapter_id;
     const dictKey=`${chapId}_${ri}`;
     const existing=_dictCache?.[dictKey];
