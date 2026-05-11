@@ -1817,16 +1817,18 @@ async function renderPaymentReport(){
   const {fromTs,toTs,from,to}=_payPeriod;
 
   try{
-    const [epRemSnap, showEpsSnap, dictSnap, manualSnap]=await Promise.all([
+    const [epRemSnap, showEpsSnap, dictSnap, manualSnap, payShowSnap]=await Promise.all([
       dbRef('episodeRemarks').once('value'),
       dbRef('showEpisodes').once('value'),
       dbRef('dictionary').once('value'),
-      dbRef('paymentManualRows').once('value')
+      dbRef('paymentManualRows').once('value'),
+      dbRef('paymentOnlyShows').once('value')
     ]);
     const allRem=epRemSnap.val()||{};
     const allEps=showEpsSnap.val()||{};
     const allDict=dictSnap.val()||{};
     const manualRows=manualSnap.val()||{};
+    const paymentOnlyShows=payShowSnap.val()||{};
 
     // Build chapId → {showName, duration}
     const epMeta={};
@@ -1913,7 +1915,70 @@ async function renderPaymentReport(){
       getShow(u, d.show||'(no show)').words++;
     }
 
-    // Manual rows
+    // Payment-only shows (CMS-pulled, do NOT appear in dashboard)
+    // Period filtering: per-remark timestamp (q.reportedAt). Episodes-level ts
+    // is only used as fallback when CMS didn't return a per-remark timestamp.
+    function _parseTs(v){
+      if(!v) return 0;
+      if(typeof v==='number') return v<1e12?v*1000:v; // seconds vs ms
+      const n=Date.parse(v); return isNaN(n)?0:n;
+    }
+    const payShowArr=Object.values(paymentOnlyShows).filter(Boolean);
+    const payShowBreakdown=[];
+    for(const ps of payShowArr){
+      const sn=ps.name||ps.showId;
+      const eps=ps.episodes||[];
+      const epFallbackTs=ts=>_parseTs(ts);
+      const perListener={};
+      function getPL(email){
+        if(!perListener[email]) perListener[email]={email, episodes:new Set(), dates:new Set(), errors:0, durationSec:0};
+        return perListener[email];
+      }
+      for(const ep of eps){
+        const epTsFallback=epFallbackTs(ep.updatedAt);
+        const qc=ep.qc||[];
+        // Track listeners whose remarks fall in the billing period.
+        const epListenersInPeriod=new Set();
+        for(const q of qc){
+          const email=q.userEmail||q.user_email||''; if(!email) continue;
+          const remarkTs=_parseTs(q.reportedAt)||epTsFallback;
+          if(remarkTs&&(remarkTs<fromTs||remarkTs>toTs)) continue;
+          const pl=getPL(email);
+          pl.errors++;
+          epListenersInPeriod.add(email);
+          if(remarkTs) pl.dates.add(_isoDate(new Date(remarkTs)));
+          // Roll error into main totals
+          const u=getU(email);
+          u.errors++;
+          getShow(u, sn).errors++;
+        }
+        // Hours: each listener who had ≥1 in-period remark on this episode
+        // gets the full duration counted.
+        for(const email of epListenersInPeriod){
+          const pl=getPL(email);
+          if(!pl.episodes.has(ep.chapId)){
+            pl.episodes.add(ep.chapId);
+            pl.durationSec+=(ep.duration||0);
+          }
+          const u=getU(email);
+          if(!u._payOnlyEps) u._payOnlyEps=new Set();
+          const epKey=ps.showId+':'+ep.chapId;
+          if(!u._payOnlyEps.has(epKey)){
+            u._payOnlyEps.add(epKey);
+            u.hours+=((ep.duration||0)/3600);
+            getShow(u, sn).hours+=((ep.duration||0)/3600);
+          }
+        }
+      }
+      payShowBreakdown.push({
+        showId:ps.showId, name:sn,
+        episodeCount:eps.length,
+        listeners:Object.values(perListener).sort((a,b)=>b.durationSec-a.durationSec),
+        lastSyncedAt:ps.lastSyncedAt||0
+      });
+    }
+
+    // Manual rows (kept for true off-platform work that isn't in CMS)
     const manualArr=Object.entries(manualRows).map(([id, r])=>({id, ...(r||{})}));
     for(const m of manualArr){
       if(m.periodStart&&(m.periodStart<fromTs||m.periodStart>toTs)) continue;
@@ -2023,14 +2088,68 @@ async function renderPaymentReport(){
       }
     }
 
-    // Manual rows panel
+    // Payment-Only Shows panel — CMS-pulled, NOT in dashboard
     html+=`<div style="margin-top:18px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:12px 16px">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:8px">
         <div>
-          <div style="font-size:13px;font-weight:800">Manual Rows</div>
-          <div style="font-size:10px;color:var(--muted)">Add billable shows that aren't tracked in PatchStudio (external work, off-platform listening, etc).</div>
+          <div style="font-size:13px;font-weight:800">Payment-Only Shows (from CMS)</div>
+          <div style="font-size:10px;color:var(--muted)">Add shows here that should count toward payouts but stay out of the main Dashboard. Data is pulled directly from CMS — episode durations and QC reporter emails per episode.</div>
         </div>
-        <button class="btn btn-green btn-sm" onclick="addManualPaymentRow()">+ Add Manual Row</button>
+        <button class="btn btn-green btn-sm" onclick="addPaymentOnlyShow()">+ Add Show (CMS ID/URL)</button>
+      </div>`;
+    if(!payShowArr.length){
+      html+=`<div style="padding:14px;text-align:center;color:var(--muted);font-size:11px">No payment-only shows registered yet.</div>`;
+    } else {
+      for(const ps of payShowBreakdown){
+        const synced=ps.lastSyncedAt?new Date(ps.lastSyncedAt).toLocaleString():'never';
+        html+=`<div style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-top:8px;background:var(--surface2)">
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;margin-bottom:6px">
+            <div>
+              <span style="font-weight:700;font-size:12px">${esc(ps.name)}</span>
+              <span style="font-family:var(--mono);font-size:10px;color:var(--muted);margin-left:6px">${ps.episodeCount} eps · ${ps.listeners.length} listener(s) · last synced ${synced}</span>
+            </div>
+            <div style="display:flex;gap:6px">
+              <button class="btn btn-g btn-sm" onclick="refreshPaymentOnlyShow('${esc(ps.showId)}')" style="font-size:10px">↻ Refresh</button>
+              <button class="btn btn-g btn-sm" onclick="deletePaymentOnlyShow('${esc(ps.showId)}')" style="font-size:10px;color:var(--red);border-color:#fca5a5">× Remove</button>
+            </div>
+          </div>`;
+        if(ps.listeners.length){
+          html+=`<table style="border-collapse:collapse;width:100%;font-size:11px;font-family:var(--mono);background:var(--surface)">
+            <thead><tr style="background:var(--surface3,#e8ecf2);color:var(--muted)">
+              <th style="padding:4px 8px;text-align:left">Listener</th>
+              <th style="padding:4px 8px;text-align:right">Episodes</th>
+              <th style="padding:4px 8px;text-align:right">Duration</th>
+              <th style="padding:4px 8px;text-align:right">Errors</th>
+              <th style="padding:4px 8px;text-align:left">Dates Worked</th>
+            </tr></thead><tbody>`;
+          for(const pl of ps.listeners){
+            const dates=[...pl.dates].sort().join(', ')||'—';
+            const hrs=pl.durationSec/3600;
+            html+=`<tr style="border-bottom:1px solid var(--border)">
+              <td style="padding:3px 8px">${esc(pl.email)}</td>
+              <td style="padding:3px 8px;text-align:right">${pl.episodes.size}</td>
+              <td style="padding:3px 8px;text-align:right">${hrs.toFixed(2)}h</td>
+              <td style="padding:3px 8px;text-align:right">${pl.errors}</td>
+              <td style="padding:3px 8px;font-size:10px;color:var(--muted)">${esc(dates)}</td>
+            </tr>`;
+          }
+          html+=`</tbody></table>`;
+        } else {
+          html+=`<div style="padding:8px;font-size:10px;color:var(--muted);text-align:center">No QC activity for this show in the selected period.</div>`;
+        }
+        html+=`</div>`;
+      }
+    }
+    html+=`</div>`;
+
+    // Manual rows panel (kept for true off-platform work)
+    html+=`<div style="margin-top:14px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:12px 16px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:8px">
+        <div>
+          <div style="font-size:13px;font-weight:800">Manual Rows</div>
+          <div style="font-size:10px;color:var(--muted)">Free-form adjustments for work that isn't in CMS at all (rarely needed).</div>
+        </div>
+        <button class="btn btn-g btn-sm" onclick="addManualPaymentRow()">+ Add Manual Row</button>
       </div>`;
     if(manualArr.length){
       html+=`<table style="border-collapse:collapse;width:100%;font-size:11px;font-family:var(--mono);margin-top:6px">
@@ -2072,6 +2191,110 @@ async function renderPaymentReport(){
     console.error('Payment report failed:', e);
     el.innerHTML=`<div style="color:var(--red);padding:12px">Failed: ${esc(e.message)}</div>`;
   }
+}
+
+// ── Payment-only shows (CMS-connected, hidden from dashboard) ──
+function _extractShowId(input){
+  if(!input) return '';
+  const s=String(input).trim();
+  const m=s.match(/show_id=([a-f0-9]{20,})/i);
+  if(m) return m[1];
+  // Plain hex id
+  if(/^[a-f0-9]{20,}$/i.test(s)) return s;
+  return '';
+}
+
+async function _fetchPaymentShowFromCMS(showId){
+  if(!authToken||!uid) throw new Error('CMS not connected — set your auth token in the sidebar first.');
+  // 1) Episodes list (paginated)
+  let eps=[]; let page=1;
+  while(page<=100){
+    const r=await fetch(`${CMS_BASE}/book.show_episodes?show_id=${showId}&view=cms&is_novel=0&paginate_chapters=true&page_no=${page}`, {headers:hdrs()});
+    if(!r.ok){ if(page===1) throw new Error(`CMS HTTP ${r.status} — check token`); break; }
+    const d=await r.json();
+    const list=d.result?.episodes||[];
+    eps=eps.concat(list);
+    if(list.length<5) break;
+    page++;
+  }
+  const showTitleFromCms=eps[0]?.chapter_details?.show_title||'';
+  // 2) Per-episode details (batched)
+  const out=[];
+  const BATCH=5;
+  for(let b=0;b<eps.length;b+=BATCH){
+    const slice=eps.slice(b,b+BATCH);
+    await Promise.allSettled(slice.map(async ep=>{
+      const cd=ep.chapter_details||ep;
+      const chapId=cd.chapter_id||ep.chapter_id||''; if(!chapId) return;
+      try{
+        const dr=await fetch(`${CMS_BASE}/book.episode_details?chapter_id=${chapId}&is_novel=0`, {headers:hdrs()});
+        if(!dr.ok) return;
+        const dd=await dr.json();
+        const ch=dd.result?.chapter_details; if(!ch) return;
+        const qc=(ch.qc_details||[]).map(q=>({
+          time:q.time||'', issueType:q.issue_type||'',
+          userEmail:q.user_email||'', rawRemarks:q.remarks||'',
+          // Per-remark timestamp — preferred for period filtering. CMS field
+          // name varies, so we try the common ones in order.
+          reportedAt:q.timestamp||q.created_at||q.updated_at||q.qc_time||q.created_on||null
+        }));
+        // Episode-level update timestamp kept as a fallback for old data.
+        const ts=ch.raw_audio_update_time||ch.rm_audio_update_time||ch.fm_audio_update_time||ch.script_update_time||cd.script_update_time||'';
+        out.push({
+          chapId, title:ch.chapter_title||cd.chapter_title||'Episode',
+          duration:ch.audio_duration||cd.audio_duration||0,
+          updatedAt:ts||null, qc
+        });
+      }catch(e){}
+    }));
+    const tEl=document.getElementById('topStatus');
+    if(tEl) tEl.textContent=`Syncing ${Math.min(b+BATCH,eps.length)}/${eps.length}`;
+  }
+  return {episodes:out, cmsShowTitle:showTitleFromCms};
+}
+
+async function addPaymentOnlyShow(){
+  const inputRaw=(prompt('CMS show ID or full CMS URL:')||'').trim();
+  if(!inputRaw) return;
+  const showId=_extractShowId(inputRaw);
+  if(!showId){ toast('Could not parse a show ID from that input','warn'); return; }
+  const name=(prompt('Display name for this show (used in payment rows):')||'').trim();
+  if(!name){ toast('Show name required','warn'); return; }
+  toast(`Pulling "${name}" from CMS — this can take a minute…`,'ok');
+  try{
+    const {episodes, cmsShowTitle}=await _fetchPaymentShowFromCMS(showId);
+    await dbRef('paymentOnlyShows/'+showId).set({
+      showId, name, cmsShowTitle, addedAt:Date.now(), lastSyncedAt:Date.now(), episodes
+    });
+    toast(`Synced ${episodes.length} episodes for "${name}"`,'ok');
+    renderPaymentReport();
+  }catch(e){
+    console.error('addPaymentOnlyShow failed:',e);
+    toast('CMS fetch failed: '+e.message,'err');
+  }
+}
+
+async function refreshPaymentOnlyShow(showId){
+  const cur=(await dbRef('paymentOnlyShows/'+showId).once('value')).val();
+  if(!cur){ toast('Show not found','warn'); return; }
+  toast(`Refreshing "${cur.name}" from CMS…`,'ok');
+  try{
+    const {episodes}=await _fetchPaymentShowFromCMS(showId);
+    await dbRef('paymentOnlyShows/'+showId).update({episodes, lastSyncedAt:Date.now()});
+    toast(`Re-synced ${episodes.length} episodes`,'ok');
+    renderPaymentReport();
+  }catch(e){
+    toast('Refresh failed: '+e.message,'err');
+  }
+}
+
+async function deletePaymentOnlyShow(showId){
+  const cur=(await dbRef('paymentOnlyShows/'+showId).once('value')).val();
+  if(!cur) return;
+  if(!confirm(`Remove "${cur.name}" from payment-only shows?`)) return;
+  await dbRef('paymentOnlyShows/'+showId).remove();
+  toast('Removed','ok');
+  renderPaymentReport();
 }
 
 async function addManualPaymentRow(){
