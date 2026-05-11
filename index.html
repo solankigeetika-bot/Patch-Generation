@@ -290,6 +290,11 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
         <div style="font-size:16px;font-weight:800">Italy</div>
         <div style="font-family:var(--mono);font-size:10px;color:var(--muted);margin-top:4px">Empty — start fresh</div>
       </button>
+      <button onclick="pickCountry('de')" style="flex:1;max-width:180px;padding:24px 12px;border:2px solid var(--border);background:var(--surface2);border-radius:14px;cursor:pointer;transition:all .18s;font-family:Syne,sans-serif" onmouseover="this.style.borderColor='var(--accent)';this.style.background='var(--accent-light)'" onmouseout="this.style.borderColor='var(--border)';this.style.background='var(--surface2)'">
+        <div style="font-size:48px;margin-bottom:8px">🇩🇪</div>
+        <div style="font-size:16px;font-weight:800">Germany</div>
+        <div style="font-family:var(--mono);font-size:10px;color:var(--muted);margin-top:4px">Empty — start fresh</div>
+      </button>
     </div>
   </div>
 </div>
@@ -434,12 +439,14 @@ const fbDb = firebase.database();
 // ── Geography (country) scoping ─────────────────────────────
 // All Firebase data is scoped per-country. France keeps the root paths
 // (no migration of existing data). Italy lives under 'it/<path>'.
-let currentCountry = localStorage.getItem('ps_country') || ''; // '', 'fr', 'it'
+let currentCountry = localStorage.getItem('ps_country') || ''; // '', 'fr', 'it', 'de'
 const COUNTRY_META = {
-  fr: { name: 'France', flag: '🇫🇷' },
-  it: { name: 'Italy',  flag: '🇮🇹' },
+  fr: { name: 'France',  flag: '🇫🇷' },
+  it: { name: 'Italy',   flag: '🇮🇹' },
+  de: { name: 'Germany', flag: '🇩🇪' },
 };
-function dbPath(p){ return currentCountry === 'it' ? 'it/' + p : p; }
+// France lives at the root (legacy). Other countries get a path prefix.
+function dbPath(p){ return (currentCountry && currentCountry !== 'fr') ? currentCountry + '/' + p : p; }
 function dbRef(p){ return fbDb.ref(dbPath(p)); }
 let _showsListenerRef = null;
 let _dictListenerRef  = null;
