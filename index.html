@@ -259,6 +259,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
     <button class="btn btn-g btn-sm" onclick="goPage('dict')" style="width:100%;margin-bottom:4px;justify-content:flex-start">📖 Dictionary</button>
     <button class="btn btn-g btn-sm" onclick="goPage('prod')" style="width:100%;margin-bottom:4px;justify-content:flex-start">📊 SE Productivity</button>
     <button class="btn btn-g btn-sm" onclick="goPage('proof')" style="width:100%;margin-bottom:4px;justify-content:flex-start">👂 Proof Listeners</button>
+    <button class="btn btn-g btn-sm" onclick="goPage('pay')" style="width:100%;margin-bottom:4px;justify-content:flex-start">💰 Payments</button>
     <div style="margin-top:10px;padding:10px;background:var(--surface2);border-radius:7px">
       <label class="fl" style="margin-bottom:3px">Logged in as (SE/QC)</label>
       <input class="inp" id="currentUserInp" placeholder="e.g. Marine" style="font-size:11px" oninput="setCurrentUser(this.value)"/>
@@ -372,6 +373,10 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
     <!-- PAGE: Proof Listeners Productivity -->
     <div class="pg" id="page-proof">
       <div id="proofReport"></div>
+    </div>
+    <!-- PAGE: Payments -->
+    <div class="pg" id="page-pay">
+      <div id="payReport"></div>
     </div>
     <!-- PAGE: Dictionary -->
     <div class="pg" id="page-dict">
@@ -698,6 +703,12 @@ function goPage(name){
     genBtn.style.display='none';
     stitchBtn.style.display='none';
     renderProofListenersReport();
+  } else if(name==='pay'){
+    back.style.display='inline-flex';
+    document.getElementById('topTitle').textContent='Payments';
+    genBtn.style.display='none';
+    stitchBtn.style.display='none';
+    renderPaymentReport();
   } else if(name==='dict'){
     back.style.display='inline-flex';
     document.getElementById('topTitle').textContent='Mispronunciation Dictionary';
@@ -719,6 +730,7 @@ function goBack(){
   else if(currentPage==='agents') goPage('dashboard');
   else if(currentPage==='prod') goPage('dashboard');
   else if(currentPage==='proof') goPage('dashboard');
+  else if(currentPage==='pay') goPage('dashboard');
 }
 
 // ── Sidebar Nav ─────────────────────────────────────────────
@@ -1756,6 +1768,367 @@ async function removeProofListener(name){
   const cur=(await dbRef('proofListeners/'+k).once('value')).val()||{};
   await dbRef('proofListeners/'+k).set({...cur, name, hidden:true});
   renderProofListenersReport();
+}
+
+// ── Payments ────────────────────────────────────────────────
+// Rates per the proof-listener contract.
+const PAY_RATE_HOUR=20.00;
+const PAY_RATE_ERROR=0.40;
+const PAY_RATE_WORD=0.60;
+let _payPeriod=null; // {fromTs,toTs,from,to}
+let _payData=null;   // last computed result, for CSV export
+
+function _defaultPayPeriod(){
+  // 15th-to-15th cycle. If today > 15: period = 16th(prev month) → 15th(this month).
+  // Otherwise: period = 16th(two months ago) → 15th(last month).
+  const now=new Date();
+  let endY=now.getFullYear(), endM=now.getMonth();
+  if(now.getDate()<=15){ endM--; if(endM<0){endM=11; endY--;} }
+  const to=new Date(endY, endM, 15, 23, 59, 59, 999);
+  let startY=endY, startM=endM-1; if(startM<0){startM=11; startY--;}
+  const from=new Date(startY, startM, 16, 0, 0, 0, 0);
+  return {fromTs:from.getTime(), toTs:to.getTime(), from, to};
+}
+function _fmtPayDate(d){return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()}`;}
+function _isoDate(d){return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;}
+
+function shiftPayPeriod(dir){
+  if(!_payPeriod) _payPeriod=_defaultPayPeriod();
+  const f=new Date(_payPeriod.from), t=new Date(_payPeriod.to);
+  f.setMonth(f.getMonth()+dir);
+  t.setMonth(t.getMonth()+dir);
+  _payPeriod={fromTs:f.getTime(), toTs:t.getTime(), from:f, to:t};
+  renderPaymentReport();
+}
+function applyPayPeriod(){
+  const f=document.getElementById('payFrom').value;
+  const t=document.getElementById('payTo').value;
+  if(!f||!t){toast('Pick both dates','warn');return;}
+  const fd=new Date(f); fd.setHours(0,0,0,0);
+  const td=new Date(t); td.setHours(23,59,59,999);
+  _payPeriod={fromTs:fd.getTime(), toTs:td.getTime(), from:fd, to:td};
+  renderPaymentReport();
+}
+
+async function renderPaymentReport(){
+  const el=document.getElementById('payReport');
+  el.innerHTML='<div style="font-size:12px;color:var(--muted);padding:12px">Loading payment data...</div>';
+  if(!_payPeriod) _payPeriod=_defaultPayPeriod();
+  const {fromTs,toTs,from,to}=_payPeriod;
+
+  try{
+    const [epRemSnap, showEpsSnap, dictSnap, manualSnap]=await Promise.all([
+      dbRef('episodeRemarks').once('value'),
+      dbRef('showEpisodes').once('value'),
+      dbRef('dictionary').once('value'),
+      dbRef('paymentManualRows').once('value')
+    ]);
+    const allRem=epRemSnap.val()||{};
+    const allEps=showEpsSnap.val()||{};
+    const allDict=dictSnap.val()||{};
+    const manualRows=manualSnap.val()||{};
+
+    // Build chapId → {showName, duration}
+    const epMeta={};
+    for(const [showId, eps] of Object.entries(allEps)){
+      const epArr=Array.isArray(eps)?eps:Object.values(eps||{});
+      const showConfig=shows.find(s=>{
+        const sid=s.showInput?.match(/show_id=([a-f0-9]+)/i)?.[1]||s.showInput||'';
+        return sid===showId;
+      });
+      const showName=showConfig?.name||showId;
+      for(const ep of epArr){
+        if(!ep||!ep.chapter_id) continue;
+        epMeta[ep.chapter_id]={showName, duration:ep.audio_duration||0};
+      }
+    }
+
+    // Per-user aggregation
+    const users={};
+    function getU(email){
+      if(!users[email]) users[email]={
+        email, hours:0, errors:0, words:0,
+        shows:{}, // { showName: { hours, errors, words } }
+        episodes:{} // { chapId: showName } — for hour computation later
+      };
+      return users[email];
+    }
+    function getShow(u, sn){
+      if(!u.shows[sn]) u.shows[sn]={hours:0, errors:0, words:0};
+      return u.shows[sn];
+    }
+
+    // Verified errors (per spec: accepted patch OR no_patch, not wrong_error)
+    for(const [chapId, epData] of Object.entries(allRem)){
+      if(!epData||!epData.remarks) continue;
+      const remarks=Array.isArray(epData.remarks)?epData.remarks:Object.values(epData.remarks||{});
+      const dispositions=epData.dispositions||{};
+      const dispositionMeta=epData.dispositionMeta||{};
+      const reviews=epData.reviews||{};
+      const meta=epMeta[chapId]||{showName:'Unknown', duration:0};
+
+      for(let ri=0; ri<remarks.length; ri++){
+        const r=remarks[ri]; if(!r||!r.userEmail) continue;
+        const disp=dispositions[ri];
+        const rev=reviews[ri];
+        if(disp==='wrong_error') continue;
+        const accepted=rev&&rev.action==='accept';
+        const noPatch=disp==='no_patch';
+        if(!accepted&&!noPatch) continue;
+
+        // Verification timestamp — for date filtering
+        const verifyTs=rev?.ts||dispositionMeta[ri]?.ts||0;
+        if(verifyTs&&(verifyTs<fromTs||verifyTs>toTs)) continue;
+        // No timestamp → include (legacy entries)
+
+        const u=getU(r.userEmail);
+        u.errors++;
+        const s=getShow(u, meta.showName);
+        s.errors++;
+        u.episodes[chapId]=meta.showName;
+      }
+    }
+
+    // Hours: sum audio_duration over episodes a user had any verified remark on
+    for(const u of Object.values(users)){
+      const perShowSec={};
+      for(const [chapId, sn] of Object.entries(u.episodes)){
+        const m=epMeta[chapId]; if(!m) continue;
+        u.hours+=m.duration;
+        perShowSec[sn]=(perShowSec[sn]||0)+m.duration;
+      }
+      u.hours=u.hours/3600;
+      for(const [sn, sec] of Object.entries(perShowSec)){
+        getShow(u, sn).hours=sec/3600;
+      }
+    }
+
+    // Dictionary words per user (€0.60 each)
+    for(const d of Object.values(allDict)){
+      if(!d||!d.agent||!d.word) continue;
+      const ts=d.addedAt||0;
+      if(ts&&(ts<fromTs||ts>toTs)) continue;
+      const u=getU(d.agent);
+      u.words++;
+      getShow(u, d.show||'(no show)').words++;
+    }
+
+    // Manual rows
+    const manualArr=Object.entries(manualRows).map(([id, r])=>({id, ...(r||{})}));
+    for(const m of manualArr){
+      if(m.periodStart&&(m.periodStart<fromTs||m.periodStart>toTs)) continue;
+      const u=getU(m.listener||'(manual)');
+      const h=parseFloat(m.hours)||0, er=parseInt(m.errors)||0, w=parseInt(m.words)||0;
+      u.hours+=h; u.errors+=er; u.words+=w;
+      const s=getShow(u, m.show||'(manual)');
+      s.hours+=h; s.errors+=er; s.words+=w;
+    }
+
+    // Totals per user
+    const arr=Object.values(users).map(u=>{
+      u.hourPay=u.hours*PAY_RATE_HOUR;
+      u.errorPay=u.errors*PAY_RATE_ERROR;
+      u.wordPay=u.words*PAY_RATE_WORD;
+      u.total=u.hourPay+u.errorPay+u.wordPay;
+      return u;
+    }).sort((a,b)=>b.total-a.total);
+
+    _payData={users:arr, manualArr, from, to};
+
+    // ── Render ──
+    let html=`<div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:12px;gap:12px;flex-wrap:wrap">
+      <div>
+        <div style="font-size:16px;font-weight:800">Payments</div>
+        <div style="font-size:11px;color:var(--muted)">€${PAY_RATE_HOUR.toFixed(2)}/hour listening · €${PAY_RATE_ERROR.toFixed(2)}/verified error · €${PAY_RATE_WORD.toFixed(2)}/word</div>
+      </div>
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+        <button class="btn btn-g btn-sm" onclick="shiftPayPeriod(-1)" title="Previous billing period">← Prev</button>
+        <input type="date" id="payFrom" value="${_isoDate(from)}" style="font-size:11px;padding:5px 8px;border:1px solid var(--border);border-radius:6px"/>
+        <span style="font-size:11px;color:var(--muted)">to</span>
+        <input type="date" id="payTo" value="${_isoDate(to)}" style="font-size:11px;padding:5px 8px;border:1px solid var(--border);border-radius:6px"/>
+        <button class="btn btn-p btn-sm" onclick="applyPayPeriod()">Apply</button>
+        <button class="btn btn-g btn-sm" onclick="shiftPayPeriod(1)" title="Next billing period">Next →</button>
+        <button class="btn btn-g btn-sm" onclick="exportPaymentCSV()">⬇ CSV</button>
+      </div>
+    </div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:14px;font-family:var(--mono)">Billing period: ${_fmtPayDate(from)} → ${_fmtPayDate(to)}</div>`;
+
+    if(!arr.length&&!manualArr.length){
+      html+=`<div style="padding:24px;text-align:center;color:var(--muted);background:var(--surface);border:1px solid var(--border);border-radius:var(--r);margin-bottom:18px">
+        <div style="font-size:36px;margin-bottom:10px">💰</div>
+        <div style="font-weight:700;margin-bottom:6px">No payable activity in this period</div>
+        <div style="font-size:11px">Adjust the date range, or click "+ Add Manual Row" below.</div>
+      </div>`;
+    } else {
+      let grand=0;
+      html+=`<div style="overflow-x:auto;background:var(--surface);border-radius:var(--r);box-shadow:var(--shadow);margin-bottom:18px">
+        <table style="border-collapse:collapse;width:100%;min-width:900px">
+          <thead><tr style="background:var(--surface2);border-bottom:2px solid var(--border)">
+            <th style="padding:8px 10px;text-align:left;font-size:11px">Proof Listener</th>
+            <th style="padding:8px 10px;text-align:right;font-size:11px">Hours</th>
+            <th style="padding:8px 10px;text-align:right;font-size:11px;background:#E3F2FD">Hour Pay</th>
+            <th style="padding:8px 10px;text-align:right;font-size:11px">Errors</th>
+            <th style="padding:8px 10px;text-align:right;font-size:11px;background:#E8F5E9">Error Pay</th>
+            <th style="padding:8px 10px;text-align:right;font-size:11px">Words</th>
+            <th style="padding:8px 10px;text-align:right;font-size:11px;background:#F3E5F5">Word Pay</th>
+            <th style="padding:8px 10px;text-align:right;font-size:11px;background:#FFFFCC">Total €</th>
+          </tr></thead><tbody>`;
+      for(const u of arr){
+        grand+=u.total;
+        html+=`<tr style="border-bottom:1px solid var(--border)">
+          <td style="padding:6px 10px;font-weight:700;font-size:11px;font-family:var(--mono)">${esc(u.email)}</td>
+          <td style="padding:6px 10px;text-align:right;font-family:var(--mono);font-size:11px">${u.hours.toFixed(2)}</td>
+          <td style="padding:6px 10px;text-align:right;background:#E3F2FD;font-family:var(--mono);font-size:11px">€${u.hourPay.toFixed(2)}</td>
+          <td style="padding:6px 10px;text-align:right;font-family:var(--mono);font-size:11px">${u.errors}</td>
+          <td style="padding:6px 10px;text-align:right;background:#E8F5E9;font-family:var(--mono);font-size:11px">€${u.errorPay.toFixed(2)}</td>
+          <td style="padding:6px 10px;text-align:right;font-family:var(--mono);font-size:11px">${u.words}</td>
+          <td style="padding:6px 10px;text-align:right;background:#F3E5F5;font-family:var(--mono);font-size:11px">€${u.wordPay.toFixed(2)}</td>
+          <td style="padding:6px 10px;text-align:right;background:#FFFFCC;font-family:var(--mono);font-size:12px;font-weight:700">€${u.total.toFixed(2)}</td>
+        </tr>`;
+      }
+      html+=`<tr style="background:var(--surface2);font-weight:800">
+          <td style="padding:8px 10px;font-size:12px">Grand Total</td>
+          <td colspan="6"></td>
+          <td style="padding:8px 10px;text-align:right;background:#FFFFCC;font-family:var(--mono);font-size:13px">€${grand.toFixed(2)}</td>
+        </tr></tbody></table></div>`;
+
+      // Per-show breakdown
+      if(arr.length){
+        html+=`<div style="font-size:13px;font-weight:800;margin-bottom:8px">Per-Show Breakdown</div>`;
+        for(const u of arr){
+          const showEntries=Object.entries(u.shows);
+          if(!showEntries.length) continue;
+          html+=`<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:10px 14px;margin-bottom:8px">
+            <div style="font-weight:700;font-size:11px;font-family:var(--mono);margin-bottom:6px">${esc(u.email)}</div>
+            <table style="border-collapse:collapse;width:100%;font-size:11px;font-family:var(--mono)">
+              <thead><tr style="background:var(--surface2);color:var(--muted)">
+                <th style="padding:4px 8px;text-align:left">Show</th>
+                <th style="padding:4px 8px;text-align:right">Hours</th>
+                <th style="padding:4px 8px;text-align:right">Errors</th>
+                <th style="padding:4px 8px;text-align:right">Words</th>
+                <th style="padding:4px 8px;text-align:right">Subtotal</th>
+              </tr></thead><tbody>`;
+          for(const [sn, s] of showEntries){
+            const sub=s.hours*PAY_RATE_HOUR+s.errors*PAY_RATE_ERROR+s.words*PAY_RATE_WORD;
+            html+=`<tr style="border-bottom:1px solid var(--border)">
+              <td style="padding:3px 8px">${esc(sn)}</td>
+              <td style="padding:3px 8px;text-align:right">${s.hours.toFixed(2)}</td>
+              <td style="padding:3px 8px;text-align:right">${s.errors}</td>
+              <td style="padding:3px 8px;text-align:right">${s.words}</td>
+              <td style="padding:3px 8px;text-align:right;font-weight:700">€${sub.toFixed(2)}</td>
+            </tr>`;
+          }
+          html+=`</tbody></table></div>`;
+        }
+      }
+    }
+
+    // Manual rows panel
+    html+=`<div style="margin-top:18px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:12px 16px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:8px">
+        <div>
+          <div style="font-size:13px;font-weight:800">Manual Rows</div>
+          <div style="font-size:10px;color:var(--muted)">Add billable shows that aren't tracked in PatchStudio (external work, off-platform listening, etc).</div>
+        </div>
+        <button class="btn btn-green btn-sm" onclick="addManualPaymentRow()">+ Add Manual Row</button>
+      </div>`;
+    if(manualArr.length){
+      html+=`<table style="border-collapse:collapse;width:100%;font-size:11px;font-family:var(--mono);margin-top:6px">
+        <thead><tr style="background:var(--surface2)">
+          <th style="padding:5px 10px;text-align:left">Listener</th>
+          <th style="padding:5px 10px;text-align:left">Show</th>
+          <th style="padding:5px 10px;text-align:right">Hours</th>
+          <th style="padding:5px 10px;text-align:right">Errors</th>
+          <th style="padding:5px 10px;text-align:right">Words</th>
+          <th style="padding:5px 10px;text-align:left">Period start</th>
+          <th style="padding:5px 6px;text-align:center;width:30px"></th>
+        </tr></thead><tbody>`;
+      for(const m of manualArr){
+        const ps=m.periodStart?_isoDate(new Date(m.periodStart)):'—';
+        html+=`<tr style="border-bottom:1px solid var(--border)">
+          <td style="padding:4px 10px">${esc(m.listener||'')}</td>
+          <td style="padding:4px 10px">${esc(m.show||'')}</td>
+          <td style="padding:4px 10px;text-align:right">${(parseFloat(m.hours)||0).toFixed(2)}</td>
+          <td style="padding:4px 10px;text-align:right">${parseInt(m.errors)||0}</td>
+          <td style="padding:4px 10px;text-align:right">${parseInt(m.words)||0}</td>
+          <td style="padding:4px 10px">${ps}</td>
+          <td style="padding:4px 6px;text-align:center"><button onclick="deleteManualPaymentRow('${m.id}')" title="Delete row" style="background:transparent;border:none;cursor:pointer;color:var(--muted);font-size:14px;padding:2px 6px;border-radius:4px" onmouseover="this.style.background='var(--red-light)';this.style.color='var(--red)'" onmouseout="this.style.background='transparent';this.style.color='var(--muted)'">×</button></td>
+        </tr>`;
+      }
+      html+=`</tbody></table>`;
+    } else {
+      html+=`<div style="padding:10px;text-align:center;color:var(--muted);font-size:11px">No manual rows yet.</div>`;
+    }
+    html+=`</div>`;
+
+    html+=`<div style="margin-top:12px;font-size:10px;color:var(--muted);font-family:var(--mono);line-height:1.6">
+      <div>· Hours = sum of CMS audio_duration for episodes where the listener had at least one verified remark (verification ts in period).</div>
+      <div>· Verified error = QC remark where SE accepted a patch OR marked "No Patch Required" (not "Wrong Error").</div>
+      <div>· Words = dictionary entries added by the listener (agent = CMS user email, addedAt in period).</div>
+    </div>`;
+
+    el.innerHTML=html;
+  }catch(e){
+    console.error('Payment report failed:', e);
+    el.innerHTML=`<div style="color:var(--red);padding:12px">Failed: ${esc(e.message)}</div>`;
+  }
+}
+
+async function addManualPaymentRow(){
+  const listener=(prompt('Proof listener (CMS email, or any label):')||'').trim();
+  if(!listener) return;
+  const show=(prompt('Show name:')||'').trim();
+  if(!show) return;
+  const hours=parseFloat(prompt('Hours of listening (e.g. 2.5):')||'0')||0;
+  const errors=parseInt(prompt('Number of verified errors:')||'0')||0;
+  const words=parseInt(prompt('Number of dictionary words:')||'0')||0;
+  const periodStart=_payPeriod?_payPeriod.fromTs:Date.now();
+  const slug=listener.toLowerCase().replace(/[^a-z0-9]/gi,'_').substring(0,15);
+  const id='mr_'+Date.now()+'_'+slug;
+  await dbRef('paymentManualRows/'+id).set({
+    listener, show, hours, errors, words,
+    periodStart, addedAt:Date.now()
+  });
+  toast(`Manual row added: ${listener} / ${show}`,'ok');
+  renderPaymentReport();
+}
+
+async function deleteManualPaymentRow(id){
+  if(!confirm('Delete this manual row?')) return;
+  await dbRef('paymentManualRows/'+id).remove();
+  toast('Row deleted','ok');
+  renderPaymentReport();
+}
+
+function exportPaymentCSV(){
+  if(!_payData||!_payData.users){toast('Nothing to export','warn');return;}
+  const {users, from, to}=_payData;
+  const rows=[];
+  rows.push(['Billing Period', _fmtPayDate(from)+' → '+_fmtPayDate(to)]);
+  rows.push([]);
+  rows.push(['Proof Listener','Show','Hours','Hour Pay (€)','Errors','Error Pay (€)','Words','Word Pay (€)','Subtotal (€)']);
+  let grand=0;
+  for(const u of users){
+    const showEntries=Object.entries(u.shows);
+    if(showEntries.length){
+      for(const [sn, s] of showEntries){
+        const hp=s.hours*PAY_RATE_HOUR, ep=s.errors*PAY_RATE_ERROR, wp=s.words*PAY_RATE_WORD;
+        const sub=hp+ep+wp;
+        rows.push([u.email, sn, s.hours.toFixed(2), hp.toFixed(2), s.errors, ep.toFixed(2), s.words, wp.toFixed(2), sub.toFixed(2)]);
+      }
+    }
+    rows.push([u.email,'TOTAL', u.hours.toFixed(2), u.hourPay.toFixed(2), u.errors, u.errorPay.toFixed(2), u.words, u.wordPay.toFixed(2), u.total.toFixed(2)]);
+    rows.push([]);
+    grand+=u.total;
+  }
+  rows.push(['GRAND TOTAL','','','','','','','', grand.toFixed(2)]);
+  const csv=rows.map(r=>r.map(v=>'"'+String(v==null?'':v).replace(/"/g,'""')+'"').join(',')).join('\n');
+  const blob=new Blob(['﻿'+csv],{type:'text/csv;charset=utf-8'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download=`payments_${_isoDate(from)}_to_${_isoDate(to)}.csv`;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  toast('CSV downloaded','ok');
 }
 
 // ── Show View (episodes list) ───────────────────────────────
