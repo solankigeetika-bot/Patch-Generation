@@ -1921,13 +1921,25 @@ async function removeProofListener(name){
 }
 
 // ── Error Analytics ─────────────────────────────────────────
-// Two knobs: view (show/voice/genre) and block size (group episodes into
-// chunks of N to see how errors progress over the run).
+// Scope: only shows present in the Dashboard for the active geography
+// (any chapter whose show isn't in the `shows` array is excluded).
+// Two knobs: view (show/voice/genre), block size, and an optional
+// episode-range filter that narrows everything to a focused span.
 let _analyticsView='voice';
 let _analyticsBlockSize=10;
+let _analyticsFromEp='';
+let _analyticsToEp='';
 
 function setAnalyticsView(v){ _analyticsView=v; renderErrorAnalytics(); }
 function setAnalyticsBlockSize(n){ _analyticsBlockSize=parseInt(n,10)||10; renderErrorAnalytics(); }
+function setAnalyticsRange(from, to){
+  const f=from===''?'':parseInt(from,10);
+  const t=to===''?'':parseInt(to,10);
+  _analyticsFromEp=(f===''||isNaN(f))?'':f;
+  _analyticsToEp=(t===''||isNaN(t))?'':t;
+  renderErrorAnalytics();
+}
+function clearAnalyticsRange(){ _analyticsFromEp=''; _analyticsToEp=''; renderErrorAnalytics(); }
 
 async function renderErrorAnalytics(){
   const el=document.getElementById('analyticsReport');
@@ -1940,22 +1952,32 @@ async function renderErrorAnalytics(){
     const allRem=remSnap.val()||{};
     const allEps=epsSnap.val()||{};
 
-    // chapId → metadata (show, voice, genre, seq)
+    // Active-show set: only chapters whose show is in the current dashboard
+    // are counted. Untracked shows (orphaned remarks) are silently skipped.
+    const activeShowIds=new Set();
+    const showLookup={}; // showId → {name, voiceName, voiceGender, genre}
+    for(const s of shows){
+      const sid=s.showInput?.match(/show_id=([a-f0-9]+)/i)?.[1]||s.showInput||'';
+      if(!sid) continue;
+      activeShowIds.add(sid);
+      showLookup[sid]={
+        name:s.name||sid,
+        voiceName:s.voiceName||'Unknown',
+        voiceGender:s.voiceGender||'',
+        genre:(s.genre||'').trim()||'Untagged'
+      };
+    }
+
+    // chapId → metadata (only for active shows)
     const epMeta={};
     for(const [showId, eps] of Object.entries(allEps)){
+      if(!activeShowIds.has(showId)) continue;
       const epArr=Array.isArray(eps)?eps:Object.values(eps||{});
-      const showConfig=shows.find(s=>{
-        const sid=s.showInput?.match(/show_id=([a-f0-9]+)/i)?.[1]||s.showInput||'';
-        return sid===showId;
-      });
-      const showName=showConfig?.name||showId;
-      const voiceName=showConfig?.voiceName||'Unknown';
-      const voiceGender=showConfig?.voiceGender||'';
-      const genre=(showConfig?.genre||'').trim()||'Untagged';
+      const meta=showLookup[showId];
       for(const ep of epArr){
         if(!ep||!ep.chapter_id) continue;
         epMeta[ep.chapter_id]={
-          showName, showId, voiceName, voiceGender, genre,
+          ...meta, showId,
           seq:ep.natural_sequence_number||ep.seq||0
         };
       }
@@ -1964,12 +1986,17 @@ async function renderErrorAnalytics(){
     function pickKey(meta){
       if(_analyticsView==='voice') return meta.voiceName||'Unknown';
       if(_analyticsView==='genre') return meta.genre||'Untagged';
-      return meta.showName||meta.showId;
+      return meta.name||meta.showId;
     }
 
-    // For each row, build:
-    //   episodes: Map<seq, {chapId, count, byType}>
-    //   total errors / total episodes touched
+    // Apply episode-range filter at aggregation time
+    const fromEp=_analyticsFromEp, toEp=_analyticsToEp;
+    function epInRange(seq){
+      if(fromEp!==''&&seq<fromEp) return false;
+      if(toEp!==''&&seq>toEp) return false;
+      return true;
+    }
+
     const rows={};
     function getRow(key, meta){
       if(!rows[key]) rows[key]={
@@ -1979,19 +2006,23 @@ async function renderErrorAnalytics(){
               : _analyticsView==='genre'
                 ? ''
                 : ('Voice: '+(meta.voiceName||'—')),
-        episodes:new Map(), // seq → { chapId, count, byType }
+        episodes:new Map(),
         totalErrors:0, byType:{}
       };
       return rows[key];
     }
 
+    let totalChaptersConsidered=0;
     for(const [chapId, epData] of Object.entries(allRem)){
       if(!epData?.remarks) continue;
+      const meta=epMeta[chapId];
+      if(!meta) continue; // chapter not in active shows
+      const seq=meta.seq||0;
+      if(!epInRange(seq)) continue;
+      totalChaptersConsidered++;
       const remarks=Array.isArray(epData.remarks)?epData.remarks:Object.values(epData.remarks||{});
-      const meta=epMeta[chapId]||{showName:'Unknown', showId:epData.showId||'?', voiceName:'Unknown', voiceGender:'', genre:'Untagged', seq:0};
       const key=pickKey(meta);
       const row=getRow(key, meta);
-      const seq=meta.seq||0;
       if(!row.episodes.has(seq)) row.episodes.set(seq, {chapId, count:0, byType:{}});
       const epRec=row.episodes.get(seq);
       for(const r of remarks){
@@ -2004,8 +2035,7 @@ async function renderErrorAnalytics(){
       }
     }
 
-    // Block aggregation: split each row's episodes (sorted by seq) into
-    // chunks of N. Each block = { fromSeq, toSeq, eps, totalErrors, avg }.
+    // Block aggregation + per-block byType + deltas vs previous block
     const N=_analyticsBlockSize;
     for(const row of Object.values(rows)){
       const sorted=[...row.episodes.entries()].sort((a,b)=>a[0]-b[0]);
@@ -2017,7 +2047,33 @@ async function renderErrorAnalytics(){
         const fromSeq=slice[0][0], toSeq=slice[slice.length-1][0];
         const totalErrors=slice.reduce((s,[,v])=>s+v.count,0);
         const eps=slice.length;
-        blocks.push({fromSeq, toSeq, eps, totalErrors, avg:eps?totalErrors/eps:0});
+        const byType={};
+        for(const [,v] of slice){
+          for(const [t,c] of Object.entries(v.byType||{})) byType[t]=(byType[t]||0)+c;
+        }
+        const topTypes=Object.entries(byType).sort((a,b)=>b[1]-a[1]);
+        blocks.push({fromSeq, toSeq, eps, totalErrors, avg:eps?totalErrors/eps:0, byType, topTypes});
+      }
+      // Δ per block — compute biggest increase/decrease by category vs previous
+      for(let i=0;i<blocks.length;i++){
+        const b=blocks[i];
+        if(i===0){ b.biggestUp=null; b.biggestDown=null; continue; }
+        const prev=blocks[i-1].byType;
+        const allTypes=new Set([...Object.keys(b.byType), ...Object.keys(prev)]);
+        let biggestUp=null, biggestDown=null;
+        for(const t of allTypes){
+          const now=b.byType[t]||0;
+          const before=prev[t]||0;
+          const change=now-before;
+          if(now===0&&before===0) continue;
+          // Only flag if there's meaningful movement (≥2 in absolute terms)
+          if(Math.abs(change)<2) continue;
+          const pct=before?Math.round((change/before)*100):(now>0?999:0);
+          if(change>0&&(!biggestUp||change>biggestUp.change)) biggestUp={type:t, before, now, change, pct};
+          if(change<0&&(!biggestDown||change<biggestDown.change)) biggestDown={type:t, before, now, change, pct};
+        }
+        b.biggestUp=biggestUp;
+        b.biggestDown=biggestDown;
       }
       row.blocks=blocks;
     }
@@ -2028,7 +2084,7 @@ async function renderErrorAnalytics(){
     let html=`<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:14px">
       <div>
         <div style="font-size:16px;font-weight:800">Error Analytics</div>
-        <div style="font-size:11px;color:var(--muted)">Group episodes into blocks of N and watch how error frequency evolves across the run.</div>
+        <div style="font-size:11px;color:var(--muted)">Scoped to ${shows.length} active show(s) in this geography. Group episodes into blocks and watch which error types are climbing or falling.</div>
       </div>
       <div style="display:flex;gap:8px;align-items:center;font-family:var(--mono);font-size:11px;flex-wrap:wrap">
         <label style="color:var(--muted)">View by</label>
@@ -2039,35 +2095,46 @@ async function renderErrorAnalytics(){
         </select>
         <label style="color:var(--muted);margin-left:6px">Block size</label>
         <select onchange="setAnalyticsBlockSize(this.value)" style="font-size:11px;padding:5px 8px;border:1px solid var(--border);border-radius:6px;background:#fff">
-          <option value="5" ${N===5?'selected':''}>5 episodes</option>
-          <option value="10" ${N===10?'selected':''}>10 episodes</option>
-          <option value="20" ${N===20?'selected':''}>20 episodes</option>
-          <option value="25" ${N===25?'selected':''}>25 episodes</option>
-          <option value="50" ${N===50?'selected':''}>50 episodes</option>
+          <option value="5" ${N===5?'selected':''}>5</option>
+          <option value="10" ${N===10?'selected':''}>10</option>
+          <option value="20" ${N===20?'selected':''}>20</option>
+          <option value="25" ${N===25?'selected':''}>25</option>
+          <option value="50" ${N===50?'selected':''}>50</option>
         </select>
       </div>
+    </div>
+
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 12px;margin-bottom:14px;font-family:var(--mono);font-size:11px">
+      <span style="font-weight:700">Episode range:</span>
+      <span style="color:var(--muted)">from</span>
+      <input type="number" min="1" placeholder="any" value="${_analyticsFromEp}" id="anFromInp" style="width:64px;font-size:11px;padding:3px 6px;border:1px solid var(--border);border-radius:5px"/>
+      <span style="color:var(--muted)">to</span>
+      <input type="number" min="1" placeholder="any" value="${_analyticsToEp}" id="anToInp" style="width:64px;font-size:11px;padding:3px 6px;border:1px solid var(--border);border-radius:5px"/>
+      <button class="btn btn-p btn-sm" style="font-size:10px" onclick="setAnalyticsRange(document.getElementById('anFromInp').value, document.getElementById('anToInp').value)">Apply</button>
+      <button class="btn btn-g btn-sm" style="font-size:10px" onclick="clearAnalyticsRange()">Clear</button>
+      <span style="color:var(--muted);margin-left:auto">${fromEp!==''||toEp!==''?`Filtering Ep ${fromEp||'1'} – ${toEp||'∞'}`:'All episodes'}</span>
     </div>`;
 
     if(_analyticsView==='genre'){
       const tagged=shows.filter(s=>(s.genre||'').trim()).length;
       if(!tagged){
         html+=`<div style="padding:14px;background:#FFF8E1;border:1px solid #FFE082;border-radius:var(--r);font-size:11px;color:#92400e;margin-bottom:14px">
-          📋 No shows have a Genre set yet. Open any show via Edit → fill the new "Genre" field to use this view. Untagged shows roll up under "Untagged".
+          📋 No shows have a Genre set yet. Open any show via Edit → fill the "Genre" field. Untagged shows roll up under "Untagged".
         </div>`;
       }
     }
 
     if(!rowArr.length){
+      const reason=!shows.length?'No shows added to this geography yet.':!totalChaptersConsidered?'No QC data available for any of the active shows yet.':'No episodes match the current range filter.';
       html+=`<div style="padding:24px;text-align:center;color:var(--muted);background:var(--surface);border:1px solid var(--border);border-radius:var(--r)">
         <div style="font-size:36px;margin-bottom:8px">📈</div>
-        <div style="font-weight:700;margin-bottom:4px">No QC data available yet</div>
-        <div style="font-size:11px">Load episodes from CMS first — error analytics derives from episodeRemarks.</div>
+        <div style="font-weight:700;margin-bottom:4px">No data to show</div>
+        <div style="font-size:11px">${esc(reason)}</div>
       </div>`;
       el.innerHTML=html;
       return;
     }
 
-    // KPI strip
     const grandTotal=rowArr.reduce((s,r)=>s+r.totalErrors,0);
     const grandEps=rowArr.reduce((s,r)=>s+r.epCount,0);
     html+=`<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">
@@ -2089,11 +2156,9 @@ async function renderErrorAnalytics(){
       </div>
     </div>`;
 
-    // For each row: progression card with block table + inline mini-chart
+    // Render each row
     for(const r of rowArr){
-      // Max avg across blocks for color/height scaling
       const maxAvg=Math.max(0.1, ...r.blocks.map(b=>b.avg));
-      // Trend hint — first block vs last block avg
       let trendLabel='', trendColor='var(--muted)';
       if(r.blocks.length>=2){
         const first=r.blocks[0].avg, last=r.blocks[r.blocks.length-1].avg;
@@ -2103,68 +2168,74 @@ async function renderErrorAnalytics(){
         else { trendLabel='→ flat'; trendColor='var(--muted)'; }
       }
 
-      html+=`<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r);box-shadow:var(--shadow);padding:14px 18px;margin-bottom:12px">
-        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;margin-bottom:12px">
+      // Row's top 3 categories overall
+      const overallTop=Object.entries(r.byType).sort((a,b)=>b[1]-a[1]).slice(0,3);
+
+      html+=`<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r);box-shadow:var(--shadow);padding:14px 18px;margin-bottom:14px">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;margin-bottom:8px">
           <div>
             <div style="font-size:14px;font-weight:800">${esc(r.label)}</div>
-            <div style="font-size:10px;color:var(--muted);font-family:var(--mono)">${esc(r.sub||'')} · ${r.epCount} episodes · ${r.totalErrors} errors · ${r.errPerEp.toFixed(1)} err/ep avg</div>
+            <div style="font-size:10px;color:var(--muted);font-family:var(--mono)">${esc(r.sub||'')} · ${r.epCount} eps · ${r.totalErrors} errors · ${r.errPerEp.toFixed(1)} err/ep avg</div>
           </div>
-          ${trendLabel?`<div style="font-size:12px;font-weight:700;color:${trendColor};font-family:var(--mono);white-space:nowrap">${trendLabel}<div style="font-size:9px;color:var(--muted);font-weight:400">first block → last block</div></div>`:''}
+          ${trendLabel?`<div style="font-size:12px;font-weight:700;color:${trendColor};font-family:var(--mono);white-space:nowrap;text-align:right">${trendLabel}<div style="font-size:9px;color:var(--muted);font-weight:400">first block → last block</div></div>`:''}
+        </div>
+
+        <div style="font-size:10px;color:var(--muted);font-family:var(--mono);margin-bottom:10px">
+          Top categories overall: ${overallTop.map(([t,c])=>`<strong style="color:var(--text)">${esc(t)}</strong> (${c})`).join(' · ')||'—'}
         </div>`;
 
-      // Mini-chart row: one bar per block
-      html+=`<div style="display:flex;align-items:flex-end;gap:3px;height:60px;margin-bottom:6px;border-bottom:1px solid var(--border)">`;
+      // Mini-chart row
+      html+=`<div style="display:flex;align-items:flex-end;gap:3px;height:64px;margin-bottom:4px;margin-top:18px;border-bottom:1px solid var(--border)">`;
       for(const b of r.blocks){
         const h=Math.max(3, Math.round(b.avg/maxAvg*54));
         const ratio=b.avg/Math.max(0.01,r.errPerEp);
         const color=ratio>1.5?'var(--red)':ratio>1.0?'var(--orange)':ratio<0.5?'var(--green)':'var(--accent)';
-        html+=`<div title="Eps ${b.fromSeq}–${b.toSeq}: ${b.totalErrors} errors over ${b.eps} eps (${b.avg.toFixed(1)}/ep)" style="flex:1;min-width:30px;height:${h}px;background:${color};border-radius:3px 3px 0 0;position:relative">
+        const tipTop=b.topTypes.slice(0,3).map(([t,c])=>`${t}: ${c}`).join('\n');
+        const tip=`Eps ${b.fromSeq}–${b.toSeq}\n${b.totalErrors} errors / ${b.eps} eps (${b.avg.toFixed(1)}/ep)\n\nTop:\n${tipTop}`;
+        html+=`<div title="${esc(tip)}" style="flex:1;min-width:30px;height:${h}px;background:${color};border-radius:3px 3px 0 0;position:relative">
           <div style="position:absolute;top:-16px;left:0;right:0;text-align:center;font-size:9px;color:var(--muted);font-family:var(--mono)">${b.avg.toFixed(1)}</div>
         </div>`;
       }
       html+=`</div>`;
-      // X-axis labels (episode ranges)
-      html+=`<div style="display:flex;gap:3px;font-size:9px;color:var(--muted);font-family:var(--mono)">`;
+      html+=`<div style="display:flex;gap:3px;font-size:9px;color:var(--muted);font-family:var(--mono);margin-bottom:14px">`;
       for(const b of r.blocks){
         html+=`<div style="flex:1;min-width:30px;text-align:center">Ep ${b.fromSeq}${b.eps>1?'-'+b.toSeq:''}</div>`;
       }
       html+=`</div>`;
 
-      // Block table (the numbers)
-      html+=`<div style="overflow-x:auto;margin-top:12px">
-        <table style="border-collapse:collapse;width:100%;font-size:11px;font-family:var(--mono);min-width:600px">
+      // Block detail table — includes Top Errors, Biggest Increase, Biggest Decrease
+      html+=`<div style="overflow-x:auto">
+        <table style="border-collapse:collapse;width:100%;font-size:11px;font-family:var(--mono);min-width:780px">
           <thead><tr style="background:var(--surface2);color:var(--muted)">
             <th style="padding:6px 10px;text-align:left">Episode Range</th>
-            <th style="padding:6px 10px;text-align:right"># Eps in Block</th>
-            <th style="padding:6px 10px;text-align:right">Total Errors</th>
-            <th style="padding:6px 10px;text-align:right">Avg / Ep</th>
-            <th style="padding:6px 10px;text-align:left">Δ vs prev block</th>
+            <th style="padding:6px 10px;text-align:right">Eps</th>
+            <th style="padding:6px 10px;text-align:right">Total</th>
+            <th style="padding:6px 10px;text-align:right">Avg/Ep</th>
+            <th style="padding:6px 10px;text-align:left">Top Errors in Block</th>
+            <th style="padding:6px 10px;text-align:left;color:var(--red)">↑ Biggest increase</th>
+            <th style="padding:6px 10px;text-align:left;color:var(--green)">↓ Biggest decrease</th>
           </tr></thead><tbody>`;
       for(let i=0;i<r.blocks.length;i++){
         const b=r.blocks[i];
-        let delta='—', deltaColor='var(--muted)';
-        if(i>0){
-          const prev=r.blocks[i-1].avg;
-          const change=prev?Math.round(((b.avg-prev)/prev)*100):0;
-          if(b.avg<prev){ delta=`↓ ${Math.abs(change)}%`; deltaColor='var(--green)'; }
-          else if(b.avg>prev){ delta=`↑ ${change}%`; deltaColor='var(--red)'; }
-          else { delta='= same'; deltaColor='var(--muted)'; }
-        }
+        const top=b.topTypes.slice(0,3).map(([t,c])=>`<strong>${esc(t)}</strong> (${c})`).join('<br/>')||'—';
+        const up=b.biggestUp?`<strong>${esc(b.biggestUp.type)}</strong> ${b.biggestUp.before}→${b.biggestUp.now} <span style="color:var(--muted);font-size:9px">(${b.biggestUp.pct>=999?'new':'+'+b.biggestUp.pct+'%'})</span>`:'<span style="color:var(--muted)">—</span>';
+        const down=b.biggestDown?`<strong>${esc(b.biggestDown.type)}</strong> ${b.biggestDown.before}→${b.biggestDown.now} <span style="color:var(--muted);font-size:9px">(${b.biggestDown.pct}%)</span>`:'<span style="color:var(--muted)">—</span>';
         html+=`<tr style="border-bottom:1px solid var(--border)">
-          <td style="padding:5px 10px">Ep ${b.fromSeq}${b.eps>1?' – '+b.toSeq:''}</td>
-          <td style="padding:5px 10px;text-align:right">${b.eps}</td>
-          <td style="padding:5px 10px;text-align:right;font-weight:700;color:var(--orange)">${b.totalErrors}</td>
-          <td style="padding:5px 10px;text-align:right;font-weight:700">${b.avg.toFixed(1)}</td>
-          <td style="padding:5px 10px;color:${deltaColor};font-weight:700">${delta}</td>
+          <td style="padding:6px 10px;font-weight:700">Ep ${b.fromSeq}${b.eps>1?' – '+b.toSeq:''}</td>
+          <td style="padding:6px 10px;text-align:right">${b.eps}</td>
+          <td style="padding:6px 10px;text-align:right;font-weight:700;color:var(--orange)">${b.totalErrors}</td>
+          <td style="padding:6px 10px;text-align:right;font-weight:700">${b.avg.toFixed(1)}</td>
+          <td style="padding:6px 10px;line-height:1.5">${top}</td>
+          <td style="padding:6px 10px;color:var(--red);line-height:1.5">${up}</td>
+          <td style="padding:6px 10px;color:var(--green);line-height:1.5">${down}</td>
         </tr>`;
       }
       html+=`</tbody></table></div>`;
-
       html+=`</div>`;
     }
 
     html+=`<div style="margin-top:6px;font-size:10px;color:var(--muted);font-family:var(--mono);line-height:1.6">
-      Bars colored by error rate vs the row's own average — <span style="color:var(--green);font-weight:700">green</span>: below average, <span style="color:var(--accent);font-weight:700">blue</span>: around average, <span style="color:var(--orange);font-weight:700">orange</span>: above average, <span style="color:var(--red);font-weight:700">red</span>: >1.5× average. Δ column compares each block's avg/ep to the previous block.
+      Bars colored by error rate vs the row's own average — <span style="color:var(--green);font-weight:700">green</span>: below average, <span style="color:var(--accent);font-weight:700">blue</span>: around average, <span style="color:var(--orange);font-weight:700">orange</span>: above average, <span style="color:var(--red);font-weight:700">red</span>: &gt;1.5× average. "Biggest increase / decrease" compare each block's category counts to the previous block (changes &lt;2 in absolute count are ignored as noise).
     </div>`;
 
     el.innerHTML=html;
@@ -2173,7 +2244,6 @@ async function renderErrorAnalytics(){
     el.innerHTML=`<div style="color:var(--red);padding:12px">Failed: ${esc(e.message)}</div>`;
   }
 }
-
 // ── Audio Replace tool ──────────────────────────────────────
 // Copies audio from episodes of one CMS show (source, typically Live) to
 // episodes of another (target, typically To-Be-Recorded). Auto-pairs by
