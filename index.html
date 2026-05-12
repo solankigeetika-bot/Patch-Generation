@@ -2425,13 +2425,27 @@ async function _copyOneAudio(srcEp, tgtEp){
   if(!s3.ok) throw new Error('S3 POST HTTP '+s3.status);
 
   // 5. Commit via book.update_episode — echo full state with patched
-  //    story_details.s3_unique_key. CMS uses this field to bind the upload
-  //    to the chapter's audio.
-  const updatedStory={...tgtStory, s3_unique_key: policy.s3_unique_key};
+  //    story_details.s3_unique_key AND updated audio_duration values so CMS
+  //    treats this as a real audio change (not just a metadata touch).
+  //    Side-by-side diff of CMS UI's working payload vs ours showed that on
+  //    a successful replace CMS also updates chapter_details.audio_duration
+  //    and story_details.duration to the new audio's length.
+  const newDuration=srcEp.audio_duration||tgtChapter.audio_duration||0;
+  const cmsNow=()=>{const d=new Date(),p=n=>String(n).padStart(2,'0');return `${d.getUTCFullYear()}-${p(d.getUTCMonth()+1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`;};
+  const updatedChapter={
+    ...tgtChapter,
+    audio_duration: newDuration,
+    media_timestamp: cmsNow()
+  };
+  const updatedStory={
+    ...tgtStory,
+    s3_unique_key: policy.s3_unique_key,
+    duration: newDuration
+  };
   const notify=await fetch(`${CMS_BASE}/book.update_episode?is_novel=0`, {
     method:'POST', headers:hdrs(),
     body:JSON.stringify({
-      chapter_details: tgtChapter,
+      chapter_details: updatedChapter,
       story_details: updatedStory,
       book_id: tgtChapter.book_id||tgtEp.book_id,
       show_id: _replaceState.tgtShowId,
