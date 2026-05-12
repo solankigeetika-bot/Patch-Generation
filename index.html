@@ -2558,10 +2558,49 @@ function renderAudioReplaceTool(){
   const st=_replaceState;
   const enabledCount=st.pairs.filter(p=>p.enabled&&p.tgtIdx>=0).length;
 
+  // Build the bookmarklet href. We point to a hosted script on the same
+  // GitHub Pages site so CMS pulls fresh code on each click.
+  const bmkHref='javascript:(function(){if(window.__AR_PANEL){window.__AR_PANEL.style.display=\'block\';return;}var s=document.createElement(\'script\');s.src=\'https://solankigeetika-bot.github.io/Patch-Generation/audio-replace.js?t=\'+Date.now();s.onerror=function(){alert(\'Failed to load Audio Replace — check internet\');};document.body.appendChild(s);})();';
+
   let html=`<div style="margin-bottom:14px">
     <div style="font-size:16px;font-weight:800">🔀 Audio Replace</div>
-    <div style="font-size:11px;color:var(--muted)">Copy episode audio from a Source (QC show — read from its to-be-recorded slot) into a Target (Live show — write into its live slot). Nothing is saved to Firebase. Both shows must be in CMS and your auth token must be connected.</div>
+    <div style="font-size:11px;color:var(--muted)">Copy episode audio from a Source (QC show) into a Target (Live show). CMS validates uploads against session origin, so this runs as a bookmarklet INSIDE cms.pocketfm.com — not as part of this tool.</div>
+  </div>
+
+  <div style="background:#fffbeb;border:1.5px solid #fcd34d;border-radius:var(--r);padding:14px 18px;margin-bottom:16px">
+    <div style="font-size:14px;font-weight:800;color:#92400e;margin-bottom:8px">⚡ Step 1: Drag this button to your bookmarks bar</div>
+    <a href="${bmkHref}" onclick="alert('Drag this button to your bookmarks bar — don\\'t click it here. Then click it from any tab open on cms.pocketfm.com.'); return false;" style="display:inline-block;padding:8px 16px;background:#1e293b;color:#fff;text-decoration:none;border-radius:8px;font-weight:700;font-size:13px;cursor:grab" draggable="true">🔀 Audio Replace</a>
+    <div style="font-size:11px;color:var(--muted);margin-top:8px;line-height:1.6">
+      Right-drag the button above onto your bookmarks bar. If you can't see your bookmarks bar, press <strong>Cmd+Shift+B</strong> (Mac) / <strong>Ctrl+Shift+B</strong> (Win) to show it.
+    </div>
+  </div>
+
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:14px 18px;margin-bottom:16px">
+    <div style="font-size:14px;font-weight:800;margin-bottom:8px">🚀 Step 2: Use it</div>
+    <ol style="font-size:12px;line-height:1.8;padding-left:18px;color:var(--text2)">
+      <li>Open <strong>cms.pocketfm.com</strong> in any tab and make sure you're logged in.</li>
+      <li>Click the <strong>🔀 Audio Replace</strong> bookmarklet in your bookmarks bar.</li>
+      <li>A floating panel appears. Paste the Source and Target show IDs (or URLs), click Load on each.</li>
+      <li>Pair episodes (auto-paired by sequence; override per row if needed). Filter by episode # if you want.</li>
+      <li>Click <strong>▶ Run Replace</strong>. Watch the log — you'll see <code>✓ binding confirmed</code> when an episode successfully replaces.</li>
+    </ol>
+  </div>
+
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:14px 18px">
+    <div style="font-size:13px;font-weight:800;margin-bottom:6px">Why a bookmarklet?</div>
+    <div style="font-size:11px;color:var(--muted);line-height:1.6">
+      CMS's upload commit (<code>book.update_episode</code>) validates that the upload pre-registration and the commit come from the same browser session origin. When this PatchStudio tool ran from <code>github.io</code>, CMS silently dropped the new <code>s3_unique_key</code> — leaving the timestamp updated but the audio unchanged.<br/><br/>
+      The bookmarklet runs inside <code>cms.pocketfm.com</code>'s page context, so CMS sees the calls as coming from its own UI and honors them. Nothing else changes — same logic, same payloads.
+    </div>
   </div>`;
+  el.innerHTML=html;
+}
+
+// ── (legacy in-tool Audio Replace flow removed — moved to bookmarklet) ──
+function _renderAudioReplaceLegacy_DISABLED(){
+  const el=document.getElementById('replaceReport'); if(!el) return;
+  const st=_replaceState;
+  let html=`<div></div>`;
 
   if(!authToken||!uid){
     html+=`<div style="padding:14px;background:#FFF8E1;border:1px solid #FFE082;border-radius:var(--r);font-size:11px;color:#92400e;margin-bottom:14px">
