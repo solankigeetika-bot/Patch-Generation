@@ -2481,13 +2481,34 @@ async function _copyOneAudio(srcEp, tgtEp){
     const errText=await notify.text().catch(()=>'');
     throw new Error('book.update_episode HTTP '+notify.status+' — '+errText.substring(0,200));
   }
-  // Log what CMS persisted so we can diagnose any "ok but no replacement" case
+  // The update_episode response shape is a confirmation, not a state echo:
+  //   result.story_details: [{ status:1, message:"successfully created/updated" }]
+  //   result.chapter_details: { ... }
+  // So we report what CMS confirmed, then GET the chapter back to see what
+  // actually persisted server-side. That re-fetch is the only honest way to
+  // verify the s3_unique_key was bound.
   try{
     const notifyData=await notify.json();
-    const persistedKey=notifyData.result?.story_details?.s3_unique_key||'?';
-    const persistedDur=notifyData.result?.chapter_details?.audio_duration||'?';
-    _replaceLog(`  · CMS persisted: s3=${persistedKey} duration=${persistedDur}`);
-    if(persistedKey!==policy.s3_unique_key) _replaceLog(`  ⚠ CMS kept the OLD s3_unique_key — not bound to our upload`, 'err');
+    const status=notifyData.result?.story_details?.[0]?.status;
+    const msg=notifyData.result?.story_details?.[0]?.message||'';
+    _replaceLog(`  · update_episode response: status=${status} ${msg?'("'+msg+'")':''}`);
+  }catch{}
+
+  // 7. Verify by re-fetching the target chapter. If story_details.s3_unique_key
+  //    on the server doesn't match what we uploaded, CMS dropped our value.
+  try{
+    const verify=await fetch(`${CMS_BASE}/book.episode_details?chapter_id=${tgtEp.chapter_id}&is_novel=0`, {headers:hdrs()});
+    if(verify.ok){
+      const vd=await verify.json();
+      const persistedKey=vd.result?.story_details?.s3_unique_key||'';
+      const persistedDur=vd.result?.chapter_details?.audio_duration||'';
+      _replaceLog(`  · verified server-side: s3=${persistedKey} duration=${persistedDur}`);
+      if(persistedKey!==policy.s3_unique_key){
+        _replaceLog(`  ⚠ s3_unique_key did not bind (server still has ${persistedKey||'empty'}; sent ${policy.s3_unique_key}). CMS dropped the value.`, 'err');
+      } else {
+        _replaceLog(`  ✓ binding confirmed — server now points at our uploaded file`, 'ok');
+      }
+    }
   }catch{}
 }
 
