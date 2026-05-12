@@ -2233,6 +2233,12 @@ async function _fetchEpisodesFor(showId){
   const results=await Promise.all(attempts.map(([v,c])=>fetchPaginated(v,c)));
   const combined=results.flatMap(r=>r.eps);
   if(!combined.length){
+    // Surface auth failures clearly — every attempt 401 means token expired,
+    // not a bug. User needs to re-run the Connect PatchStudio bookmarklet.
+    const allAuth=results.every(r=>r.firstStatus===401||r.firstStatus===403);
+    if(allAuth){
+      throw new Error('CMS auth expired (401) — click the Connect PatchStudio bookmarklet against a fresh CMS tab to refresh your token, then re-Load.');
+    }
     const codes=results.map((r,i)=>{
       const [v,c]=attempts[i];
       return `${v||'(none)'}${c?'+chapPag':''}=${r.firstStatus}`;
