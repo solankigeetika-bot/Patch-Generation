@@ -131,9 +131,22 @@
     }
   }
 
+  // Rate-limit-aware fetch: retries on 429 with exponential backoff
+  async function rlFetch(url, opts){
+    let delay=2000;
+    for(let attempt=0; attempt<5; attempt++){
+      const r=await fetch(url, opts);
+      if(r.status!==429) return r;
+      log(`  · rate-limited (429), waiting ${Math.round(delay/1000)}s before retry…`);
+      await new Promise(res=>setTimeout(res, delay));
+      delay=Math.min(delay*2, 60000);
+    }
+    return await fetch(url, opts); // last try
+  }
+
   async function copyOne(srcEp, tgtEp){
     // 1. Source audio download
-    const muResp=await fetch(`${CMS}/get_media_url?type=episode&media_type=audio&event=play&chapter_id=${srcEp.chapter_id}&show_id=${state.srcShowId}`,{headers:hdrs(),credentials:'include'});
+    const muResp=await rlFetch(`${CMS}/get_media_url?type=episode&media_type=audio&event=play&chapter_id=${srcEp.chapter_id}&show_id=${state.srcShowId}`,{headers:hdrs(),credentials:'include'});
     if(!muResp.ok) throw new Error('source media URL HTTP '+muResp.status);
     const muData=await muResp.json();
     const playUrl=muData.result?.media_url||muData.media_url||muData.result?.url;
@@ -151,7 +164,7 @@
 
     // 2. Target episode_details (BEFORE upload)
     const detUrl=`${CMS}/book.episode_details?chapter_id=${tgtEp.chapter_id}&view=cms&show_id=${state.tgtShowId}&is_novel=0`;
-    const detResp=await fetch(detUrl,{headers:hdrs(),credentials:'include'});
+    const detResp=await rlFetch(detUrl,{headers:hdrs(),credentials:'include'});
     if(!detResp.ok) throw new Error('target episode_details HTTP '+detResp.status);
     const det=await detResp.json();
     let tgtChapter=det.result?.chapter_details;
@@ -164,7 +177,7 @@
     const ext=(blob.type||'').includes('wav')?'wav':'mp3';
     const title=encodeURIComponent(tgtChapter.chapter_title||tgtEp.chapter_title||'audio');
     const presignUrl=`${UPLOAD_BASE}/get_presigned_url?tags=media&image_extension=${ext}&title=${title}&chapter_id=${tgtEp.chapter_id}`;
-    const up=await fetch(presignUrl,{headers:hdrs(),credentials:'include'});
+    const up=await rlFetch(presignUrl,{headers:hdrs(),credentials:'include'});
     if(!up.ok) throw new Error('presigned URL HTTP '+up.status);
     const upData=await up.json();
     const policy=upData.result?.[0];
@@ -186,7 +199,7 @@
     await new Promise(r=>setTimeout(r, 1500));
     let postKey=beforeKey;
     try{
-      const a=await fetch(detUrl,{headers:hdrs(),credentials:'include'});
+      const a=await rlFetch(detUrl,{headers:hdrs(),credentials:'include'});
       if(a.ok){
         const ad=await a.json();
         if(ad.result?.story_details){
@@ -217,7 +230,7 @@
       show_id: state.tgtShowId,
       view: 'cms'
     };
-    const notify=await fetch(`${CMS}/book.update_episode?is_novel=0`,{
+    const notify=await rlFetch(`${CMS}/book.update_episode?is_novel=0`,{
       method:'POST',
       headers:hdrs(),
       credentials:'include',
@@ -228,7 +241,7 @@
 
     // 7. Verify by re-fetching
     try{
-      const v=await fetch(detUrl,{headers:hdrs(),credentials:'include'});
+      const v=await rlFetch(detUrl,{headers:hdrs(),credentials:'include'});
       if(v.ok){
         const vd=await v.json();
         const persistedKey=vd.result?.story_details?.s3_unique_key||'';
@@ -334,6 +347,9 @@
       log(`[${i+1}/${enabled.length}] Ep ${s.seq||'?'} → Ep ${t.seq||'?'}`);
       try{ await copyOne(s,t); ok++; log(`  ✓ copied`,'ok'); }
       catch(e){ fail++; log(`  ✗ ${e.message}`,'err'); }
+      // Polite delay between pairs to avoid CMS rate-limiting (kicks in after
+      // ~5 rapid uploads). 4s feels safe without making big batches painful.
+      if(i<enabled.length-1) await new Promise(r=>setTimeout(r, 4000));
     }
     log(`Done — ${ok} succeeded, ${fail} failed`, fail?'err':'ok');
     state.running=false;
