@@ -2399,25 +2399,35 @@ async function _copyOneAudio(srcEp, tgtEp){
   if(!dl.ok) throw new Error('audio download HTTP '+dl.status);
   const blob=await dl.blob();
 
-  // 2. Target presigned upload URL
-  const up=await fetch(`${CMS_BASE}/book.get_upload_url?chapter_id=${tgtEp.chapter_id}&book_id=${tgtEp.book_id}&is_novel=0&file_type=audio`, {headers:hdrs()});
-  if(!up.ok) throw new Error('target upload URL HTTP '+up.status);
+  // 2. Get S3 POST policy from CMS upload service.
+  // Real endpoint lives at /v2/upload/get_presigned_url (not under /content_api/).
+  const ext=(blob.type||'').includes('wav')?'wav':(blob.type||'').includes('mpeg')||(blob.type||'').includes('mp3')?'mp3':'mp3';
+  const title=encodeURIComponent(tgtEp.chapter_title||'audio');
+  const presignURL=`https://api.cms.pocketfm.com/v2/upload/get_presigned_url?tags=media&image_extension=${ext}&title=${title}&chapter_id=${tgtEp.chapter_id}`;
+  const up=await fetch(presignURL, {headers:hdrs()});
+  if(!up.ok) throw new Error('presigned URL HTTP '+up.status);
   const upData=await up.json();
-  const s3Url=upData.upload_url||upData.presigned_url||upData.url||upData.s3_url;
-  const fileKey=upData.file_key||upData.key||upData.s3_key;
-  if(!s3Url) throw new Error('no S3 URL in target response');
+  const policy=upData.result?.[0];
+  if(!policy||!policy.url||!policy.fields) throw new Error('no S3 policy in upload response');
 
-  // 3. PUT to S3
-  const s3=await fetch(s3Url, {method:'PUT', body:blob, headers:{'Content-Type':'audio/wav'}});
-  if(!s3.ok) throw new Error('S3 PUT HTTP '+s3.status);
+  // 3. POST multipart/form-data to S3 — every field from `fields` goes first,
+  //    then the file last (S3 requires this exact order for presigned POST).
+  const fd=new FormData();
+  for(const [k,v] of Object.entries(policy.fields)) fd.append(k,v);
+  fd.append('file', blob, policy.fields.key||`audio.${ext}`);
+  const s3=await fetch(policy.url, {method:'POST', body:fd});
+  if(!s3.ok) throw new Error('S3 POST HTTP '+s3.status);
 
-  // 4. Notify CMS — write into the target's chosen slot
+  // 4. Notify CMS — using book.update_chapter_media with the s3_unique_key
+  //    from the policy response. If this endpoint 404s, capture the real
+  //    notify endpoint from the network tab (it fires right after the S3 POST).
   const notify=await fetch(`${CMS_BASE}/book.update_chapter_media`, {
     method:'POST', headers:hdrs(),
     body:JSON.stringify({
       chapter_id: tgtEp.chapter_id,
       book_id: tgtEp.book_id,
-      file_key: fileKey,
+      file_key: policy.s3_unique_key,
+      s3_unique_key: policy.s3_unique_key,
       is_novel: 0,
       media_type: _replaceState.tgtSlot
     })
