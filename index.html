@@ -2201,9 +2201,9 @@ function _parseShowId(input){
 }
 
 async function _fetchEpisodesFor(showId){
-  // CMS paginates via &page_no=N (no paginate_chapters flag). The response
-  // exposes a "next_url" on result when more pages exist — we follow that.
-  // Live episodes live on later pages, so we need to walk all of them.
+  // Different shows use different "view" filters. Try the known/likely ones
+  // in parallel and merge — covers live shows (view=cms with pagination),
+  // QC shows (sometimes a different view), and odd configurations.
   async function fetchView(viewParam){
     let eps=[]; let page=1; let firstStatus=200;
     while(page<=500){
@@ -2220,11 +2220,13 @@ async function _fetchEpisodesFor(showId){
     }
     return {eps, firstStatus};
   }
-  const {eps, firstStatus}=await fetchView('cms');
-  if(!eps.length){
-    throw new Error(`CMS HTTP ${firstStatus} — no episodes returned`);
+  const viewVariants=['cms','', 'qc','pending','live'];
+  const results=await Promise.all(viewVariants.map(v=>fetchView(v)));
+  const combined=results.flatMap(r=>r.eps);
+  if(!combined.length){
+    const codes=results.map((r,i)=>`${viewVariants[i]||'(none)'}=${r.firstStatus}`).join(', ');
+    throw new Error(`CMS — no episodes returned across views (${codes})`);
   }
-  const combined=eps;
   // Dedupe by chapter_id, preserve first occurrence
   const seen=new Set();
   const merged=[];
