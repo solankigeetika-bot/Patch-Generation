@@ -2185,6 +2185,8 @@ let _replaceState={
   pairs:[], // [{srcIdx, tgtIdx, enabled}]
   srcSlot:'raw_audio',      // where to READ from on the QC show (to-be-recorded)
   tgtSlot:'final_audio',    // where to WRITE on the live show
+  srcFrom:'', srcTo:'',     // source episode-number range filter
+  tgtFrom:'', tgtTo:'',     // target episode-number range filter
   log:[],
   running:false
 };
@@ -2294,6 +2296,50 @@ function setReplaceAllEnabled(on){
 
 function setReplaceSrcSlot(v){ _replaceState.srcSlot=v; }
 function setReplaceTgtSlot(v){ _replaceState.tgtSlot=v; }
+
+function setReplaceRange(side, bound, value){
+  const v=value===''?'':parseInt(value,10);
+  const key=(side==='src'?'src':'tgt')+(bound==='from'?'From':'To');
+  _replaceState[key]=(v===''||isNaN(v))?'':v;
+}
+function applyReplaceRange(){
+  // Update each pair's enabled state based on whether both src and tgt episodes
+  // fall inside their respective configured ranges.
+  const {srcFrom,srcTo,tgtFrom,tgtTo,pairs,srcEps,tgtEps}=_replaceState;
+  for(const p of pairs){
+    const s=srcEps[p.srcIdx];
+    const t=p.tgtIdx>=0?tgtEps[p.tgtIdx]:null;
+    let inRange=true;
+    if(s){
+      if(srcFrom!==''&&s.seq<srcFrom) inRange=false;
+      if(srcTo!==''&&s.seq>srcTo) inRange=false;
+    }
+    if(t){
+      if(tgtFrom!==''&&t.seq<tgtFrom) inRange=false;
+      if(tgtTo!==''&&t.seq>tgtTo) inRange=false;
+    }
+    p.enabled=inRange&&p.tgtIdx>=0;
+  }
+  renderAudioReplaceTool();
+}
+function clearReplaceRange(){
+  _replaceState.srcFrom=''; _replaceState.srcTo=''; _replaceState.tgtFrom=''; _replaceState.tgtTo='';
+  for(const p of _replaceState.pairs) p.enabled=p.tgtIdx>=0;
+  renderAudioReplaceTool();
+}
+function _isPairInRange(p){
+  const {srcFrom,srcTo,tgtFrom,tgtTo,srcEps,tgtEps}=_replaceState;
+  const s=srcEps[p.srcIdx], t=p.tgtIdx>=0?tgtEps[p.tgtIdx]:null;
+  if(s){
+    if(srcFrom!==''&&s.seq<srcFrom) return false;
+    if(srcTo!==''&&s.seq>srcTo) return false;
+  }
+  if(t){
+    if(tgtFrom!==''&&t.seq<tgtFrom) return false;
+    if(tgtTo!==''&&t.seq>tgtTo) return false;
+  }
+  return true;
+}
 
 function _replaceLog(msg, kind='info'){
   _replaceState.log.push({msg, kind, ts:Date.now()});
@@ -2421,14 +2467,34 @@ function renderAudioReplaceTool(){
   </div>`;
 
   if(st.pairs.length){
-    html+=`<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:8px;flex-wrap:wrap">
-      <div style="font-size:13px;font-weight:800">Episode Pairing (${enabledCount} of ${st.pairs.length} enabled)</div>
+    const visiblePairs=st.pairs.filter(_isPairInRange);
+    const visibleEnabled=visiblePairs.filter(p=>p.enabled&&p.tgtIdx>=0).length;
+    html+=`<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;gap:8px;flex-wrap:wrap">
+      <div style="font-size:13px;font-weight:800">Episode Pairing (${visibleEnabled} of ${visiblePairs.length} shown · ${enabledCount} total enabled)</div>
       <div style="display:flex;gap:6px;align-items:center;font-family:var(--mono);font-size:11px">
         <span style="color:var(--muted)">${esc(st.srcSlot)} → ${esc(st.tgtSlot)}</span>
         <button class="btn btn-g btn-sm" onclick="setReplaceAllEnabled(true)">Check All</button>
         <button class="btn btn-g btn-sm" onclick="setReplaceAllEnabled(false)">Uncheck All</button>
         <button class="btn btn-orange btn-sm" onclick="runReplace()" ${st.running?'disabled':''}>${st.running?'Running…':`▶ Run Replace (${enabledCount})`}</button>
       </div>
+    </div>
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 12px;margin-bottom:10px;font-family:var(--mono);font-size:11px">
+      <span style="font-weight:700;color:var(--text2)">Filter by Episode #:</span>
+      <div style="display:flex;gap:4px;align-items:center">
+        <span style="color:var(--muted)">Source</span>
+        <input type="number" min="1" placeholder="from" value="${st.srcFrom}" onchange="setReplaceRange('src','from',this.value)" style="width:64px;font-size:11px;padding:3px 6px;border:1px solid var(--border);border-radius:5px"/>
+        <span style="color:var(--muted)">to</span>
+        <input type="number" min="1" placeholder="to" value="${st.srcTo}" onchange="setReplaceRange('src','to',this.value)" style="width:64px;font-size:11px;padding:3px 6px;border:1px solid var(--border);border-radius:5px"/>
+      </div>
+      <div style="display:flex;gap:4px;align-items:center">
+        <span style="color:var(--muted)">Target</span>
+        <input type="number" min="1" placeholder="from" value="${st.tgtFrom}" onchange="setReplaceRange('tgt','from',this.value)" style="width:64px;font-size:11px;padding:3px 6px;border:1px solid var(--border);border-radius:5px"/>
+        <span style="color:var(--muted)">to</span>
+        <input type="number" min="1" placeholder="to" value="${st.tgtTo}" onchange="setReplaceRange('tgt','to',this.value)" style="width:64px;font-size:11px;padding:3px 6px;border:1px solid var(--border);border-radius:5px"/>
+      </div>
+      <button class="btn btn-p btn-sm" onclick="applyReplaceRange()" style="font-size:10px">Apply Range</button>
+      <button class="btn btn-g btn-sm" onclick="clearReplaceRange()" style="font-size:10px">Clear</button>
+      <span style="color:var(--muted);font-size:10px;margin-left:auto">Leave blank for no limit. Apply also unchecks rows outside the range.</span>
     </div>
     <div style="overflow-x:auto;background:var(--surface);border:1px solid var(--border);border-radius:var(--r);box-shadow:var(--shadow)">
       <table style="border-collapse:collapse;width:100%;min-width:900px;font-size:11px;font-family:var(--mono)">
@@ -2444,6 +2510,7 @@ function renderAudioReplaceTool(){
         </tr></thead><tbody>`;
     for(let i=0;i<st.pairs.length;i++){
       const p=st.pairs[i];
+      if(!_isPairInRange(p)) continue; // hidden by range filter
       const s=st.srcEps[p.srcIdx];
       const t=p.tgtIdx>=0?st.tgtEps[p.tgtIdx]:null;
       const dur=s.audio_duration?Math.round(s.audio_duration/60*10)/10:'—';
