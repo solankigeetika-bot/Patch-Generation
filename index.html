@@ -261,6 +261,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
     <button class="btn btn-g btn-sm" onclick="goPage('proof')" style="width:100%;margin-bottom:4px;justify-content:flex-start">👂 Proof Listeners</button>
     <button class="btn btn-g btn-sm" onclick="goPage('pay')" style="width:100%;margin-bottom:4px;justify-content:flex-start">💰 Payments</button>
     <button class="btn btn-g btn-sm" onclick="goPage('analytics')" style="width:100%;margin-bottom:4px;justify-content:flex-start">📈 Error Analytics</button>
+    <button class="btn btn-g btn-sm" onclick="goPage('replace')" style="width:100%;margin-bottom:4px;justify-content:flex-start">🔀 Audio Replace</button>
     <div style="margin-top:10px;padding:10px;background:var(--surface2);border-radius:7px">
       <label class="fl" style="margin-bottom:3px">Logged in as (SE/QC)</label>
       <input class="inp" id="currentUserInp" placeholder="e.g. Marine" style="font-size:11px" oninput="setCurrentUser(this.value)"/>
@@ -427,6 +428,10 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
     <!-- PAGE: Error Analytics -->
     <div class="pg" id="page-analytics">
       <div id="analyticsReport"></div>
+    </div>
+    <!-- PAGE: Audio Replace -->
+    <div class="pg" id="page-replace">
+      <div id="replaceReport"></div>
     </div>
     <!-- PAGE: Dictionary -->
     <div class="pg" id="page-dict">
@@ -767,6 +772,12 @@ function goPage(name){
     genBtn.style.display='none';
     stitchBtn.style.display='none';
     renderErrorAnalytics();
+  } else if(name==='replace'){
+    back.style.display='inline-flex';
+    document.getElementById('topTitle').textContent='Audio Replace';
+    genBtn.style.display='none';
+    stitchBtn.style.display='none';
+    renderAudioReplaceTool();
   } else if(name==='dict'){
     back.style.display='inline-flex';
     document.getElementById('topTitle').textContent='Mispronunciation Dictionary';
@@ -790,6 +801,7 @@ function goBack(){
   else if(currentPage==='proof') goPage('dashboard');
   else if(currentPage==='pay') goPage('dashboard');
   else if(currentPage==='analytics') goPage('dashboard');
+  else if(currentPage==='replace') goPage('dashboard');
 }
 
 // ── Sidebar Nav ─────────────────────────────────────────────
@@ -2161,6 +2173,299 @@ async function renderErrorAnalytics(){
     console.error('Error analytics failed:',e);
     el.innerHTML=`<div style="color:var(--red);padding:12px">Failed: ${esc(e.message)}</div>`;
   }
+}
+
+// ── Audio Replace tool ──────────────────────────────────────
+// Copies audio from episodes of one CMS show (source, typically Live) to
+// episodes of another (target, typically To-Be-Recorded). Auto-pairs by
+// natural_sequence_number with per-row overrides.
+let _replaceState={
+  srcShowId:'', srcShowName:'', srcEps:[],
+  tgtShowId:'', tgtShowName:'', tgtEps:[],
+  pairs:[], // [{srcIdx, tgtIdx, enabled}]
+  mediaType:'raw_audio',
+  log:[],
+  running:false
+};
+
+function _parseShowId(input){
+  if(!input) return '';
+  const s=String(input).trim();
+  const m=s.match(/show_id=([a-f0-9]{20,})/i);
+  if(m) return m[1];
+  if(/^[a-f0-9]{20,}$/i.test(s)) return s;
+  return '';
+}
+
+async function _fetchEpisodesFor(showId){
+  let eps=[]; let page=1;
+  while(page<=100){
+    const r=await fetch(`${CMS_BASE}/book.show_episodes?show_id=${showId}&view=cms&is_novel=0&paginate_chapters=true&page_no=${page}`, {headers:hdrs()});
+    if(!r.ok){ if(page===1) throw new Error(`CMS HTTP ${r.status}`); break; }
+    const d=await r.json();
+    const list=d.result?.episodes||[];
+    eps=eps.concat(list);
+    if(list.length<5) break;
+    page++;
+  }
+  // Normalize
+  return eps.map(ep=>{
+    const cd=ep.chapter_details||ep;
+    return {
+      chapter_id: cd.chapter_id || ep.chapter_id || '',
+      book_id: cd.book_id || ep.book_id || '',
+      chapter_title: cd.chapter_title || ep.chapter_title || '',
+      seq: cd.natural_sequence_number || ep.natural_sequence_number || 0,
+      audio_duration: cd.audio_duration || ep.audio_duration || 0,
+      audio_status: cd.audio_status || ep.audio_status || '',
+      chapter_status: cd.chapter_Status || cd.chapter_status || ep.chapter_status || ''
+    };
+  }).filter(e=>e.chapter_id).sort((a,b)=>(a.seq||0)-(b.seq||0));
+}
+
+async function loadReplaceSource(){
+  const raw=document.getElementById('rp_srcInput').value.trim();
+  const showId=_parseShowId(raw);
+  if(!showId){ toast('Could not parse a show ID','warn'); return; }
+  if(!authToken||!uid){ toast('CMS not connected — set your auth token in the sidebar first','warn'); return; }
+  const btn=document.getElementById('rp_srcLoad'); if(btn){btn.textContent='Loading…'; btn.disabled=true;}
+  try{
+    const eps=await _fetchEpisodesFor(showId);
+    _replaceState.srcShowId=showId;
+    _replaceState.srcEps=eps;
+    _replaceState.srcShowName=eps[0]?.chapter_title?eps[0].chapter_title.replace(/\s*Ep\w*\s*\d+.*$/i,'').trim():showId;
+    _rebuildPairs();
+    renderAudioReplaceTool();
+  }catch(e){ toast('Source load failed: '+e.message,'err'); }
+  finally{ if(btn){btn.textContent='Load Source'; btn.disabled=false;} }
+}
+
+async function loadReplaceTarget(){
+  const raw=document.getElementById('rp_tgtInput').value.trim();
+  const showId=_parseShowId(raw);
+  if(!showId){ toast('Could not parse a show ID','warn'); return; }
+  if(!authToken||!uid){ toast('CMS not connected — set your auth token in the sidebar first','warn'); return; }
+  const btn=document.getElementById('rp_tgtLoad'); if(btn){btn.textContent='Loading…'; btn.disabled=true;}
+  try{
+    const eps=await _fetchEpisodesFor(showId);
+    _replaceState.tgtShowId=showId;
+    _replaceState.tgtEps=eps;
+    _replaceState.tgtShowName=eps[0]?.chapter_title?eps[0].chapter_title.replace(/\s*Ep\w*\s*\d+.*$/i,'').trim():showId;
+    _rebuildPairs();
+    renderAudioReplaceTool();
+  }catch(e){ toast('Target load failed: '+e.message,'err'); }
+  finally{ if(btn){btn.textContent='Load Target'; btn.disabled=false;} }
+}
+
+function _rebuildPairs(){
+  const src=_replaceState.srcEps, tgt=_replaceState.tgtEps;
+  if(!src.length||!tgt.length){ _replaceState.pairs=[]; return; }
+  const pairs=[];
+  // Pair source ep i with target ep at the same SEQ if present, else by index.
+  const tgtBySeq={};
+  tgt.forEach((t,i)=>{ if(t.seq) tgtBySeq[t.seq]=i; });
+  for(let i=0;i<src.length;i++){
+    const s=src[i];
+    let tgtIdx=(s.seq && tgtBySeq[s.seq]!=null) ? tgtBySeq[s.seq] : i;
+    if(tgtIdx>=tgt.length) tgtIdx=-1;
+    pairs.push({srcIdx:i, tgtIdx, enabled:tgtIdx>=0});
+  }
+  _replaceState.pairs=pairs;
+}
+
+function onReplacePairChange(idx, field, value){
+  const p=_replaceState.pairs[idx]; if(!p) return;
+  if(field==='tgt'){
+    p.tgtIdx=parseInt(value,10);
+    if(isNaN(p.tgtIdx)||p.tgtIdx<0) p.tgtIdx=-1;
+    p.enabled = p.enabled && p.tgtIdx>=0;
+  } else if(field==='enabled'){
+    p.enabled=!!value;
+  }
+}
+
+function setReplaceAllEnabled(on){
+  for(const p of _replaceState.pairs){
+    if(p.tgtIdx>=0) p.enabled=!!on;
+  }
+  renderAudioReplaceTool();
+}
+
+function setReplaceMediaType(v){
+  _replaceState.mediaType=v;
+}
+
+function _replaceLog(msg, kind='info'){
+  _replaceState.log.push({msg, kind, ts:Date.now()});
+  const lo=document.getElementById('rp_log');
+  if(lo){
+    const color=kind==='err'?'var(--red)':kind==='ok'?'var(--green)':'var(--text2)';
+    lo.innerHTML+=`<div style="color:${color};padding:2px 0">[${new Date().toLocaleTimeString()}] ${esc(msg)}</div>`;
+    lo.scrollTop=lo.scrollHeight;
+  }
+}
+
+async function _copyOneAudio(srcEp, tgtEp){
+  // 1. Source playback URL → download blob
+  const muResp=await fetch(`${CMS_BASE}/get_media_url?type=episode&media_type=audio&event=play&chapter_id=${srcEp.chapter_id}&show_id=${_replaceState.srcShowId}`, {headers:hdrs()});
+  if(!muResp.ok) throw new Error('source media URL HTTP '+muResp.status);
+  const muData=await muResp.json();
+  const playUrl=muData.result?.media_url||muData.media_url||muData.result?.url;
+  if(!playUrl) throw new Error('no playable URL on source response');
+  const dl=await fetch(playUrl);
+  if(!dl.ok) throw new Error('audio download HTTP '+dl.status);
+  const blob=await dl.blob();
+
+  // 2. Target presigned upload URL
+  const up=await fetch(`${CMS_BASE}/book.get_upload_url?chapter_id=${tgtEp.chapter_id}&book_id=${tgtEp.book_id}&is_novel=0&file_type=audio`, {headers:hdrs()});
+  if(!up.ok) throw new Error('target upload URL HTTP '+up.status);
+  const upData=await up.json();
+  const s3Url=upData.upload_url||upData.presigned_url||upData.url||upData.s3_url;
+  const fileKey=upData.file_key||upData.key||upData.s3_key;
+  if(!s3Url) throw new Error('no S3 URL in target response');
+
+  // 3. PUT to S3
+  const s3=await fetch(s3Url, {method:'PUT', body:blob, headers:{'Content-Type':'audio/wav'}});
+  if(!s3.ok) throw new Error('S3 PUT HTTP '+s3.status);
+
+  // 4. Notify CMS
+  const notify=await fetch(`${CMS_BASE}/book.update_chapter_media`, {
+    method:'POST', headers:hdrs(),
+    body:JSON.stringify({
+      chapter_id: tgtEp.chapter_id,
+      book_id: tgtEp.book_id,
+      file_key: fileKey,
+      is_novel: 0,
+      media_type: _replaceState.mediaType
+    })
+  });
+  if(!notify.ok) throw new Error('update_chapter_media HTTP '+notify.status);
+}
+
+async function runReplace(){
+  const enabled=_replaceState.pairs.filter(p=>p.enabled&&p.tgtIdx>=0);
+  if(!enabled.length){ toast('No pairs enabled','warn'); return; }
+  const msg=`Copy audio for ${enabled.length} episode(s) from\n  ${_replaceState.srcShowName} → ${_replaceState.tgtShowName}\nDestination slot: ${_replaceState.mediaType}\n\nProceed?`;
+  if(!confirm(msg)) return;
+  _replaceState.running=true;
+  _replaceState.log=[];
+  renderAudioReplaceTool();
+  _replaceLog(`Starting batch of ${enabled.length} copies…`);
+  let ok=0, fail=0;
+  for(let i=0;i<enabled.length;i++){
+    const p=enabled[i];
+    const s=_replaceState.srcEps[p.srcIdx];
+    const t=_replaceState.tgtEps[p.tgtIdx];
+    _replaceLog(`[${i+1}/${enabled.length}] Ep ${s.seq||'?'} src ${s.chapter_id.substring(0,8)}… → tgt ${t.chapter_id.substring(0,8)}…`);
+    try{
+      await _copyOneAudio(s, t);
+      ok++;
+      _replaceLog(`  ✓ copied`, 'ok');
+    }catch(e){
+      fail++;
+      _replaceLog(`  ✗ ${e.message}`, 'err');
+    }
+  }
+  _replaceLog(`Done — ${ok} succeeded, ${fail} failed`, fail?'err':'ok');
+  _replaceState.running=false;
+  toast(`Replace complete: ${ok}/${enabled.length} succeeded`, fail?'warn':'ok');
+}
+
+function renderAudioReplaceTool(){
+  const el=document.getElementById('replaceReport');
+  if(!el) return;
+  const st=_replaceState;
+  const enabledCount=st.pairs.filter(p=>p.enabled&&p.tgtIdx>=0).length;
+
+  let html=`<div style="margin-bottom:14px">
+    <div style="font-size:16px;font-weight:800">🔀 Audio Replace</div>
+    <div style="font-size:11px;color:var(--muted)">Copy audio from a Source show (live) into a Target show (to-be-recorded). Both shows must be in CMS and your auth token must be connected.</div>
+  </div>`;
+
+  if(!authToken||!uid){
+    html+=`<div style="padding:14px;background:#FFF8E1;border:1px solid #FFE082;border-radius:var(--r);font-size:11px;color:#92400e;margin-bottom:14px">
+      ⚠ CMS not connected. Use the "Connect PatchStudio" bookmarklet from the sidebar first.
+    </div>`;
+  }
+
+  html+=`<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px">
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:12px 14px">
+      <div style="font-size:12px;font-weight:700;margin-bottom:6px">Source (Live show — audio to copy FROM)</div>
+      <input class="inp" id="rp_srcInput" placeholder="show_id or CMS URL" value="${esc(st.srcShowId)}"/>
+      <div style="display:flex;gap:6px;margin-top:8px;align-items:center">
+        <button class="btn btn-p btn-sm" id="rp_srcLoad" onclick="loadReplaceSource()">Load Source</button>
+        <span style="font-family:var(--mono);font-size:10px;color:var(--muted)">${st.srcEps.length} episodes loaded</span>
+      </div>
+    </div>
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:12px 14px">
+      <div style="font-size:12px;font-weight:700;margin-bottom:6px">Target (To-be-recorded show — audio to copy INTO)</div>
+      <input class="inp" id="rp_tgtInput" placeholder="show_id or CMS URL" value="${esc(st.tgtShowId)}"/>
+      <div style="display:flex;gap:6px;margin-top:8px;align-items:center">
+        <button class="btn btn-p btn-sm" id="rp_tgtLoad" onclick="loadReplaceTarget()">Load Target</button>
+        <span style="font-family:var(--mono);font-size:10px;color:var(--muted)">${st.tgtEps.length} episodes loaded</span>
+      </div>
+    </div>
+  </div>`;
+
+  if(st.pairs.length){
+    html+=`<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:8px;flex-wrap:wrap">
+      <div style="font-size:13px;font-weight:800">Episode Pairing (${enabledCount} of ${st.pairs.length} enabled)</div>
+      <div style="display:flex;gap:6px;align-items:center;font-family:var(--mono);font-size:11px">
+        <span style="color:var(--muted)">Upload as:</span>
+        <select onchange="setReplaceMediaType(this.value)" style="font-size:11px;padding:4px 8px;border:1px solid var(--border);border-radius:6px">
+          <option value="raw_audio" ${st.mediaType==='raw_audio'?'selected':''}>raw_audio (To-Be-Recorded slot)</option>
+          <option value="final_audio" ${st.mediaType==='final_audio'?'selected':''}>final_audio (Live slot)</option>
+        </select>
+        <button class="btn btn-g btn-sm" onclick="setReplaceAllEnabled(true)">Check All</button>
+        <button class="btn btn-g btn-sm" onclick="setReplaceAllEnabled(false)">Uncheck All</button>
+        <button class="btn btn-orange btn-sm" onclick="runReplace()" ${st.running?'disabled':''}>${st.running?'Running…':`▶ Run Replace (${enabledCount})`}</button>
+      </div>
+    </div>
+    <div style="overflow-x:auto;background:var(--surface);border:1px solid var(--border);border-radius:var(--r);box-shadow:var(--shadow)">
+      <table style="border-collapse:collapse;width:100%;min-width:900px;font-size:11px;font-family:var(--mono)">
+        <thead><tr style="background:var(--surface2);border-bottom:2px solid var(--border)">
+          <th style="padding:6px 10px;text-align:center;width:40px">✓</th>
+          <th style="padding:6px 10px;text-align:left">Source Ep</th>
+          <th style="padding:6px 10px;text-align:left">Source Chapter</th>
+          <th style="padding:6px 10px;text-align:right">Duration</th>
+          <th style="padding:6px 10px;text-align:center">→</th>
+          <th style="padding:6px 10px;text-align:left">Target Ep</th>
+          <th style="padding:6px 10px;text-align:left">Target Chapter ID (override)</th>
+          <th style="padding:6px 10px;text-align:left">Tgt Status</th>
+        </tr></thead><tbody>`;
+    for(let i=0;i<st.pairs.length;i++){
+      const p=st.pairs[i];
+      const s=st.srcEps[p.srcIdx];
+      const t=p.tgtIdx>=0?st.tgtEps[p.tgtIdx]:null;
+      const dur=s.audio_duration?Math.round(s.audio_duration/60*10)/10:'—';
+      const rowBg=p.enabled?'':'background:var(--surface2);opacity:.55';
+      html+=`<tr style="border-bottom:1px solid var(--border);${rowBg}">
+        <td style="padding:4px 10px;text-align:center"><input type="checkbox" ${p.enabled?'checked':''} ${p.tgtIdx<0?'disabled':''} onchange="onReplacePairChange(${i},'enabled',this.checked); renderAudioReplaceTool()"/></td>
+        <td style="padding:4px 10px;font-weight:700">Ep ${s.seq||'?'}</td>
+        <td style="padding:4px 10px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(s.chapter_title)}">${esc(s.chapter_title||'').substring(0,40)}</td>
+        <td style="padding:4px 10px;text-align:right">${dur}${dur!=='—'?' min':''}</td>
+        <td style="padding:4px 10px;text-align:center;color:var(--accent);font-weight:700">→</td>
+        <td style="padding:4px 10px;font-weight:700">${t?`Ep ${t.seq||'?'}`:'<span style="color:var(--red)">(no pair)</span>'}</td>
+        <td style="padding:4px 10px">
+          <select onchange="onReplacePairChange(${i},'tgt',this.value); renderAudioReplaceTool()" style="font-size:10px;padding:3px 6px;border:1px solid var(--border);border-radius:5px;max-width:240px">
+            <option value="-1" ${p.tgtIdx<0?'selected':''}>— skip —</option>
+            ${st.tgtEps.map((te,ti)=>`<option value="${ti}" ${ti===p.tgtIdx?'selected':''}>Ep ${te.seq||'?'} · ${esc((te.chapter_title||'').substring(0,30))}</option>`).join('')}
+          </select>
+        </td>
+        <td style="padding:4px 10px;font-size:10px;color:var(--muted)">${esc(t?.chapter_status||t?.audio_status||'—')}</td>
+      </tr>`;
+    }
+    html+=`</tbody></table></div>`;
+
+    html+=`<div style="margin-top:12px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:10px 14px">
+      <div style="font-size:11px;font-weight:700;margin-bottom:6px">Execution log</div>
+      <div id="rp_log" style="max-height:240px;overflow-y:auto;font-family:var(--mono);font-size:10px;line-height:1.5;background:#0f172a;color:#cbd5e1;padding:8px 10px;border-radius:6px">${st.log.length?'':'<div style="color:#64748b">Waiting for Run Replace…</div>'}</div>
+    </div>`;
+  } else if(st.srcEps.length||st.tgtEps.length){
+    html+=`<div style="padding:16px;text-align:center;color:var(--muted);font-size:11px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r)">Load both shows to see the pairing table.</div>`;
+  }
+
+  el.innerHTML=html;
 }
 
 // ── Payments ────────────────────────────────────────────────
