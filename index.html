@@ -2391,6 +2391,21 @@ function _replaceLog(msg, kind='info'){
   }
 }
 
+// Read the actual playable duration of an audio blob client-side, the same
+// way CMS UI does after a file drop. Falls back to 0 if decoding fails.
+async function _audioBlobDuration(blob){
+  return new Promise(resolve=>{
+    const a=new Audio();
+    a.preload='metadata';
+    let resolved=false;
+    const done=v=>{ if(!resolved){ resolved=true; try{URL.revokeObjectURL(a.src);}catch{} resolve(v); } };
+    a.onloadedmetadata=()=>done(Math.round(a.duration||0));
+    a.onerror=()=>done(0);
+    a.src=URL.createObjectURL(blob);
+    setTimeout(()=>done(0), 8000);
+  });
+}
+
 async function _copyOneAudio(srcEp, tgtEp){
   // 1. Source media URL → download audio blob
   const muResp=await fetch(`${CMS_BASE}/get_media_url?type=episode&media_type=audio&event=play&chapter_id=${srcEp.chapter_id}&show_id=${_replaceState.srcShowId}`, {headers:hdrs()});
@@ -2401,11 +2416,18 @@ async function _copyOneAudio(srcEp, tgtEp){
   const dl=await fetch(playUrl);
   if(!dl.ok) throw new Error('audio download HTTP '+dl.status);
   const blob=await dl.blob();
+  if(!blob||blob.size<1024) throw new Error(`source blob is empty/tiny (${blob?blob.size:'0'} bytes) — source chapter may have no playable audio`);
+  _replaceLog(`  · downloaded ${(blob.size/1024).toFixed(1)} KB, type=${blob.type||'?'}`);
 
-  // 2. Fetch target's current episode details — book.update_episode expects
-  //    the full chapter_details + story_details objects echoed back (not a
-  //    partial patch). We patch the new s3_unique_key into story_details
-  //    before POSTing.
+  // 2. Compute true playable duration of the downloaded audio (matches what
+  //    CMS UI extracts client-side after a file drop).
+  let measuredDuration=await _audioBlobDuration(blob);
+  if(!measuredDuration) measuredDuration=srcEp.audio_duration||0;
+  if(!measuredDuration) throw new Error('could not determine duration of source audio (decode failed) — file may be DRM-protected');
+  _replaceLog(`  · measured duration: ${measuredDuration}s`);
+
+  // 3. Fetch target's current episode details — book.update_episode expects
+  //    the full chapter_details + story_details objects echoed back.
   const detailsResp=await fetch(`${CMS_BASE}/book.episode_details?chapter_id=${tgtEp.chapter_id}&is_novel=0`, {headers:hdrs()});
   if(!detailsResp.ok) throw new Error('target episode_details HTTP '+detailsResp.status);
   const detailsData=await detailsResp.json();
@@ -2413,7 +2435,7 @@ async function _copyOneAudio(srcEp, tgtEp){
   const tgtStory=detailsData.result?.story_details;
   if(!tgtChapter||!tgtStory) throw new Error('target episode_details missing chapter/story info');
 
-  // 3. Presigned S3 POST policy
+  // 4. Presigned S3 POST policy
   const ext=(blob.type||'').includes('wav')?'wav':'mp3';
   const title=encodeURIComponent(tgtChapter.chapter_title||tgtEp.chapter_title||'audio');
   const presignURL=`https://api.cms.pocketfm.com/v2/upload/get_presigned_url?tags=media&image_extension=${ext}&title=${title}&chapter_id=${tgtEp.chapter_id}`;
@@ -2422,31 +2444,28 @@ async function _copyOneAudio(srcEp, tgtEp){
   const upData=await up.json();
   const policy=upData.result?.[0];
   if(!policy||!policy.url||!policy.fields) throw new Error('no S3 policy in upload response');
+  _replaceLog(`  · presigned s3_unique_key: ${policy.s3_unique_key}`);
 
-  // 4. POST multipart to S3 — fields first, file last (presigned POST contract)
+  // 5. POST multipart to S3 — fields first, file last
   const fd=new FormData();
   for(const [k,v] of Object.entries(policy.fields)) fd.append(k,v);
   fd.append('file', blob, policy.fields.key||`audio.${ext}`);
   const s3=await fetch(policy.url, {method:'POST', body:fd});
   if(!s3.ok) throw new Error('S3 POST HTTP '+s3.status);
+  _replaceLog(`  · S3 upload OK (HTTP ${s3.status})`);
 
-  // 5. Commit via book.update_episode — echo full state with patched
-  //    story_details.s3_unique_key AND updated audio_duration values so CMS
-  //    treats this as a real audio change (not just a metadata touch).
-  //    Side-by-side diff of CMS UI's working payload vs ours showed that on
-  //    a successful replace CMS also updates chapter_details.audio_duration
-  //    and story_details.duration to the new audio's length.
-  const newDuration=srcEp.audio_duration||tgtChapter.audio_duration||0;
+  // 6. Commit via book.update_episode — patch s3_unique_key + true audio
+  //    duration so CMS treats this as a real audio change.
   const cmsNow=()=>{const d=new Date(),p=n=>String(n).padStart(2,'0');return `${d.getUTCFullYear()}-${p(d.getUTCMonth()+1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`;};
   const updatedChapter={
     ...tgtChapter,
-    audio_duration: newDuration,
+    audio_duration: measuredDuration,
     media_timestamp: cmsNow()
   };
   const updatedStory={
     ...tgtStory,
     s3_unique_key: policy.s3_unique_key,
-    duration: newDuration
+    duration: measuredDuration
   };
   const notify=await fetch(`${CMS_BASE}/book.update_episode?is_novel=0`, {
     method:'POST', headers:hdrs(),
@@ -2458,7 +2477,18 @@ async function _copyOneAudio(srcEp, tgtEp){
       view: 'cms'
     })
   });
-  if(!notify.ok) throw new Error('book.update_episode HTTP '+notify.status);
+  if(!notify.ok){
+    const errText=await notify.text().catch(()=>'');
+    throw new Error('book.update_episode HTTP '+notify.status+' — '+errText.substring(0,200));
+  }
+  // Log what CMS persisted so we can diagnose any "ok but no replacement" case
+  try{
+    const notifyData=await notify.json();
+    const persistedKey=notifyData.result?.story_details?.s3_unique_key||'?';
+    const persistedDur=notifyData.result?.chapter_details?.audio_duration||'?';
+    _replaceLog(`  · CMS persisted: s3=${persistedKey} duration=${persistedDur}`);
+    if(persistedKey!==policy.s3_unique_key) _replaceLog(`  ⚠ CMS kept the OLD s3_unique_key — not bound to our upload`, 'err');
+  }catch{}
 }
 
 async function runReplace(){
