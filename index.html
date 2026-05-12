@@ -260,6 +260,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
     <button class="btn btn-g btn-sm" onclick="goPage('prod')" style="width:100%;margin-bottom:4px;justify-content:flex-start">📊 SE Productivity</button>
     <button class="btn btn-g btn-sm" onclick="goPage('proof')" style="width:100%;margin-bottom:4px;justify-content:flex-start">👂 Proof Listeners</button>
     <button class="btn btn-g btn-sm" onclick="goPage('pay')" style="width:100%;margin-bottom:4px;justify-content:flex-start">💰 Payments</button>
+    <button class="btn btn-g btn-sm" onclick="goPage('analytics')" style="width:100%;margin-bottom:4px;justify-content:flex-start">📈 Error Analytics</button>
     <div style="margin-top:10px;padding:10px;background:var(--surface2);border-radius:7px">
       <label class="fl" style="margin-bottom:3px">Logged in as (SE/QC)</label>
       <input class="inp" id="currentUserInp" placeholder="e.g. Marine" style="font-size:11px" oninput="setCurrentUser(this.value)"/>
@@ -338,6 +339,21 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
       <div><label class="fl" style="margin-bottom:3px">Voice Type</label>
         <select class="inp" id="m_voicetype"><option value="standard">Standard</option><option value="expressive">Expressive</option></select>
       </div>
+      <div><label class="fl" style="margin-bottom:3px">Genre <span style="font-weight:400;color:var(--muted);font-size:10px">(used by Error Analytics)</span></label>
+        <input class="inp" id="m_genre" placeholder="e.g. Fantasy / Romance / Sci-Fi / Mystery" list="genreSuggestions"/>
+        <datalist id="genreSuggestions">
+          <option value="Fantasy"/>
+          <option value="Romance"/>
+          <option value="Sci-Fi"/>
+          <option value="Mystery"/>
+          <option value="Thriller"/>
+          <option value="Drama"/>
+          <option value="Horror"/>
+          <option value="Comedy"/>
+          <option value="Action"/>
+          <option value="Adventure"/>
+        </datalist>
+      </div>
     </div>
     <div style="display:flex;gap:8px;margin-top:18px">
       <button class="btn btn-p" style="flex:1" onclick="saveShow()">Save Show</button>
@@ -407,6 +423,10 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
     <!-- PAGE: Payments -->
     <div class="pg" id="page-pay">
       <div id="payReport"></div>
+    </div>
+    <!-- PAGE: Error Analytics -->
+    <div class="pg" id="page-analytics">
+      <div id="analyticsReport"></div>
     </div>
     <!-- PAGE: Dictionary -->
     <div class="pg" id="page-dict">
@@ -741,6 +761,12 @@ function goPage(name){
     genBtn.style.display='none';
     stitchBtn.style.display='none';
     renderPaymentReport();
+  } else if(name==='analytics'){
+    back.style.display='inline-flex';
+    document.getElementById('topTitle').textContent='Error Analytics';
+    genBtn.style.display='none';
+    stitchBtn.style.display='none';
+    renderErrorAnalytics();
   } else if(name==='dict'){
     back.style.display='inline-flex';
     document.getElementById('topTitle').textContent='Mispronunciation Dictionary';
@@ -763,6 +789,7 @@ function goBack(){
   else if(currentPage==='prod') goPage('dashboard');
   else if(currentPage==='proof') goPage('dashboard');
   else if(currentPage==='pay') goPage('dashboard');
+  else if(currentPage==='analytics') goPage('dashboard');
 }
 
 // ── Sidebar Nav ─────────────────────────────────────────────
@@ -1879,6 +1906,261 @@ async function removeProofListener(name){
   const cur=(await dbRef('proofListeners/'+k).once('value')).val()||{};
   await dbRef('proofListeners/'+k).set({...cur, name, hidden:true});
   renderProofListenersReport();
+}
+
+// ── Error Analytics ─────────────────────────────────────────
+let _analyticsView='voice'; // 'voice' | 'show' | 'genre'
+let _analyticsExpanded={}; // { rowKey: true }
+
+function setAnalyticsView(v){
+  _analyticsView=v;
+  _analyticsExpanded={};
+  renderErrorAnalytics();
+}
+function toggleAnalyticsRow(key){
+  _analyticsExpanded[key]=!_analyticsExpanded[key];
+  renderErrorAnalytics();
+}
+
+async function renderErrorAnalytics(){
+  const el=document.getElementById('analyticsReport');
+  el.innerHTML='<div style="font-size:12px;color:var(--muted);padding:12px">Loading error analytics...</div>';
+  try{
+    const [remSnap, epsSnap]=await Promise.all([
+      dbRef('episodeRemarks').once('value'),
+      dbRef('showEpisodes').once('value')
+    ]);
+    const allRem=remSnap.val()||{};
+    const allEps=epsSnap.val()||{};
+
+    // Build chapId → {showName, showId, voiceName, voiceGender, genre, seq, duration}
+    const epMeta={};
+    for(const [showId, eps] of Object.entries(allEps)){
+      const epArr=Array.isArray(eps)?eps:Object.values(eps||{});
+      const showConfig=shows.find(s=>{
+        const sid=s.showInput?.match(/show_id=([a-f0-9]+)/i)?.[1]||s.showInput||'';
+        return sid===showId;
+      });
+      const showName=showConfig?.name||showId;
+      const voiceName=showConfig?.voiceName||'Unknown';
+      const voiceGender=showConfig?.voiceGender||'';
+      const genre=(showConfig?.genre||'').trim()||'Untagged';
+      for(const ep of epArr){
+        if(!ep||!ep.chapter_id) continue;
+        epMeta[ep.chapter_id]={
+          showName, showId, voiceName, voiceGender, genre,
+          seq:ep.natural_sequence_number||ep.seq||0,
+          duration:ep.audio_duration||0
+        };
+      }
+    }
+
+    // Aggregate remarks. Each remark contributes to one row of the active view.
+    function pickKey(meta){
+      if(_analyticsView==='voice') return meta.voiceName||'Unknown';
+      if(_analyticsView==='genre') return meta.genre||'Untagged';
+      return meta.showName||meta.showId;
+    }
+
+    const rows={}; // rowKey → { key, label, sub, episodes:Set<chapId>, totalErrors, byType:{}, byEp:{chapId:{seq,count}} }
+    function getRow(key, meta){
+      if(!rows[key]) rows[key]={
+        key, label:key,
+        sub: _analyticsView==='voice'
+              ? `${meta.voiceGender||'—'} · ${countShowsForVoice(key)} show(s)`
+              : _analyticsView==='genre'
+                ? `${countShowsForGenre(key)} show(s)`
+                : `Voice: ${meta.voiceName||'—'}`,
+        episodes:new Set(),
+        totalErrors:0, byType:{},
+        byEp:{}
+      };
+      return rows[key];
+    }
+    function countShowsForVoice(v){
+      const set=new Set();
+      for(const m of Object.values(epMeta)) if((m.voiceName||'Unknown')===v) set.add(m.showId);
+      return set.size;
+    }
+    function countShowsForGenre(g){
+      const set=new Set();
+      for(const m of Object.values(epMeta)) if((m.genre||'Untagged')===g) set.add(m.showId);
+      return set.size;
+    }
+
+    for(const [chapId, epData] of Object.entries(allRem)){
+      if(!epData?.remarks) continue;
+      const remarks=Array.isArray(epData.remarks)?epData.remarks:Object.values(epData.remarks||{});
+      const meta=epMeta[chapId]||{showName:'Unknown', showId:epData.showId||'?', voiceName:'Unknown', voiceGender:'', genre:'Untagged', seq:0, duration:0};
+      const key=pickKey(meta);
+      const row=getRow(key, meta);
+      row.episodes.add(chapId);
+      if(!row.byEp[chapId]) row.byEp[chapId]={seq:meta.seq||0, count:0, showName:meta.showName};
+      for(const r of remarks){
+        if(!r) continue;
+        const type=(r.issueType||'Unknown').trim()||'Unknown';
+        row.totalErrors++;
+        row.byType[type]=(row.byType[type]||0)+1;
+        row.byEp[chapId].count++;
+      }
+    }
+
+    // Compute trend: split episodes (sorted by seq) into halves, compare avg errors/ep.
+    for(const row of Object.values(rows)){
+      const eps=Object.values(row.byEp).sort((a,b)=>(a.seq||0)-(b.seq||0));
+      row.epCount=eps.length;
+      row.errPerEp=eps.length?row.totalErrors/eps.length:0;
+      if(eps.length>=4){
+        const mid=Math.floor(eps.length/2);
+        const firstHalf=eps.slice(0,mid);
+        const secondHalf=eps.slice(mid);
+        const avg=arr=>arr.length?arr.reduce((s,x)=>s+x.count,0)/arr.length:0;
+        row.firstAvg=avg(firstHalf);
+        row.secondAvg=avg(secondHalf);
+        const diff=row.secondAvg-row.firstAvg;
+        row.trendDelta=diff;
+        row.trendPct=row.firstAvg?Math.round((diff/row.firstAvg)*100):0;
+        row.trendDir=diff<-0.5?'down':diff>0.5?'up':'flat';
+      } else {
+        row.trendDir='insufficient';
+      }
+    }
+
+    const rowArr=Object.values(rows).sort((a,b)=>b.totalErrors-a.totalErrors);
+
+    // Aggregate categories across all rows for column ordering
+    const allTypes=new Set();
+    for(const r of rowArr) for(const t of Object.keys(r.byType)) allTypes.add(t);
+    const typeArr=[...allTypes].sort((a,b)=>{
+      const ca=rowArr.reduce((s,r)=>s+(r.byType[a]||0),0);
+      const cb=rowArr.reduce((s,r)=>s+(r.byType[b]||0),0);
+      return cb-ca;
+    });
+    const topTypes=typeArr.slice(0,6);
+
+    // ── Render ──
+    const tabBtn=(v,label)=>`<button class="btn ${_analyticsView===v?'btn-p':'btn-g'} btn-sm" onclick="setAnalyticsView('${v}')">${label}</button>`;
+
+    let html=`<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:14px">
+      <div>
+        <div style="font-size:16px;font-weight:800">Error Analytics</div>
+        <div style="font-size:11px;color:var(--muted)">Frequency, category and progression of QC errors. Trend compares first half vs second half of episodes by sequence.</div>
+      </div>
+      <div style="display:flex;gap:6px">${tabBtn('voice','By Voice')} ${tabBtn('show','By Show')} ${tabBtn('genre','By Genre')}</div>
+    </div>`;
+
+    if(_analyticsView==='genre'){
+      const tagged=shows.filter(s=>(s.genre||'').trim()).length;
+      if(!tagged){
+        html+=`<div style="padding:16px;background:#FFF8E1;border:1px solid #FFE082;border-radius:var(--r);font-size:11px;color:#92400e;margin-bottom:14px">
+          📋 No shows have a Genre set yet. Open any show via Edit → fill the new "Genre" field to populate this view. Untagged shows are grouped under "Untagged".
+        </div>`;
+      }
+    }
+
+    if(!rowArr.length){
+      html+=`<div style="padding:24px;text-align:center;color:var(--muted);background:var(--surface);border:1px solid var(--border);border-radius:var(--r)">
+        <div style="font-size:36px;margin-bottom:8px">📈</div>
+        <div style="font-weight:700;margin-bottom:4px">No QC data available yet</div>
+        <div style="font-size:11px">Load episodes from CMS first — error analytics derives from the episodeRemarks node.</div>
+      </div>`;
+      el.innerHTML=html;
+      return;
+    }
+
+    const grandTotal=rowArr.reduce((s,r)=>s+r.totalErrors,0);
+    const grandEps=rowArr.reduce((s,r)=>s+r.epCount,0);
+    html+=`<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">
+      <div style="flex:1;min-width:140px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:10px 14px">
+        <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:1px">Rows</div>
+        <div style="font-size:20px;font-weight:800">${rowArr.length}</div>
+      </div>
+      <div style="flex:1;min-width:140px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:10px 14px">
+        <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:1px">Total Errors</div>
+        <div style="font-size:20px;font-weight:800;color:var(--orange)">${grandTotal}</div>
+      </div>
+      <div style="flex:1;min-width:140px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:10px 14px">
+        <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:1px">Episodes Covered</div>
+        <div style="font-size:20px;font-weight:800">${grandEps}</div>
+      </div>
+      <div style="flex:1;min-width:140px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:10px 14px">
+        <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:1px">Avg Errors/Ep</div>
+        <div style="font-size:20px;font-weight:800">${grandEps?(grandTotal/grandEps).toFixed(1):'—'}</div>
+      </div>
+    </div>`;
+
+    const trendBadge=(r)=>{
+      if(r.trendDir==='insufficient') return '<span style="font-size:9px;color:var(--muted)">—</span>';
+      if(r.trendDir==='down') return `<span style="font-size:10px;font-weight:700;color:var(--green)" title="Errors per ep: ${r.firstAvg.toFixed(1)} → ${r.secondAvg.toFixed(1)}">↓ ${Math.abs(r.trendPct)}%</span>`;
+      if(r.trendDir==='up')   return `<span style="font-size:10px;font-weight:700;color:var(--red)" title="Errors per ep: ${r.firstAvg.toFixed(1)} → ${r.secondAvg.toFixed(1)}">↑ ${r.trendPct}%</span>`;
+      return `<span style="font-size:10px;font-weight:700;color:var(--muted)" title="Errors per ep: ${r.firstAvg.toFixed(1)} → ${r.secondAvg.toFixed(1)}">→ flat</span>`;
+    };
+
+    html+=`<div style="overflow-x:auto;background:var(--surface);border:1px solid var(--border);border-radius:var(--r);box-shadow:var(--shadow)">
+      <table style="border-collapse:collapse;width:100%;min-width:900px">
+        <thead><tr style="background:var(--surface2);border-bottom:2px solid var(--border);font-size:11px">
+          <th style="padding:8px 10px;text-align:left">${_analyticsView==='voice'?'Voice':_analyticsView==='genre'?'Genre':'Show'}</th>
+          <th style="padding:8px 10px;text-align:right">Episodes</th>
+          <th style="padding:8px 10px;text-align:right">Total Errors</th>
+          <th style="padding:8px 10px;text-align:right;background:#FFF3E0">Errors/Ep</th>
+          <th style="padding:8px 10px;text-align:center">Trend</th>
+          ${topTypes.map(t=>`<th style="padding:8px 10px;text-align:right;font-size:10px">${esc(t)}</th>`).join('')}
+          <th style="padding:8px 6px;text-align:center;width:30px"></th>
+        </tr></thead><tbody>`;
+
+    for(const r of rowArr){
+      const expanded=!!_analyticsExpanded[r.key];
+      html+=`<tr style="border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px;cursor:pointer" onclick="toggleAnalyticsRow('${esc(r.key).replace(/'/g,"\\'")}')">
+        <td style="padding:6px 10px;font-weight:700;font-family:var(--sans)">${esc(r.label)}<div style="font-size:9px;color:var(--muted);font-family:var(--mono);font-weight:400">${esc(r.sub||'')}</div></td>
+        <td style="padding:6px 10px;text-align:right">${r.epCount}</td>
+        <td style="padding:6px 10px;text-align:right;font-weight:700;color:var(--orange)">${r.totalErrors}</td>
+        <td style="padding:6px 10px;text-align:right;font-weight:700;background:#FFF3E0">${r.errPerEp.toFixed(1)}</td>
+        <td style="padding:6px 10px;text-align:center">${trendBadge(r)}</td>
+        ${topTypes.map(t=>{const c=r.byType[t]||0; const p=r.totalErrors?Math.round(c/r.totalErrors*100):0; return `<td style="padding:6px 10px;text-align:right;${c?'color:var(--red);font-weight:700':'color:var(--muted)'}">${c}${c?`<span style="font-weight:400;font-size:9px;color:var(--muted);margin-left:3px">${p}%</span>`:''}</td>`;}).join('')}
+        <td style="padding:6px 6px;text-align:center;color:var(--muted)">${expanded?'▾':'▸'}</td>
+      </tr>`;
+      if(expanded){
+        // Sparkline-like progression: errors per episode by seq
+        const eps=Object.values(r.byEp).sort((a,b)=>(a.seq||0)-(b.seq||0));
+        const maxCount=Math.max(1, ...eps.map(e=>e.count));
+        const barW=Math.max(6, Math.min(20, Math.floor(600/Math.max(eps.length,1))));
+        html+=`<tr style="background:var(--surface2)"><td colspan="${6+topTypes.length}" style="padding:14px 16px">
+          <div style="font-size:10px;color:var(--muted);font-family:var(--mono);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">Errors per Episode (sorted by sequence)</div>
+          <div style="display:flex;align-items:flex-end;gap:2px;height:80px;border-bottom:1px solid var(--border);padding-bottom:2px">
+            ${eps.map(e=>{
+              const h=Math.max(2, Math.round(e.count/maxCount*72));
+              const tt=`Ep ${e.seq||'—'}${_analyticsView!=='show'?' · '+esc(e.showName||''):''}: ${e.count} error(s)`;
+              return `<div title="${tt}" style="width:${barW}px;height:${h}px;background:${e.count>r.errPerEp*1.5?'var(--red)':e.count>r.errPerEp?'var(--orange)':'var(--accent)'};border-radius:2px 2px 0 0"></div>`;
+            }).join('')}
+          </div>
+          <div style="display:flex;justify-content:space-between;margin-top:6px;font-size:9px;color:var(--muted);font-family:var(--mono)">
+            <span>Ep ${eps[0]?.seq||'—'}</span>
+            <span>${eps.length} episodes · max ${maxCount} err/ep · avg ${r.errPerEp.toFixed(1)}</span>
+            <span>Ep ${eps[eps.length-1]?.seq||'—'}</span>
+          </div>
+          <div style="margin-top:10px;font-size:10px;font-family:var(--mono);color:var(--muted);display:flex;gap:14px;flex-wrap:wrap">
+            <span><span style="display:inline-block;width:10px;height:10px;background:var(--accent);border-radius:2px;vertical-align:middle"></span> below average</span>
+            <span><span style="display:inline-block;width:10px;height:10px;background:var(--orange);border-radius:2px;vertical-align:middle"></span> above average</span>
+            <span><span style="display:inline-block;width:10px;height:10px;background:var(--red);border-radius:2px;vertical-align:middle"></span> >1.5× average</span>
+          </div>
+          ${r.trendDir!=='insufficient'?`<div style="margin-top:10px;font-size:11px;font-family:var(--mono)">
+            First half avg: <strong>${r.firstAvg.toFixed(2)}</strong> err/ep → Second half avg: <strong>${r.secondAvg.toFixed(2)}</strong> err/ep
+            <span style="margin-left:10px;color:${r.trendDir==='down'?'var(--green)':r.trendDir==='up'?'var(--red)':'var(--muted)'};font-weight:700">${r.trendDir==='down'?'Reduction':r.trendDir==='up'?'Increase':'Flat'} of ${Math.abs(r.trendPct)}%</span>
+          </div>`:''}
+        </td></tr>`;
+      }
+    }
+    html+=`</tbody></table></div>`;
+
+    html+=`<div style="margin-top:10px;font-size:10px;color:var(--muted);font-family:var(--mono);line-height:1.6">
+      Click any row to expand its episode-by-episode error chart. Trend = (second-half avg − first-half avg) / first-half avg.
+    </div>`;
+
+    el.innerHTML=html;
+  }catch(e){
+    console.error('Error analytics failed:',e);
+    el.innerHTML=`<div style="color:var(--red);padding:12px">Failed: ${esc(e.message)}</div>`;
+  }
 }
 
 // ── Payments ────────────────────────────────────────────────
@@ -3155,6 +3437,7 @@ function openAddShow(){
   document.getElementById('m_voicename').value = '';
   document.getElementById('m_voicegender').value = '';
   document.getElementById('m_voicetype').value = 'standard';
+  const ge=document.getElementById('m_genre'); if(ge) ge.value='';
   onTtsProviderChange();
   document.getElementById('addShowModal').style.display = 'flex';
 }
@@ -3175,6 +3458,7 @@ function editShow(id){
   document.getElementById('m_voicename').value = s.voiceName||'';
   document.getElementById('m_voicegender').value = s.voiceGender||'';
   document.getElementById('m_voicetype').value = s.voiceType||'standard';
+  const ge=document.getElementById('m_genre'); if(ge) ge.value=s.genre||'';
   onTtsProviderChange();
   document.getElementById('addShowModal').style.display = 'flex';
 }
@@ -3191,11 +3475,12 @@ async function saveShow(){
   const voiceName = document.getElementById('m_voicename').value.trim();
   const voiceGender = document.getElementById('m_voicegender').value;
   const voiceType = document.getElementById('m_voicetype').value;
+  const genre = (document.getElementById('m_genre')?.value||'').trim();
   if(!name||!showInput){ toast('Name and Show ID are required','warn'); return; }
   // API keys are no longer required in the show config — the Cloudflare
   // Worker proxy holds them server-side. The fields are kept for backward
   // compat but can be empty.
-  const baseFields = { name, showInput, ttsProvider, asKey:asKeyVal, elKey, elModel, voiceId, voiceName, voiceGender, voiceType };
+  const baseFields = { name, showInput, ttsProvider, asKey:asKeyVal, elKey, elModel, voiceId, voiceName, voiceGender, voiceType, genre };
   if(editId){
     const show = shows.find(x=>x.id==editId) || {};
     const updated = {...show, ...baseFields};
