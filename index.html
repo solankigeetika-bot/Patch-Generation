@@ -2412,15 +2412,27 @@ async function _copyOneAudio(srcEp, tgtEp){
 
   // 3. POST multipart/form-data to S3 — every field from `fields` goes first,
   //    then the file last (S3 requires this exact order for presigned POST).
-  //    CMS associates this upload with the chapter_id that was passed in step
-  //    2, so no separate "notify CMS" call is needed — the 204 from S3 is the
-  //    completion signal. The slot it lands in (typically raw_audio /
-  //    to-be-recorded) is determined by CMS server-side.
   const fd=new FormData();
   for(const [k,v] of Object.entries(policy.fields)) fd.append(k,v);
   fd.append('file', blob, policy.fields.key||`audio.${ext}`);
   const s3=await fetch(policy.url, {method:'POST', body:fd});
   if(!s3.ok) throw new Error('S3 POST HTTP '+s3.status);
+
+  // 4. Notify CMS via book.update_episode so it commits the new audio
+  //    against the chapter. This is the same call CMS UI makes after its
+  //    own upload widget finishes.
+  const notify=await fetch(`${CMS_BASE}/book.update_episode?is_novel=0`, {
+    method:'POST', headers:hdrs(),
+    body:JSON.stringify({
+      chapter_id: tgtEp.chapter_id,
+      book_id: tgtEp.book_id,
+      s3_unique_key: policy.s3_unique_key,
+      raw_audio_upload_uid: policy.s3_unique_key,
+      audio_url: policy.s3_unique_key,
+      title: tgtEp.chapter_title||''
+    })
+  });
+  if(!notify.ok) throw new Error('book.update_episode HTTP '+notify.status);
 }
 
 async function runReplace(){
