@@ -2412,33 +2412,21 @@ async function _copyOneAudio(srcEp, tgtEp){
 
   // 3. POST multipart/form-data to S3 — every field from `fields` goes first,
   //    then the file last (S3 requires this exact order for presigned POST).
+  //    CMS associates this upload with the chapter_id that was passed in step
+  //    2, so no separate "notify CMS" call is needed — the 204 from S3 is the
+  //    completion signal. The slot it lands in (typically raw_audio /
+  //    to-be-recorded) is determined by CMS server-side.
   const fd=new FormData();
   for(const [k,v] of Object.entries(policy.fields)) fd.append(k,v);
   fd.append('file', blob, policy.fields.key||`audio.${ext}`);
   const s3=await fetch(policy.url, {method:'POST', body:fd});
   if(!s3.ok) throw new Error('S3 POST HTTP '+s3.status);
-
-  // 4. Notify CMS — using book.update_chapter_media with the s3_unique_key
-  //    from the policy response. If this endpoint 404s, capture the real
-  //    notify endpoint from the network tab (it fires right after the S3 POST).
-  const notify=await fetch(`${CMS_BASE}/book.update_chapter_media`, {
-    method:'POST', headers:hdrs(),
-    body:JSON.stringify({
-      chapter_id: tgtEp.chapter_id,
-      book_id: tgtEp.book_id,
-      file_key: policy.s3_unique_key,
-      s3_unique_key: policy.s3_unique_key,
-      is_novel: 0,
-      media_type: _replaceState.tgtSlot
-    })
-  });
-  if(!notify.ok) throw new Error('update_chapter_media HTTP '+notify.status);
 }
 
 async function runReplace(){
   const enabled=_replaceState.pairs.filter(p=>p.enabled&&p.tgtIdx>=0);
   if(!enabled.length){ toast('No pairs enabled','warn'); return; }
-  const msg=`Copy audio for ${enabled.length} episode(s) from\n  ${_replaceState.srcShowName} (read from: ${_replaceState.srcSlot}) → ${_replaceState.tgtShowName} (write to: ${_replaceState.tgtSlot})\n\nProceed?`;
+  const msg=`Copy audio for ${enabled.length} episode(s) from\n  ${_replaceState.srcShowName} → ${_replaceState.tgtShowName}\n\nCMS decides which slot the audio lands in (typically the To-Be-Recorded slot for chapter audio uploads). Verify in CMS after the run.\n\nProceed?`;
   if(!confirm(msg)) return;
   _replaceState.running=true;
   _replaceState.log=[];
@@ -2488,12 +2476,6 @@ function renderAudioReplaceTool(){
       <div style="display:flex;gap:6px;margin-top:8px;align-items:center;flex-wrap:wrap">
         <button class="btn btn-p btn-sm" id="rp_srcLoad" onclick="loadReplaceSource()">Load Source</button>
         <span style="font-family:var(--mono);font-size:10px;color:var(--muted)">${st.srcEps.length} loaded</span>
-        <span style="font-family:var(--mono);font-size:10px;color:var(--muted);margin-left:auto">slot:</span>
-        <select onchange="setReplaceSrcSlot(this.value)" style="font-size:10px;padding:3px 6px;border:1px solid var(--border);border-radius:5px">
-          <option value="raw_audio" ${st.srcSlot==='raw_audio'?'selected':''}>raw_audio (to-be-recorded)</option>
-          <option value="rm_audio" ${st.srcSlot==='rm_audio'?'selected':''}>rm_audio (remixed)</option>
-          <option value="final_audio" ${st.srcSlot==='final_audio'?'selected':''}>final_audio (live)</option>
-        </select>
       </div>
     </div>
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:12px 14px">
@@ -2502,12 +2484,6 @@ function renderAudioReplaceTool(){
       <div style="display:flex;gap:6px;margin-top:8px;align-items:center;flex-wrap:wrap">
         <button class="btn btn-p btn-sm" id="rp_tgtLoad" onclick="loadReplaceTarget()">Load Target</button>
         <span style="font-family:var(--mono);font-size:10px;color:var(--muted)">${st.tgtEps.length} loaded</span>
-        <span style="font-family:var(--mono);font-size:10px;color:var(--muted);margin-left:auto">slot:</span>
-        <select onchange="setReplaceTgtSlot(this.value)" style="font-size:10px;padding:3px 6px;border:1px solid var(--border);border-radius:5px">
-          <option value="final_audio" ${st.tgtSlot==='final_audio'?'selected':''}>final_audio (live)</option>
-          <option value="raw_audio" ${st.tgtSlot==='raw_audio'?'selected':''}>raw_audio (to-be-recorded)</option>
-          <option value="rm_audio" ${st.tgtSlot==='rm_audio'?'selected':''}>rm_audio (remixed)</option>
-        </select>
       </div>
     </div>
   </div>`;
@@ -2518,7 +2494,6 @@ function renderAudioReplaceTool(){
     html+=`<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;gap:8px;flex-wrap:wrap">
       <div style="font-size:13px;font-weight:800">Episode Pairing (${visibleEnabled} of ${visiblePairs.length} shown · ${enabledCount} total enabled)</div>
       <div style="display:flex;gap:6px;align-items:center;font-family:var(--mono);font-size:11px">
-        <span style="color:var(--muted)">${esc(st.srcSlot)} → ${esc(st.tgtSlot)}</span>
         <button class="btn btn-g btn-sm" onclick="setReplaceAllEnabled(true)">Check All</button>
         <button class="btn btn-g btn-sm" onclick="setReplaceAllEnabled(false)">Uncheck All</button>
         <button class="btn btn-orange btn-sm" onclick="runReplace()" ${st.running?'disabled':''}>${st.running?'Running…':`▶ Run Replace (${enabledCount})`}</button>
