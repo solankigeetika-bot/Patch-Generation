@@ -2201,13 +2201,17 @@ function _parseShowId(input){
 }
 
 async function _fetchEpisodesFor(showId){
-  // Different shows use different "view" filters. Try the known/likely ones
-  // in parallel and merge — covers live shows (view=cms with pagination),
-  // QC shows (sometimes a different view), and odd configurations.
-  async function fetchView(viewParam){
+  // CMS uses two pagination flavours depending on the section:
+  //   • Live section: ?view=cms&page_no=N (next_url drives continuation)
+  //   • To-be-recorded section: ?view=cms&paginate_chapters=true&page_no=N
+  // Run both in parallel and merge so either / both surface.
+  async function fetchPaginated(viewParam, useChapterPaginate){
     let eps=[]; let page=1; let firstStatus=200;
     while(page<=500){
-      const url=`${CMS_BASE}/book.show_episodes?show_id=${showId}${viewParam?`&view=${viewParam}`:''}&is_novel=0&page_no=${page}`;
+      const params=[`show_id=${showId}`,'is_novel=0',`page_no=${page}`];
+      if(viewParam) params.push(`view=${viewParam}`);
+      if(useChapterPaginate) params.push('paginate_chapters=true');
+      const url=`${CMS_BASE}/book.show_episodes?${params.join('&')}`;
       let r;
       try{ r=await fetch(url, {headers:hdrs()}); }catch(e){ break; }
       if(!r.ok){ if(page===1) firstStatus=r.status; break; }
@@ -2220,12 +2224,20 @@ async function _fetchEpisodesFor(showId){
     }
     return {eps, firstStatus};
   }
-  const viewVariants=['cms','', 'qc','pending','live'];
-  const results=await Promise.all(viewVariants.map(v=>fetchView(v)));
+  const attempts=[
+    ['cms', false], // live section flavour
+    ['cms', true],  // to-be-recorded section flavour
+    ['',    false],
+    ['',    true]
+  ];
+  const results=await Promise.all(attempts.map(([v,c])=>fetchPaginated(v,c)));
   const combined=results.flatMap(r=>r.eps);
   if(!combined.length){
-    const codes=results.map((r,i)=>`${viewVariants[i]||'(none)'}=${r.firstStatus}`).join(', ');
-    throw new Error(`CMS — no episodes returned across views (${codes})`);
+    const codes=results.map((r,i)=>{
+      const [v,c]=attempts[i];
+      return `${v||'(none)'}${c?'+chapPag':''}=${r.firstStatus}`;
+    }).join(', ');
+    throw new Error(`CMS — no episodes returned across attempts (${codes})`);
   }
   // Dedupe by chapter_id, preserve first occurrence
   const seen=new Set();
