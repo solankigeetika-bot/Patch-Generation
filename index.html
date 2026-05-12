@@ -2426,14 +2426,16 @@ async function _copyOneAudio(srcEp, tgtEp){
   if(!measuredDuration) throw new Error('could not determine duration of source audio (decode failed) — file may be DRM-protected');
   _replaceLog(`  · measured duration: ${measuredDuration}s`);
 
-  // 3. Fetch target's current episode details — book.update_episode expects
-  //    the full chapter_details + story_details objects echoed back.
-  const detailsResp=await fetch(`${CMS_BASE}/book.episode_details?chapter_id=${tgtEp.chapter_id}&is_novel=0`, {headers:hdrs()});
+  // 3. Fetch target's current episode details — pass the same params CMS UI
+  //    does so we get back the canonical state including story_id.
+  const detUrl=`${CMS_BASE}/book.episode_details?chapter_id=${tgtEp.chapter_id}&view=cms&show_id=${_replaceState.tgtShowId}&is_novel=0`;
+  const detailsResp=await fetch(detUrl, {headers:hdrs()});
   if(!detailsResp.ok) throw new Error('target episode_details HTTP '+detailsResp.status);
   const detailsData=await detailsResp.json();
   const tgtChapter=detailsData.result?.chapter_details;
   const tgtStory=detailsData.result?.story_details;
   if(!tgtChapter||!tgtStory) throw new Error('target episode_details missing chapter/story info');
+  _replaceLog(`  · target story_id=${tgtStory.story_id||'?'} current s3=${tgtStory.s3_unique_key||'(empty)'}`);
 
   // 4. Presigned S3 POST policy
   const ext=(blob.type||'').includes('wav')?'wav':'mp3';
@@ -2445,6 +2447,15 @@ async function _copyOneAudio(srcEp, tgtEp){
   const policy=upData.result?.[0];
   if(!policy||!policy.url||!policy.fields) throw new Error('no S3 policy in upload response');
   _replaceLog(`  · presigned s3_unique_key: ${policy.s3_unique_key}`);
+  // Sanity check: the key prefix should equal target's story_id. If it
+  // doesn't, CMS will reject it on commit (validation by chapter ownership).
+  const keyPrefix=(policy.s3_unique_key||'').split('_')[0];
+  const expectedPrefix=tgtStory.story_id||'';
+  if(keyPrefix && expectedPrefix && keyPrefix!==expectedPrefix){
+    _replaceLog(`  ⚠ key prefix ${keyPrefix} != target story_id ${expectedPrefix}. CMS will likely reject.`, 'err');
+  } else if(keyPrefix===expectedPrefix){
+    _replaceLog(`  ✓ key prefix matches target story_id`, 'ok');
+  }
 
   // 5. POST multipart to S3 — fields first, file last
   const fd=new FormData();
