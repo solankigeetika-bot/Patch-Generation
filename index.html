@@ -2183,7 +2183,8 @@ let _replaceState={
   srcShowId:'', srcShowName:'', srcEps:[],
   tgtShowId:'', tgtShowName:'', tgtEps:[],
   pairs:[], // [{srcIdx, tgtIdx, enabled}]
-  mediaType:'raw_audio',
+  srcSlot:'raw_audio',      // where to READ from on the QC show (to-be-recorded)
+  tgtSlot:'final_audio',    // where to WRITE on the live show
   log:[],
   running:false
 };
@@ -2291,9 +2292,8 @@ function setReplaceAllEnabled(on){
   renderAudioReplaceTool();
 }
 
-function setReplaceMediaType(v){
-  _replaceState.mediaType=v;
-}
+function setReplaceSrcSlot(v){ _replaceState.srcSlot=v; }
+function setReplaceTgtSlot(v){ _replaceState.tgtSlot=v; }
 
 function _replaceLog(msg, kind='info'){
   _replaceState.log.push({msg, kind, ts:Date.now()});
@@ -2306,12 +2306,13 @@ function _replaceLog(msg, kind='info'){
 }
 
 async function _copyOneAudio(srcEp, tgtEp){
-  // 1. Source playback URL → download blob
-  const muResp=await fetch(`${CMS_BASE}/get_media_url?type=episode&media_type=audio&event=play&chapter_id=${srcEp.chapter_id}&show_id=${_replaceState.srcShowId}`, {headers:hdrs()});
+  // 1. Source media URL — pull the specific slot (raw/final/etc.) the user picked
+  const srcSlot=_replaceState.srcSlot||'raw_audio';
+  const muResp=await fetch(`${CMS_BASE}/get_media_url?type=episode&media_type=${srcSlot}&event=play&chapter_id=${srcEp.chapter_id}&show_id=${_replaceState.srcShowId}`, {headers:hdrs()});
   if(!muResp.ok) throw new Error('source media URL HTTP '+muResp.status);
   const muData=await muResp.json();
   const playUrl=muData.result?.media_url||muData.media_url||muData.result?.url;
-  if(!playUrl) throw new Error('no playable URL on source response');
+  if(!playUrl) throw new Error('no media URL on source ('+srcSlot+') response');
   const dl=await fetch(playUrl);
   if(!dl.ok) throw new Error('audio download HTTP '+dl.status);
   const blob=await dl.blob();
@@ -2328,7 +2329,7 @@ async function _copyOneAudio(srcEp, tgtEp){
   const s3=await fetch(s3Url, {method:'PUT', body:blob, headers:{'Content-Type':'audio/wav'}});
   if(!s3.ok) throw new Error('S3 PUT HTTP '+s3.status);
 
-  // 4. Notify CMS
+  // 4. Notify CMS — write into the target's chosen slot
   const notify=await fetch(`${CMS_BASE}/book.update_chapter_media`, {
     method:'POST', headers:hdrs(),
     body:JSON.stringify({
@@ -2336,7 +2337,7 @@ async function _copyOneAudio(srcEp, tgtEp){
       book_id: tgtEp.book_id,
       file_key: fileKey,
       is_novel: 0,
-      media_type: _replaceState.mediaType
+      media_type: _replaceState.tgtSlot
     })
   });
   if(!notify.ok) throw new Error('update_chapter_media HTTP '+notify.status);
@@ -2345,7 +2346,7 @@ async function _copyOneAudio(srcEp, tgtEp){
 async function runReplace(){
   const enabled=_replaceState.pairs.filter(p=>p.enabled&&p.tgtIdx>=0);
   if(!enabled.length){ toast('No pairs enabled','warn'); return; }
-  const msg=`Copy audio for ${enabled.length} episode(s) from\n  ${_replaceState.srcShowName} → ${_replaceState.tgtShowName}\nDestination slot: ${_replaceState.mediaType}\n\nProceed?`;
+  const msg=`Copy audio for ${enabled.length} episode(s) from\n  ${_replaceState.srcShowName} (read from: ${_replaceState.srcSlot}) → ${_replaceState.tgtShowName} (write to: ${_replaceState.tgtSlot})\n\nProceed?`;
   if(!confirm(msg)) return;
   _replaceState.running=true;
   _replaceState.log=[];
@@ -2379,7 +2380,7 @@ function renderAudioReplaceTool(){
 
   let html=`<div style="margin-bottom:14px">
     <div style="font-size:16px;font-weight:800">🔀 Audio Replace</div>
-    <div style="font-size:11px;color:var(--muted)">Copy audio from a Source show (live) into a Target show (to-be-recorded). Both shows must be in CMS and your auth token must be connected.</div>
+    <div style="font-size:11px;color:var(--muted)">Copy episode audio from a Source (QC show — read from its to-be-recorded slot) into a Target (Live show — write into its live slot). Nothing is saved to Firebase. Both shows must be in CMS and your auth token must be connected.</div>
   </div>`;
 
   if(!authToken||!uid){
@@ -2390,19 +2391,31 @@ function renderAudioReplaceTool(){
 
   html+=`<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px">
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:12px 14px">
-      <div style="font-size:12px;font-weight:700;margin-bottom:6px">Source (Live show — audio to copy FROM)</div>
+      <div style="font-size:12px;font-weight:700;margin-bottom:6px">Source — QC Show (READ audio from this)</div>
       <input class="inp" id="rp_srcInput" placeholder="show_id or CMS URL" value="${esc(st.srcShowId)}"/>
-      <div style="display:flex;gap:6px;margin-top:8px;align-items:center">
+      <div style="display:flex;gap:6px;margin-top:8px;align-items:center;flex-wrap:wrap">
         <button class="btn btn-p btn-sm" id="rp_srcLoad" onclick="loadReplaceSource()">Load Source</button>
-        <span style="font-family:var(--mono);font-size:10px;color:var(--muted)">${st.srcEps.length} episodes loaded</span>
+        <span style="font-family:var(--mono);font-size:10px;color:var(--muted)">${st.srcEps.length} loaded</span>
+        <span style="font-family:var(--mono);font-size:10px;color:var(--muted);margin-left:auto">slot:</span>
+        <select onchange="setReplaceSrcSlot(this.value)" style="font-size:10px;padding:3px 6px;border:1px solid var(--border);border-radius:5px">
+          <option value="raw_audio" ${st.srcSlot==='raw_audio'?'selected':''}>raw_audio (to-be-recorded)</option>
+          <option value="rm_audio" ${st.srcSlot==='rm_audio'?'selected':''}>rm_audio (remixed)</option>
+          <option value="final_audio" ${st.srcSlot==='final_audio'?'selected':''}>final_audio (live)</option>
+        </select>
       </div>
     </div>
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:12px 14px">
-      <div style="font-size:12px;font-weight:700;margin-bottom:6px">Target (To-be-recorded show — audio to copy INTO)</div>
+      <div style="font-size:12px;font-weight:700;margin-bottom:6px">Target — Live Show (WRITE audio into this)</div>
       <input class="inp" id="rp_tgtInput" placeholder="show_id or CMS URL" value="${esc(st.tgtShowId)}"/>
-      <div style="display:flex;gap:6px;margin-top:8px;align-items:center">
+      <div style="display:flex;gap:6px;margin-top:8px;align-items:center;flex-wrap:wrap">
         <button class="btn btn-p btn-sm" id="rp_tgtLoad" onclick="loadReplaceTarget()">Load Target</button>
-        <span style="font-family:var(--mono);font-size:10px;color:var(--muted)">${st.tgtEps.length} episodes loaded</span>
+        <span style="font-family:var(--mono);font-size:10px;color:var(--muted)">${st.tgtEps.length} loaded</span>
+        <span style="font-family:var(--mono);font-size:10px;color:var(--muted);margin-left:auto">slot:</span>
+        <select onchange="setReplaceTgtSlot(this.value)" style="font-size:10px;padding:3px 6px;border:1px solid var(--border);border-radius:5px">
+          <option value="final_audio" ${st.tgtSlot==='final_audio'?'selected':''}>final_audio (live)</option>
+          <option value="raw_audio" ${st.tgtSlot==='raw_audio'?'selected':''}>raw_audio (to-be-recorded)</option>
+          <option value="rm_audio" ${st.tgtSlot==='rm_audio'?'selected':''}>rm_audio (remixed)</option>
+        </select>
       </div>
     </div>
   </div>`;
@@ -2411,11 +2424,7 @@ function renderAudioReplaceTool(){
     html+=`<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:8px;flex-wrap:wrap">
       <div style="font-size:13px;font-weight:800">Episode Pairing (${enabledCount} of ${st.pairs.length} enabled)</div>
       <div style="display:flex;gap:6px;align-items:center;font-family:var(--mono);font-size:11px">
-        <span style="color:var(--muted)">Upload as:</span>
-        <select onchange="setReplaceMediaType(this.value)" style="font-size:11px;padding:4px 8px;border:1px solid var(--border);border-radius:6px">
-          <option value="raw_audio" ${st.mediaType==='raw_audio'?'selected':''}>raw_audio (To-Be-Recorded slot)</option>
-          <option value="final_audio" ${st.mediaType==='final_audio'?'selected':''}>final_audio (Live slot)</option>
-        </select>
+        <span style="color:var(--muted)">${esc(st.srcSlot)} → ${esc(st.tgtSlot)}</span>
         <button class="btn btn-g btn-sm" onclick="setReplaceAllEnabled(true)">Check All</button>
         <button class="btn btn-g btn-sm" onclick="setReplaceAllEnabled(false)">Uncheck All</button>
         <button class="btn btn-orange btn-sm" onclick="runReplace()" ${st.running?'disabled':''}>${st.running?'Running…':`▶ Run Replace (${enabledCount})`}</button>
