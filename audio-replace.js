@@ -149,15 +149,16 @@
     if(!duration) throw new Error('could not decode source audio');
     log(`  · duration ${duration}s`);
 
-    // 2. Target episode_details
+    // 2. Target episode_details (BEFORE upload)
     const detUrl=`${CMS}/book.episode_details?chapter_id=${tgtEp.chapter_id}&view=cms&show_id=${state.tgtShowId}&is_novel=0`;
     const detResp=await fetch(detUrl,{headers:hdrs(),credentials:'include'});
     if(!detResp.ok) throw new Error('target episode_details HTTP '+detResp.status);
     const det=await detResp.json();
-    const tgtChapter=det.result?.chapter_details;
-    const tgtStory=det.result?.story_details;
+    let tgtChapter=det.result?.chapter_details;
+    let tgtStory=det.result?.story_details;
     if(!tgtChapter||!tgtStory) throw new Error('target details missing');
-    log(`  · target story_id=${tgtStory.story_id||'?'}`);
+    const beforeKey=tgtStory.s3_unique_key||'(empty)';
+    log(`  · target story_id=${tgtStory.story_id||'?'} key-before=${beforeKey}`);
 
     // 3. Presigned URL
     const ext=(blob.type||'').includes('wav')?'wav':'mp3';
@@ -168,7 +169,7 @@
     const upData=await up.json();
     const policy=upData.result?.[0];
     if(!policy||!policy.url||!policy.fields) throw new Error('no S3 policy in response');
-    log(`  · s3_unique_key ${policy.s3_unique_key}`);
+    log(`  · presigned s3_unique_key=${policy.s3_unique_key}`);
 
     // 4. S3 POST
     const fd=new FormData();
@@ -176,13 +177,42 @@
     fd.append('file', blob, policy.fields.key||`audio.${ext}`);
     const s3=await fetch(policy.url,{method:'POST', body:fd});
     if(!s3.ok) throw new Error('S3 POST HTTP '+s3.status);
-    log(`  · S3 upload OK`);
+    log(`  · S3 upload OK (${s3.status})`);
 
-    // 5. update_episode
+    // 5. Wait, then re-fetch episode_details to see what CMS registered.
+    //    Hypothesis: CMS auto-updates story_details.s3_unique_key once the
+    //    file lands. If so, we use whatever the server now reports rather
+    //    than overriding with the presigned key.
+    await new Promise(r=>setTimeout(r, 1500));
+    let postKey=beforeKey;
+    try{
+      const a=await fetch(detUrl,{headers:hdrs(),credentials:'include'});
+      if(a.ok){
+        const ad=await a.json();
+        if(ad.result?.story_details){
+          tgtStory=ad.result.story_details;
+          tgtChapter=ad.result.chapter_details||tgtChapter;
+          postKey=tgtStory.s3_unique_key||'(empty)';
+        }
+      }
+    }catch{}
+    log(`  · key-after-upload=${postKey}`);
+    if(postKey===policy.s3_unique_key){
+      log(`  ✓ CMS auto-registered our upload`,'ok');
+    } else if(postKey!==beforeKey){
+      log(`  ℹ CMS picked a different key than presigned — using server's: ${postKey}`);
+    } else {
+      log(`  ⚠ CMS did NOT register our upload (key unchanged). update_episode will likely fail.`,'err');
+    }
+
+    // Use the server's current key if it changed, otherwise our presigned key.
+    const commitKey=(postKey!==beforeKey&&postKey!=='(empty)') ? postKey : policy.s3_unique_key;
+
+    // 6. update_episode — using the canonical key from server state
     const cmsNow=()=>{const d=new Date(),p=n=>String(n).padStart(2,'0');return `${d.getUTCFullYear()}-${p(d.getUTCMonth()+1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`;};
     const body={
       chapter_details: {...tgtChapter, audio_duration: duration, media_timestamp: cmsNow()},
-      story_details: {...tgtStory, s3_unique_key: policy.s3_unique_key, duration: duration},
+      story_details: {...tgtStory, s3_unique_key: commitKey, duration: duration},
       book_id: tgtChapter.book_id||tgtEp.book_id,
       show_id: state.tgtShowId,
       view: 'cms'
@@ -196,16 +226,19 @@
     if(!notify.ok) throw new Error('book.update_episode HTTP '+notify.status);
     log(`  · update_episode OK`);
 
-    // 6. Verify by re-fetching
+    // 7. Verify by re-fetching
     try{
       const v=await fetch(detUrl,{headers:hdrs(),credentials:'include'});
       if(v.ok){
         const vd=await v.json();
         const persistedKey=vd.result?.story_details?.s3_unique_key||'';
-        if(persistedKey===policy.s3_unique_key){
+        log(`  · final key=${persistedKey||'(empty)'}`);
+        if(persistedKey===commitKey){
           log(`  ✓ binding confirmed`,'ok');
+        } else if(persistedKey===policy.s3_unique_key){
+          log(`  ✓ binding confirmed (presigned key)`,'ok');
         } else {
-          log(`  ⚠ binding NOT confirmed — server has "${persistedKey||'empty'}" instead of "${policy.s3_unique_key}"`,'err');
+          log(`  ⚠ binding NOT confirmed — server has "${persistedKey||'empty'}" instead of "${commitKey}"`,'err');
         }
       }
     }catch{}
