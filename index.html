@@ -2201,30 +2201,21 @@ function _parseShowId(input){
 }
 
 async function _fetchEpisodesFor(showId){
-  // CMS exposes different "views" — view=cms returns QC/to-be-recorded episodes,
-  // while the public/default view returns the live (approved) ones. Fetching
-  // both and merging by chapter_id gives us the full episode list.
-  async function fetchPages(viewParam){
-    let eps=[]; let page=1;
-    while(page<=100){
-      const url=`${CMS_BASE}/book.show_episodes?show_id=${showId}${viewParam?`&view=${viewParam}`:''}&is_novel=0&paginate_chapters=true&page_no=${page}`;
-      let r;
-      try{ r=await fetch(url, {headers:hdrs()}); }catch(e){ break; }
-      if(!r.ok){ if(page===1) return {eps:[], firstStatus:r.status}; break; }
-      const d=await r.json();
-      const list=d.result?.episodes||[];
-      if(!list.length) break;
-      eps=eps.concat(list);
-      // Some shows page tightly; keep going if we got anything meaningful.
-      if(list.length<3) break;
-      page++;
-    }
-    return {eps, firstStatus:200};
+  // Match the exact URL the CMS UI uses — no paginate_chapters/page_no, which
+  // is what was filtering live episodes out. Single shot returns the full list.
+  async function fetchView(viewParam){
+    const url=`${CMS_BASE}/book.show_episodes?show_id=${showId}${viewParam?`&view=${viewParam}`:''}&is_novel=0`;
+    let r;
+    try{ r=await fetch(url, {headers:hdrs()}); }catch(e){ return {eps:[], firstStatus:0}; }
+    if(!r.ok) return {eps:[], firstStatus:r.status};
+    const d=await r.json();
+    return {eps: d.result?.episodes||[], firstStatus:200};
   }
-  const [a,b]=await Promise.all([fetchPages('cms'), fetchPages('')]);
+  // Try view=cms first (what CMS UI uses); also try the no-view default in case
+  // a given show is configured to expose different sets per view.
+  const [a,b]=await Promise.all([fetchView('cms'), fetchView('')]);
   const combined=[...a.eps, ...b.eps];
   if(!combined.length){
-    // Surface the most informative error — if both views 4xx'd, the show id is bad
     throw new Error(`CMS HTTP ${a.firstStatus||b.firstStatus||'?'} — no episodes returned`);
   }
   // Dedupe by chapter_id, preserve first occurrence
@@ -2374,13 +2365,15 @@ function _replaceLog(msg, kind='info'){
 }
 
 async function _copyOneAudio(srcEp, tgtEp){
-  // 1. Source media URL — pull the specific slot (raw/final/etc.) the user picked
-  const srcSlot=_replaceState.srcSlot||'raw_audio';
-  const muResp=await fetch(`${CMS_BASE}/get_media_url?type=episode&media_type=${srcSlot}&event=play&chapter_id=${srcEp.chapter_id}&show_id=${_replaceState.srcShowId}`, {headers:hdrs()});
+  // 1. Source media URL — get_media_url only accepts media_type=audio.
+  // Whatever's playable on the source chapter (whichever slot CMS routes to)
+  // is what we download. The user's "source slot" preference can't be
+  // expressed here; that knob is only meaningful on the write side.
+  const muResp=await fetch(`${CMS_BASE}/get_media_url?type=episode&media_type=audio&event=play&chapter_id=${srcEp.chapter_id}&show_id=${_replaceState.srcShowId}`, {headers:hdrs()});
   if(!muResp.ok) throw new Error('source media URL HTTP '+muResp.status);
   const muData=await muResp.json();
   const playUrl=muData.result?.media_url||muData.media_url||muData.result?.url;
-  if(!playUrl) throw new Error('no media URL on source ('+srcSlot+') response');
+  if(!playUrl) throw new Error('no media URL on source response');
   const dl=await fetch(playUrl);
   if(!dl.ok) throw new Error('audio download HTTP '+dl.status);
   const blob=await dl.blob();
