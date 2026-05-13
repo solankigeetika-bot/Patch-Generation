@@ -4759,9 +4759,24 @@ async function genOneTake(text,ri,ti,chapId){
       }
       if(!audioUrl) throw new Error('No audio URL');
 
-      // AudioStack returns a presigned audioUrl that doesn't need a key —
-      // we no longer have asKey in the browser anyway (it lives in the proxy).
-      const dl=await fetch(audioUrl);
+      // AudioStack used to return presigned audioUrls that didn't need auth.
+      // Now it sometimes 403s on direct fetch — route through the proxy
+      // (which attaches the API key) as a fallback.
+      let dl=await fetch(audioUrl);
+      if(!dl.ok && dl.status===403){
+        // Rewrite to go through our proxy with CMS auth headers attached.
+        // Works only if audioUrl is on AudioStack's API domain.
+        let proxyUrl=audioUrl;
+        if(audioUrl.startsWith('https://v2.api.audio/')) proxyUrl=audioUrl.replace('https://v2.api.audio', AS_BASE);
+        else if(audioUrl.includes('audio.api') || audioUrl.includes('api.audio')){
+          const m=audioUrl.match(/https?:\/\/[^/]+(\/.*)/);
+          if(m) proxyUrl=AS_BASE+m[1];
+        }
+        if(proxyUrl!==audioUrl){
+          console.log('Direct audio fetch 403; retrying via proxy:', proxyUrl);
+          dl=await fetch(proxyUrl,{headers:h});
+        }
+      }
       if(!dl.ok) throw new Error('Download failed: '+dl.status);
       blob=await dl.blob();
     }
