@@ -145,14 +145,31 @@
   }
 
   async function copyOne(srcEp, tgtEp){
-    // 1. Source audio download
-    const muResp=await rlFetch(`${CMS}/get_media_url?type=episode&media_type=audio&event=play&chapter_id=${srcEp.chapter_id}&show_id=${state.srcShowId}`,{headers:hdrs(),credentials:'include'});
-    if(!muResp.ok) throw new Error('source media URL HTTP '+muResp.status);
-    const muData=await muResp.json();
-    const playUrl=muData.result?.media_url||muData.media_url||muData.result?.url;
-    if(!playUrl) throw new Error('no media URL on source');
-    const dl=await fetch(playUrl);
-    if(!dl.ok) throw new Error('audio download HTTP '+dl.status);
+    // 1. Source audio download — try event=download first (raw file), fall back
+    //    to event=play (which may be DRM-streamed and 403 on direct fetch).
+    async function getSourceUrl(ev){
+      const r=await rlFetch(`${CMS}/get_media_url?type=episode&media_type=audio&event=${ev}&chapter_id=${srcEp.chapter_id}&show_id=${state.srcShowId}`,{headers:hdrs(),credentials:'include'});
+      if(!r.ok) return {url:'', err:'media URL HTTP '+r.status};
+      const d=await r.json();
+      return {url: d.result?.media_url||d.media_url||d.result?.url||'', err:''};
+    }
+    let playUrl='';
+    for(const ev of ['download','play']){
+      const got=await getSourceUrl(ev);
+      if(got.url){ playUrl=got.url; log(`  · source URL via event=${ev}`); break; }
+    }
+    if(!playUrl) throw new Error('no media URL on source (tried download + play)');
+    let dl=await fetch(playUrl);
+    if(dl.status===403){
+      // Retry with the play variant if we got download originally (and vice versa)
+      log(`  · audio HTTP 403 — retrying with event=play`);
+      const alt=await getSourceUrl('play');
+      if(alt.url && alt.url!==playUrl){
+        playUrl=alt.url;
+        dl=await fetch(playUrl);
+      }
+    }
+    if(!dl.ok) throw new Error('audio download HTTP '+dl.status+' — source may be DRM-protected; only chapters with raw to-be-recorded audio can be copied');
     const blob=await dl.blob();
     if(!blob||blob.size<1024) throw new Error('source blob empty/tiny ('+(blob?blob.size:0)+'B)');
     log(`  · downloaded ${(blob.size/1024).toFixed(1)} KB`);
