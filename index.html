@@ -3882,13 +3882,22 @@ async function _processRawDlQueue(){
     const {chapId, showId, epTitle}=_rawDlQueue.shift();
     toast(`Downloading: ${epTitle||chapId} (${_rawDlQueue.length} remaining)...`,'ok');
     try{
-      const muResp=await fetch(`${CMS_BASE}/get_media_url?type=episode&media_type=audio&event=play&chapter_id=${chapId}&show_id=${showId}`,{headers:hdrs()});
-      if(!muResp.ok) throw new Error('CMS API error: '+muResp.status);
-      const muData=await muResp.json();
-      const audioUrl=muData.result?.media_url||muData.result?.url||muData.media_url||muData.url;
-      if(!audioUrl) throw new Error('No audio URL in CMS response');
+      // event=play 404s when the chapter has no live audio (raw still in
+      // to-be-recorded). Try event=download first (raw file), fall back to
+      // event=play if download isn't available.
+      let audioUrl='';
+      let lastErr='';
+      for(const ev of ['download','play']){
+        const muResp=await fetch(`${CMS_BASE}/get_media_url?type=episode&media_type=audio&event=${ev}&chapter_id=${chapId}&show_id=${showId}`,{headers:hdrs()});
+        if(!muResp.ok){ lastErr='CMS API '+ev+' HTTP '+muResp.status; continue; }
+        const muData=await muResp.json();
+        const u=muData.result?.media_url||muData.result?.url||muData.media_url||muData.url;
+        if(u){ audioUrl=u; break; }
+        lastErr='no audio URL in CMS '+ev+' response';
+      }
+      if(!audioUrl) throw new Error(lastErr||'CMS returned no audio URL — chapter may have no raw or live audio yet');
       const audioResp=await fetch(audioUrl);
-      if(!audioResp.ok) throw new Error('Audio fetch failed: '+audioResp.status);
+      if(!audioResp.ok) throw new Error('Audio fetch failed: '+audioResp.status+(audioResp.status===403?' (likely DRM-protected)':''));
       const blob=await audioResp.blob();
       const url=URL.createObjectURL(blob);
       const ext=audioUrl.match(/\.(mp3|wav|m4a|aac)(\?|$)/i)?.[1]||'mp3';
