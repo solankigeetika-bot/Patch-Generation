@@ -931,11 +931,35 @@ async function loadErrorSummary(){
       return ms>=fromMs && ms<=toMs;
     };
 
-    // Build show→episodes mapping
+    // Build show→episodes mapping. We capture multiple "match keys" per show
+    // so a remarks-side showId can resolve via any of them (CMS hex, raw
+    // pasted input, etc) — strict equality was failing whenever the user
+    // had pasted a slightly different form between add-show and the loaded
+    // CMS hex.
     const showMap={};
     for(const s of shows){
-      const sid=s.showInput?.match(/show_id=([a-f0-9]+)/i)?.[1]||s.showInput||s.id;
-      showMap[String(s.id)]={name:s.name, showInput:sid, voiceName:s.voiceName||'', voiceGender:s.voiceGender||'', episodes:0, totalErrors:0, errorTypes:{}, qcTillEp:0, epWithQC:0};
+      const sInput=s.showInput||'';
+      const extractedHex=sInput.match(/show_id=([a-f0-9]+)/i)?.[1] || sInput.match(/[a-f0-9]{20,}/i)?.[0] || '';
+      const sid=extractedHex||sInput||String(s.id);
+      const matchKeys=new Set([sid, sInput, extractedHex, String(s.id)].filter(Boolean));
+      showMap[String(s.id)]={
+        name:s.name, showInput:sid,
+        voiceName:s.voiceName||'', voiceGender:s.voiceGender||'',
+        episodes:0, totalErrors:0, errorTypes:{}, qcTillEp:0, epWithQC:0,
+        _matchKeys: matchKeys
+      };
+    }
+    function findShowFor(remarkShowId){
+      if(!remarkShowId) return null;
+      const target=String(remarkShowId);
+      for(const sm of Object.values(showMap)){
+        if(sm._matchKeys && sm._matchKeys.has(target)) return sm;
+      }
+      // Fallback: substring containment (handles trimming/whitespace edge cases)
+      for(const sm of Object.values(showMap)){
+        if(sm.showInput && (sm.showInput.includes(target)||target.includes(sm.showInput))) return sm;
+      }
+      return null;
     }
 
     // Count episodes per show and find max episode with QC/ready-to-master
@@ -943,7 +967,7 @@ async function loadErrorSummary(){
     const chapSeqMap={};
     for(const [showId, eps] of Object.entries(allEps)){
       const epArr=Array.isArray(eps)?eps:Object.values(eps||{});
-      const match=Object.values(showMap).find(sm=>sm.showInput===showId);
+      const match=findShowFor(showId);
       if(match){
         const validEps=epArr.filter(e=>e);
         match.episodes=validEps.length;
@@ -957,12 +981,14 @@ async function loadErrorSummary(){
     }
 
     // Aggregate error types from episodeRemarks and find QC'd Till Ep
+    let unmatchedRemarkShowIds=new Set();
     for(const [chapId, epData] of Object.entries(allRemarks)){
       if(!epData?.remarks) continue;
       const remarks=Array.isArray(epData.remarks)?epData.remarks:Object.values(epData.remarks||{});
       if(!remarks.length) continue;
       const showId=epData.showId||'';
-      const match=Object.values(showMap).find(sm=>sm.showInput===showId);
+      const match=findShowFor(showId);
+      if(!match&&showId) unmatchedRemarkShowIds.add(showId);
       const target=match||{errorTypes:{},totalErrors:0,epWithQC:0,qcTillEp:0};
 
       // Episode-level fallback date (last sync time)
@@ -1018,13 +1044,10 @@ async function loadErrorSummary(){
       </div>`;
 
     if(!typeArr.length){
-      // Be specific about the empty state — distinguishes "no shows added"
-      // vs "shows added but episodes never pulled" vs "shows loaded but
-      // none have QC remarks yet".
       const showCount=shows.length;
       const remarkChapCount=Object.keys(allRemarks).length;
       const epChapCount=Object.keys(allEps).length;
-      let msg;
+      let msg, hint='';
       if(hasDateFilter){
         msg='No errors in the selected date range.';
       } else if(!showCount){
@@ -1032,14 +1055,20 @@ async function loadErrorSummary(){
       } else if(!epChapCount){
         msg=`${showCount} show(s) added but no episodes pulled from CMS yet. Click each show in the sidebar → load it → episodes will sync with QC details. Then return here.`;
       } else if(!remarkChapCount){
-        msg=`${epChapCount} episode(s) loaded across ${showCount} show(s), but none have QC remarks. QC remarks come from CMS when episodes have been QC'd in CMS. If your team has finished QC on some episodes, re-open the show to re-sync.`;
+        msg=`${epChapCount} episode(s) loaded across ${showCount} show(s), but none have QC remarks yet.`;
+      } else if(unmatchedRemarkShowIds.size){
+        // Most useful diagnostic: we DO have remarks, but their showId doesn't
+        // match anything in the current geography's shows list.
+        const list=[...unmatchedRemarkShowIds].slice(0,5).map(id=>id.substring(0,12)+'…').join(', ');
+        msg=`${remarkChapCount} chapter(s) have QC remarks in Firebase, but their showId doesn't match any show currently in this geography's dashboard.`;
+        hint=`Unmatched showIds (first 5): ${list}. The show may have been re-added with a different ID, or this is data from another country. Re-add the show using the exact CMS show_id and re-open it to re-link.`;
       } else {
         msg='No QC remarks match the current filter.';
       }
       el.innerHTML=`<div style="margin:16px 0">
         <div style="font-size:14px;font-weight:800;margin-bottom:10px;color:var(--text)">QC Error Summary</div>
         ${filterBar}
-        <div style="font-size:12px;color:var(--muted);padding:14px;line-height:1.6">${esc(msg)}</div>
+        <div style="font-size:12px;color:var(--muted);padding:14px;line-height:1.6">${esc(msg)}${hint?`<br/><span style="font-family:var(--mono);font-size:10px;color:var(--text2)">${esc(hint)}</span>`:''}</div>
       </div>`;
       return;
     }
