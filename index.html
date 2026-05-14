@@ -3876,10 +3876,27 @@ async function downloadRawCMSAudio(chapId, showId, epTitle){
   toast(`Queued: ${epTitle||chapId} (${_rawDlQueue.length} in queue)`,'ok');
   if(!_rawDlRunning) _processRawDlQueue();
 }
+// Pulls a clean hex ID out of whatever we got (URL, raw hex, etc).
+// Saves us from the "show_id=https://cms.pocketfm.com/..." bug where a
+// pasted URL leaked into the CMS call as the show_id value.
+function _cleanCmsId(v){
+  if(!v) return '';
+  const s=String(v).trim();
+  // Match show_id=, id=, or any 30+ hex digit run; pick the most specific
+  return s.match(/show_id=([a-f0-9]+)/i)?.[1] ||
+         s.match(/[?&]id=([a-f0-9]{20,})/i)?.[1] ||
+         s.match(/[a-f0-9]{30,}/i)?.[0] ||
+         s;
+}
+
 async function _processRawDlQueue(){
   _rawDlRunning=true;
   while(_rawDlQueue.length){
-    const {chapId, showId, epTitle}=_rawDlQueue.shift();
+    let {chapId, showId, epTitle}=_rawDlQueue.shift();
+    // Sanitize — if either value is a full URL (happens when the show was
+    // added with a CMS URL paste), extract the hex before calling CMS.
+    chapId=_cleanCmsId(chapId);
+    showId=_cleanCmsId(showId);
     toast(`Downloading: ${epTitle||chapId} (${_rawDlQueue.length} remaining)...`,'ok');
     try{
       // event=play 404s when the chapter has no live audio (raw still in
