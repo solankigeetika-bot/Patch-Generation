@@ -4914,37 +4914,12 @@ async function elevenLabsTTS(text, voiceId, _apiKeyIgnored, modelId){
     const err = await r.text();
     throw new Error('ElevenLabs ' + r.status + ': ' + err.substring(0, 250));
   }
-  const mp3Blob = await r.blob();
-  // Pad ~400ms of silence + 40ms fade-out on the original tail. Smooths the
-  // abrupt cut/jerk artifact ElevenLabs sometimes produces at the end.
-  try {
-    return await _padTrailingSilence(mp3Blob, 0.4, 0.04);
-  } catch (e) {
-    console.warn('ElevenLabs silence-pad failed, returning raw MP3:', e);
-    return mp3Blob;
-  }
-}
-
-// Decode blob \u2192 append silence with a short fade-out on the original tail \u2192
-// re-encode as WAV. Used to smooth ElevenLabs end-of-audio cuts.
-async function _padTrailingSilence(blob, padSec, fadeSec){
-  const buf = await blobToAudioBuf(blob);
-  const sr = buf.sampleRate, ch = buf.numberOfChannels;
-  const padLen = Math.floor((padSec || 0) * sr);
-  const fadeLen = Math.min(Math.floor((fadeSec || 0) * sr), buf.length);
-  const out = new AudioBuffer({length: buf.length + padLen, numberOfChannels: ch, sampleRate: sr});
-  for (let c = 0; c < ch; c++) {
-    const src = buf.getChannelData(c);
-    const dst = out.getChannelData(c);
-    for (let i = 0; i < src.length; i++) {
-      let v = src[i];
-      const distFromEnd = src.length - 1 - i;
-      if (fadeLen > 0 && distFromEnd < fadeLen) v *= distFromEnd / fadeLen;
-      dst[i] = v;
-    }
-    // Indexes from src.length onwards remain 0 \u2192 silence.
-  }
-  return bufToWav(out);
+  // Return the raw MP3 unchanged. Silence-padding via decode/re-encode was
+  // producing broken takes ("small sound at beginning, then nothing") on
+  // some browsers \u2014 likely an AudioBuffer or decodeAudioData quirk. The
+  // sentence-punctuation guard above is the safe part of the fix; we accept
+  // the (rare) trailing-cut artifact rather than risk corrupting any take.
+  return await r.blob();
 }
 
 async function genOneTake(text,ri,ti,chapId){
