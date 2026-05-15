@@ -4761,6 +4761,10 @@ async function elevenLabsTTS(text, voiceId, _apiKeyIgnored, modelId){
   const voice_settings = supportsStyleAndBoost
     ? { stability: 0.5, similarity_boost: 0.75, style: 0, use_speaker_boost: true }
     : { stability: 0.5, similarity_boost: 0.75 };
+  // Ensure the text ends in sentence-final punctuation so the model doesn't
+  // truncate mid-prediction (a common cause of the abrupt-cut artifact).
+  const trimmed = (text || '').trim();
+  const safeText = /[.!?\u2026"'\u00bb)\]]\s*$/.test(trimmed) ? trimmed : (trimmed + '.');
   const r = await fetch(`${EL_BASE}/v1/text-to-speech/${encodeURIComponent(voiceId)}`, {
     method: 'POST',
     headers: {
@@ -4770,13 +4774,43 @@ async function elevenLabsTTS(text, voiceId, _apiKeyIgnored, modelId){
       'Content-Type': 'application/json',
       'Accept': 'audio/mpeg'
     },
-    body: JSON.stringify({ text, model_id: model, voice_settings })
+    body: JSON.stringify({ text: safeText, model_id: model, voice_settings })
   });
   if(!r.ok){
     const err = await r.text();
     throw new Error('ElevenLabs ' + r.status + ': ' + err.substring(0, 250));
   }
-  return await r.blob();
+  const mp3Blob = await r.blob();
+  // Pad ~400ms of silence + 40ms fade-out on the original tail. Smooths the
+  // abrupt cut/jerk artifact ElevenLabs sometimes produces at the end.
+  try {
+    return await _padTrailingSilence(mp3Blob, 0.4, 0.04);
+  } catch (e) {
+    console.warn('ElevenLabs silence-pad failed, returning raw MP3:', e);
+    return mp3Blob;
+  }
+}
+
+// Decode blob \u2192 append silence with a short fade-out on the original tail \u2192
+// re-encode as WAV. Used to smooth ElevenLabs end-of-audio cuts.
+async function _padTrailingSilence(blob, padSec, fadeSec){
+  const buf = await blobToAudioBuf(blob);
+  const sr = buf.sampleRate, ch = buf.numberOfChannels;
+  const padLen = Math.floor((padSec || 0) * sr);
+  const fadeLen = Math.min(Math.floor((fadeSec || 0) * sr), buf.length);
+  const out = new AudioBuffer({length: buf.length + padLen, numberOfChannels: ch, sampleRate: sr});
+  for (let c = 0; c < ch; c++) {
+    const src = buf.getChannelData(c);
+    const dst = out.getChannelData(c);
+    for (let i = 0; i < src.length; i++) {
+      let v = src[i];
+      const distFromEnd = src.length - 1 - i;
+      if (fadeLen > 0 && distFromEnd < fadeLen) v *= distFromEnd / fadeLen;
+      dst[i] = v;
+    }
+    // Indexes from src.length onwards remain 0 \u2192 silence.
+  }
+  return bufToWav(out);
 }
 
 async function genOneTake(text,ri,ti,chapId){
