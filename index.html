@@ -3842,7 +3842,16 @@ function renderSEShowDetail(group){
               <td style="white-space:nowrap;font-family:var(--mono);font-size:11px;color:var(--accent)">${esc(p.time)}</td>
               <td style="font-size:11px;color:var(--text2);max-width:180px">${esc(p.remark||p.issueType||'')}</td>
               <td style="font-size:11px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(p.scriptLine)}">${esc((p.scriptLine||'').substring(0,50))}${(p.scriptLine||'').length>50?'...':''}</td>
-              <td>${(p.audioBase64||p.blobUrl)?'<a class="se-dl" href="'+(p.audioBase64||p.blobUrl)+'" download="'+(esc(ep.title||'Episode')).replace(/[^a-zA-ZÀ-ÿ0-9 ]/g,'').replace(/ /g,'_')+'_'+(p.time||'').replace(/:/g,'m')+'s_'+(p.scriptLine||'').substring(0,30).replace(/[^a-zA-ZÀ-ÿ0-9 ]/g,'').replace(/ /g,'_')+'.mp3">⬇ MP3</a>':'—'}</td>
+              <td>${(()=>{
+                // Never offer a blob: URL to other users — it's only valid in
+                // the browser session that created it. Show a clear note instead.
+                const link=p.audioBase64||p.blobUrl||'';
+                if(!link) return '—';
+                if(typeof link==='string' && link.startsWith('blob:')){
+                  return '<span style="color:var(--muted);font-size:10px" title="Audio was generated in another browser session and isn\\'t accessible here. Open the episode and regenerate the take.">⚠ stale</span>';
+                }
+                return '<a class="se-dl" href="'+link+'" download="'+(esc(ep.title||'Episode')).replace(/[^a-zA-ZÀ-ÿ0-9 ]/g,'').replace(/ /g,'_')+'_'+(p.time||'').replace(/:/g,'m')+'s_'+(p.scriptLine||'').substring(0,30).replace(/[^a-zA-ZÀ-ÿ0-9 ]/g,'').replace(/ /g,'_')+'.mp3">⬇ MP3</a>';
+              })()}</td>
               <td style="white-space:nowrap">
                 <button class="se-yn se-yn-yes ${pSt==='yes'?'active':''}" onclick="event.stopPropagation();setPatchStitch('${chapId}',${pi},'yes')" style="padding:3px 8px;font-size:10px">Yes</button>
                 <button class="se-yn se-yn-no ${pSt==='no'?'active':''}" onclick="event.stopPropagation();setPatchStitch('${chapId}',${pi},'no')" style="padding:3px 8px;font-size:10px">No</button>
@@ -4079,15 +4088,19 @@ async function downloadAllIndividual(chapId){
 function saveSEData(chapId, title, patchesData, stitchedUrl){
   const seData=getSEData();
   const existing=seData[chapId]?.patches||[];
-  // Strip blobUrl (local blob) but keep audioBase64 for Firebase sharing
+  // Strip blob: from audioBase64 — those URLs are only valid in the browser
+  // session that created them, so other users / fresh reloads see broken audio.
+  const cleanAudio=(v)=>(v && typeof v==='string' && v.startsWith('blob:')) ? null : v;
   const mergedPatches=(patchesData||[]).map((p,i)=>{
     const {blobUrl, ...rest} = p;
-    // Match existing patch by time code for correct audio/stitch preservation
     const match=existing.find(ep=>ep.time===p.time)||existing[i]||{};
-    return {...rest, audioBase64: p.audioBase64||match.audioBase64||null, stitched: match.stitched||p.stitched||''};
+    const ab=cleanAudio(p.audioBase64) || cleanAudio(match.audioBase64) || null;
+    return {...rest, audioBase64: ab, stitched: match.stitched||p.stitched||''};
   });
-  // If no patches and no stitched URL, remove episode from SE data entirely
-  if(!mergedPatches.length && !stitchedUrl && !seData[chapId]?.stitchedUrl){
+  // Same guard for the episode-level stitched URL. If a blob: leaks in,
+  // drop it — better empty than dead-linked.
+  const cleanStitched = cleanAudio(stitchedUrl) || cleanAudio(seData[chapId]?.stitchedUrl) || null;
+  if(!mergedPatches.length && !cleanStitched){
     dbRef('seData/'+chapId).remove();
     return;
   }
@@ -4095,7 +4108,7 @@ function saveSEData(chapId, title, patchesData, stitchedUrl){
     title,
     showId: activeShowId||seData[chapId]?.showId||'',
     patches:mergedPatches,
-    stitchedUrl: stitchedUrl||seData[chapId]?.stitchedUrl||null,
+    stitchedUrl: cleanStitched,
     qcDone: seData[chapId]?.qcDone||false,
     uploadedCMS: seData[chapId]?.uploadedCMS||false,
     updatedAt:Date.now(),
