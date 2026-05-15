@@ -3848,7 +3848,7 @@ function renderSEShowDetail(group){
                 const link=p.audioBase64||p.blobUrl||'';
                 if(!link) return '—';
                 if(typeof link==='string' && link.startsWith('blob:')){
-                  return '<span style="color:var(--muted);font-size:10px" title="Audio was generated in another browser session and isn\\'t accessible here. Open the episode and regenerate the take.">⚠ stale</span>';
+                  return '<span style="color:var(--muted);font-size:10px" title="Audio was generated in another browser session and is not accessible here. Open the episode and regenerate the take.">⚠ stale</span>';
                 }
                 return '<a class="se-dl" href="'+link+'" download="'+(esc(ep.title||'Episode')).replace(/[^a-zA-ZÀ-ÿ0-9 ]/g,'').replace(/ /g,'_')+'_'+(p.time||'').replace(/:/g,'m')+'s_'+(p.scriptLine||'').substring(0,30).replace(/[^a-zA-ZÀ-ÿ0-9 ]/g,'').replace(/ /g,'_')+'.mp3">⬇ MP3</a>';
               })()}</td>
