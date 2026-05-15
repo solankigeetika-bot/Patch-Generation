@@ -594,6 +594,10 @@ async function dbGetBlob(k){
   if(!db) return null;
   return new Promise((res)=>{ const tx=db.transaction('patches','readonly'); const r=tx.objectStore('patches').get(k); r.onsuccess=e=>res(e.target.result?.v||null); r.onerror=()=>res(null); });
 }
+async function dbDelBlob(k){
+  if(!db) return;
+  return new Promise((res)=>{ const tx=db.transaction('patches','readwrite'); const r=tx.objectStore('patches').delete(k); r.onsuccess=()=>res(); r.onerror=()=>res(); });
+}
 
 // ── Init ─────────────────────────────────────────────────────
 window.onload = async () => {
@@ -4431,11 +4435,18 @@ async function loadChapter(chapId, idx){
       RS[r2.idx]={scriptLine:r2.scriptLine,takes:[null,null,null],acceptedTake:-1,discarded:[],status:'idle',disposition:fbDisps2[r2.idx]||await dbGet('config',`${chapId}_r${r2.idx}_disp`)||''};
       for(let t=0;t<3;t++){
         const blob=await dbGetBlob(`${chapId}_r${r2.idx}_t${t}`);
-        if(blob) RS[r2.idx].takes[t]=URL.createObjectURL(blob);
+        // Treat empty/tiny blobs as "no take" — the player would render but
+        // play nothing, which is what was producing the 0-byte blob: rows.
+        if(blob && blob.size>1024){
+          RS[r2.idx].takes[t]=URL.createObjectURL(blob);
+        } else if(blob){
+          // Clean up the bad entry so it doesn't keep loading as a phantom take
+          try{ await dbDelBlob(`${chapId}_r${r2.idx}_t${t}`); }catch{}
+        }
         if(RS[r2.idx].takes[t]) RS[r2.idx].status='done';
       }
       const acc=await dbGet('config',`${chapId}_r${r2.idx}_acc`);
-      if(acc!=null && acc>=0){ RS[r2.idx].acceptedTake=acc; RS[r2.idx].status='accepted'; }
+      if(acc!=null && acc>=0 && RS[r2.idx].takes[acc]){ RS[r2.idx].acceptedTake=acc; RS[r2.idx].status='accepted'; }
     }
 
     // Fallback: load accepted patches from Firebase SE data if not found locally
