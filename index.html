@@ -720,6 +720,13 @@ async function initShows(){
 
 // ── Page Navigation ───────────────────────────────────────────
 function goPage(name){
+  // Leaving the episode page → drop any in-memory episode audio so it doesn't
+  // linger in memory or carry over to the next episode. This is purely in-RAM
+  // (no Firebase/disk persistence) — we just revoke the blob URL.
+  if(currentPage==='episode' && name!=='episode' && typeof _episodeAudioUrl!=='undefined' && _episodeAudioUrl){
+    try{ URL.revokeObjectURL(_episodeAudioUrl); }catch{}
+    _episodeAudioUrl=null;
+  }
   currentPage=name;
   document.querySelectorAll('.pg').forEach(p=>p.classList.remove('active'));
   document.getElementById('page-'+name)?.classList.add('active');
@@ -4325,6 +4332,12 @@ async function loadShow(directInput, forceRefresh){
 async function loadChapter(chapId, idx){
   if(!chapId){ return; }
   console.log('loadChapter START', chapId);
+  // Drop any in-memory episode audio from the previous chapter so the player
+  // doesn't carry over the wrong audio. Nothing was persisted — just the blob URL.
+  if(typeof _episodeAudioUrl!=='undefined' && _episodeAudioUrl){
+    try{ URL.revokeObjectURL(_episodeAudioUrl); }catch{}
+    _episodeAudioUrl=null;
+  }
   goPage('episode');
   setStatus('load','Loading...'); showOv('⏳','Loading Episode','Fetching QC remarks...',0);
 
@@ -4602,7 +4615,7 @@ function renderContent(){
     </div>`;
   } else {
     html+=`<div style="background:var(--surface);border:1px dashed var(--border);border-radius:var(--r);padding:12px 16px;margin-bottom:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-      <span style="font-size:11px;color:var(--muted)">Load the episode audio to jump to any remark's timestamp instantly.</span>
+      <span style="font-size:11px;color:var(--muted)">Load the episode audio to jump to any remark's timestamp instantly. <span style="color:var(--muted2)">Audio is kept in memory only — nothing is saved; it's discarded when you leave this episode.</span></span>
       <button class="btn btn-p btn-sm" id="epAudioLoadBtn" onclick="loadEpisodePlayback()" ${_episodeAudioLoading?'disabled':''}>${_episodeAudioLoading?'⏳ Loading…':'▶ Load Episode Audio'}</button>
     </div>`;
   }
