@@ -4386,13 +4386,19 @@ async function loadChapter(chapId, idx){
     activeEp._ttsJobDetails = ch.text_to_speech_details || null;
     activeEp._bookId = ch.book_id || '';
 
-    remarks=(ch.qc_details||[]).map((qc,i)=>({
-      idx:i, time:qc.time, issueType:qc.issue_type||'',
-      userEmail:qc.user_email||'', timestamp:qc.timestamp||'',
-      audioStatus:qc.audio_status||'', cmsStatus:qc.status||'pending',
-      scriptLine:extractLine(qc.remarks), note:extractNote(qc.remarks),
-      rawRemarks:qc.remarks, needsPatch:!!extractLine(qc.remarks),
-    }));
+    // Merge in any time overrides previously saved via "✏ edit timestamp"
+    const fbRemarks=fbData?.remarks||{};
+    remarks=(ch.qc_details||[]).map((qc,i)=>{
+      const stored=Array.isArray(fbRemarks)?fbRemarks[i]:fbRemarks[String(i)];
+      const timeOverride=stored?.timeOverride||'';
+      return {
+        idx:i, time:qc.time, timeOverride, issueType:qc.issue_type||'',
+        userEmail:qc.user_email||'', timestamp:qc.timestamp||'',
+        audioStatus:qc.audio_status||'', cmsStatus:qc.status||'pending',
+        scriptLine:extractLine(qc.remarks), note:extractNote(qc.remarks),
+        rawRemarks:qc.remarks, needsPatch:!!extractLine(qc.remarks),
+      };
+    });
 
     const fbDisps2=fbData?.dispositions||{};
     for(const r2 of remarks){
@@ -4506,6 +4512,77 @@ function extractNote(remarks){
 }
 
 // ── Render ───────────────────────────────────────────────────
+let _episodeAudioUrl=null;
+let _episodeAudioLoading=false;
+
+async function loadEpisodePlayback(){
+  if(!activeEp||_episodeAudioLoading) return;
+  _episodeAudioLoading=true;
+  const btn=document.getElementById('epAudioLoadBtn');
+  if(btn){ btn.disabled=true; btn.textContent='⏳ Loading episode audio…'; }
+  try{
+    const chapId=activeEp.chapter_id;
+    const showId=activeShowId||activeEp.show_id||'';
+    let audioUrl='';
+    for(const ev of ['download','play']){
+      const r=await fetch(`${CMS_BASE}/get_media_url?type=episode&media_type=audio&event=${ev}&chapter_id=${chapId}&show_id=${showId}`,{headers:hdrs()});
+      if(!r.ok) continue;
+      const d=await r.json();
+      const u=d.result?.media_url||d.result?.url||d.media_url||d.url;
+      if(u){ audioUrl=u; break; }
+    }
+    if(!audioUrl) throw new Error('CMS returned no playable URL for this chapter');
+    const dl=await fetch(audioUrl);
+    if(!dl.ok) throw new Error('Audio fetch HTTP '+dl.status+(dl.status===403?' (likely DRM-protected — try a chapter with raw to-be-recorded audio)':''));
+    const blob=await dl.blob();
+    if(_episodeAudioUrl) URL.revokeObjectURL(_episodeAudioUrl);
+    _episodeAudioUrl=URL.createObjectURL(blob);
+    renderContent();
+    toast('Episode audio loaded — click 🎧 on any remark to jump','ok');
+  }catch(e){
+    console.error('loadEpisodePlayback failed:',e);
+    toast('Could not load episode audio: '+e.message,'err');
+    if(btn){ btn.disabled=false; btn.textContent='▶ Load Episode Audio'; }
+  }finally{
+    _episodeAudioLoading=false;
+  }
+}
+
+function seekEpisodeTo(timeStr){
+  const player=document.getElementById('epPlayer');
+  if(!player||!_episodeAudioUrl){ toast('Load the episode audio first','warn'); return; }
+  const secs=parseTime(timeStr);
+  if(isNaN(secs)){ toast('Could not parse timestamp','err'); return; }
+  player.currentTime=Math.max(0, secs);
+  player.play().catch(()=>{});
+  // Scroll the player into view so the user sees the seek happened
+  player.scrollIntoView({behavior:'smooth', block:'nearest'});
+}
+
+async function editRemarkTime(ri){
+  const r=remarks[ri]; if(!r) return;
+  const current=r.timeOverride||r.time||'';
+  const v=(prompt('Edit timestamp (format MM:SS or HH:MM:SS or seconds):', current)||'').trim();
+  if(!v||v===current) return;
+  // Validate by attempting to parse
+  const secs=parseTime(v);
+  if(isNaN(secs)||secs<0){ toast('Invalid timestamp format','err'); return; }
+  r.timeOverride=v;
+  try{
+    const chapId=activeEp?.chapter_id;
+    if(chapId){
+      // Persist as an override field so a CMS re-sync doesn't blow it away.
+      await dbRef('episodeRemarks/'+chapId+'/remarks/'+ri+'/timeOverride').set(v);
+    }
+    toast('Timestamp updated to '+v,'ok');
+    refreshCard(ri);
+  }catch(e){
+    console.error('editRemarkTime save failed:',e);
+    toast('Saved locally but Firebase write failed: '+e.message,'warn');
+    refreshCard(ri);
+  }
+}
+
 function renderContent(){
   const mc=document.getElementById('mainContent');
   if(!remarks.length){ mc.innerHTML=`<div class="empty"><div class="empty-icon">✅</div><div class="empty-title">No QC remarks</div><div class="empty-sub">This episode has no pending QC notes</div></div>`; return; }
@@ -4513,6 +4590,22 @@ function renderContent(){
   const needed=remarks.filter(r=>r.needsPatch);
   const accepted=needed.filter(r=>RS[r.idx].acceptedTake>=0);
   let html='';
+
+  // Episode audio player — sticky at the top so it stays accessible while
+  // scrolling through remark cards. Lazy-loaded so we don't fetch the audio
+  // on every episode open.
+  if(_episodeAudioUrl){
+    html+=`<div style="position:sticky;top:0;z-index:50;background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:10px 12px;margin-bottom:14px;box-shadow:var(--shadow);display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <span style="font-size:11px;font-weight:700;font-family:var(--mono);color:var(--muted);text-transform:uppercase;letter-spacing:1px">Episode Audio</span>
+      <audio id="epPlayer" controls src="${_episodeAudioUrl}" preload="metadata" style="flex:1;min-width:260px;height:34px"></audio>
+      <button class="btn btn-g btn-sm" onclick="loadEpisodePlayback()" title="Re-fetch audio from CMS">↻ Reload</button>
+    </div>`;
+  } else {
+    html+=`<div style="background:var(--surface);border:1px dashed var(--border);border-radius:var(--r);padding:12px 16px;margin-bottom:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <span style="font-size:11px;color:var(--muted)">Load the episode audio to jump to any remark's timestamp instantly.</span>
+      <button class="btn btn-p btn-sm" id="epAudioLoadBtn" onclick="loadEpisodePlayback()" ${_episodeAudioLoading?'disabled':''}>${_episodeAudioLoading?'⏳ Loading…':'▶ Load Episode Audio'}</button>
+    </div>`;
+  }
 
   html+=`<div class="op-bar">
     <div class="op-lbl">Accepted: <strong style="color:var(--green)">${accepted.length}</strong> / ${needed.length} patches</div>
@@ -4649,9 +4742,13 @@ function mkCard(r){
   const dictKey=activeEp?`${activeEp.chapter_id}_${r.idx}`:'';
   const savedDict=isMisp&&dictKey?(_dictCache[dictKey]||null):null;
 
+  const displayTime=r.timeOverride||r.time||'';
+  const timeChangedHint=r.timeOverride?` <span style="font-size:9px;color:var(--orange);font-weight:600" title="Original from CMS: ${esc(r.time||'')}">(edited)</span>`:'';
   return `<div class="rc ${cc}" id="rc-${r.idx}">
     <div class="rc-hdr">
-      <span class="rc-time">⏱ ${r.time}</span>
+      <span class="rc-time" title="Click ✏ to edit or 🎧 to play episode at this timestamp">⏱ ${esc(displayTime)}${timeChangedHint}</span>
+      <button onclick="event.stopPropagation();seekEpisodeTo('${esc(displayTime).replace(/'/g,'')}')" title="Play episode at this timestamp" style="background:transparent;border:1px solid var(--border);border-radius:5px;padding:2px 8px;cursor:pointer;font-size:11px">🎧 Listen</button>
+      <button onclick="event.stopPropagation();editRemarkTime(${r.idx})" title="Edit timestamp" style="background:transparent;border:1px solid var(--border);border-radius:5px;padding:2px 8px;cursor:pointer;font-size:11px">✏</button>
       <span class="rc-type ${tc}">${r.issueType||'QC'}</span>
       ${st.status==='accepted'?`<span class="rc-sbadge rsb-acc">✓ Take ${st.acceptedTake+1} Accepted</span>`:''}
       ${st.status==='discarded'?`<span class="rc-sbadge rsb-dis">✗ Discarded</span>`:''}
