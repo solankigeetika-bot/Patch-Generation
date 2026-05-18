@@ -365,10 +365,28 @@
       const s=state.srcEps[p.srcIdx], t=state.tgtEps[p.tgtIdx];
       const tag=`Ep ${s.seq||'?'} → Ep ${t.seq||'?'}`;
       log(`[${i+1}/${enabled.length}] ${tag}`);
-      try{ await copyOne(s,t); okEps.push(t.seq||s.seq||'?'); log(`  ✓ copied`,'ok'); }
-      catch(e){
-        failedEps.push({tgtSeq:t.seq||'?', srcSeq:s.seq||'?', reason:e.message});
-        log(`  ✗ ${e.message}`,'err');
+      // Retry up to 3 times. CMS sometimes drops the upload-registration
+      // when many uploads happen in a short window; backing off and
+      // retrying usually clears it.
+      let lastErr=null, succeeded=false;
+      for(let attempt=1; attempt<=3; attempt++){
+        try{
+          if(attempt>1){
+            const wait=attempt===2?8000:15000;
+            log(`  ↻ retry attempt ${attempt}/3 in ${wait/1000}s…`);
+            await new Promise(r=>setTimeout(r, wait));
+          }
+          await copyOne(s,t);
+          succeeded=true; break;
+        }catch(e){
+          lastErr=e;
+          if(attempt<3) log(`  ⚠ attempt ${attempt} failed: ${e.message}`);
+        }
+      }
+      if(succeeded){ okEps.push(t.seq||s.seq||'?'); log(`  ✓ copied`,'ok'); }
+      else {
+        failedEps.push({tgtSeq:t.seq||'?', srcSeq:s.seq||'?', reason:lastErr?.message||'unknown'});
+        log(`  ✗ ${lastErr?.message||'unknown'} (after 3 attempts)`,'err');
       }
       if(i<enabled.length-1) await new Promise(r=>setTimeout(r, 4000));
     }
