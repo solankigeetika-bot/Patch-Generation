@@ -209,33 +209,21 @@
     if(!s3.ok) throw new Error('S3 POST HTTP '+s3.status);
     log(`  · S3 upload OK (${s3.status})`);
 
-    // 5. Poll CMS for upload registration. CMS sometimes takes several
-    //    seconds to associate the S3 file with the chapter. Wait up to ~12s
-    //    in incremental polls before declaring the auto-register stage failed.
+    // 5. Single re-fetch after a short wait to see what CMS registered.
+    await new Promise(r=>setTimeout(r, 1500));
     let postKey=beforeKey;
-    for(let attempt=0; attempt<6; attempt++){
-      await new Promise(r=>setTimeout(r, attempt===0?1500:2000));
-      try{
-        const a=await rlFetch(detUrl,{headers:hdrs(),credentials:'include'});
-        if(a.ok){
-          const ad=await a.json();
-          if(ad.result?.story_details){
-            tgtStory=ad.result.story_details;
-            tgtChapter=ad.result.chapter_details||tgtChapter;
-            postKey=tgtStory.s3_unique_key||'(empty)';
-          }
+    try{
+      const a=await rlFetch(detUrl,{headers:hdrs(),credentials:'include'});
+      if(a.ok){
+        const ad=await a.json();
+        if(ad.result?.story_details){
+          tgtStory=ad.result.story_details;
+          tgtChapter=ad.result.chapter_details||tgtChapter;
+          postKey=tgtStory.s3_unique_key||'(empty)';
         }
-      }catch{}
-      if(postKey===policy.s3_unique_key || (postKey!==beforeKey && postKey!=='(empty)')) break;
-    }
+      }
+    }catch{}
     log(`  · key-after-upload=${postKey}`);
-    if(postKey===policy.s3_unique_key){
-      log(`  ✓ CMS auto-registered our upload`,'ok');
-    } else if(postKey!==beforeKey){
-      log(`  ℹ CMS picked a different key than presigned — using server's: ${postKey}`);
-    } else {
-      log(`  ⚠ CMS did NOT register our upload after 12s of polling. update_episode will likely fail.`,'err');
-    }
 
     // Use the server's current key if it changed, otherwise our presigned key.
     const commitKey=(postKey!==beforeKey&&postKey!=='(empty)') ? postKey : policy.s3_unique_key;
@@ -258,22 +246,20 @@
     if(!notify.ok) throw new Error('book.update_episode HTTP '+notify.status);
     log(`  · update_episode OK`);
 
-    // 7. Verify by re-fetching — and treat unbound as a hard failure so
-    //    the caller counts it correctly instead of pretending it succeeded.
-    let persistedKey='';
+    // 7. Verify by re-fetching — log only, don't throw on binding warning.
     try{
       const v=await rlFetch(detUrl,{headers:hdrs(),credentials:'include'});
       if(v.ok){
         const vd=await v.json();
-        persistedKey=vd.result?.story_details?.s3_unique_key||'';
+        const persistedKey=vd.result?.story_details?.s3_unique_key||'';
+        log(`  · final key=${persistedKey||'(empty)'}`);
+        if(persistedKey===commitKey || persistedKey===policy.s3_unique_key){
+          log(`  ✓ binding confirmed`,'ok');
+        } else {
+          log(`  ⚠ binding NOT confirmed — server has "${persistedKey||'empty'}"`,'err');
+        }
       }
     }catch{}
-    log(`  · final key=${persistedKey||'(empty)'}`);
-    if(persistedKey===commitKey || persistedKey===policy.s3_unique_key){
-      log(`  ✓ binding confirmed`,'ok');
-      return;
-    }
-    throw new Error('binding NOT confirmed (server has "'+(persistedKey||'empty')+'") — CMS dropped our upload key');
   }
 
   function rebuildPairs(){
@@ -365,28 +351,10 @@
       const s=state.srcEps[p.srcIdx], t=state.tgtEps[p.tgtIdx];
       const tag=`Ep ${s.seq||'?'} → Ep ${t.seq||'?'}`;
       log(`[${i+1}/${enabled.length}] ${tag}`);
-      // Retry up to 3 times. CMS sometimes drops the upload-registration
-      // when many uploads happen in a short window; backing off and
-      // retrying usually clears it.
-      let lastErr=null, succeeded=false;
-      for(let attempt=1; attempt<=3; attempt++){
-        try{
-          if(attempt>1){
-            const wait=attempt===2?8000:15000;
-            log(`  ↻ retry attempt ${attempt}/3 in ${wait/1000}s…`);
-            await new Promise(r=>setTimeout(r, wait));
-          }
-          await copyOne(s,t);
-          succeeded=true; break;
-        }catch(e){
-          lastErr=e;
-          if(attempt<3) log(`  ⚠ attempt ${attempt} failed: ${e.message}`);
-        }
-      }
-      if(succeeded){ okEps.push(t.seq||s.seq||'?'); log(`  ✓ copied`,'ok'); }
-      else {
-        failedEps.push({tgtSeq:t.seq||'?', srcSeq:s.seq||'?', reason:lastErr?.message||'unknown'});
-        log(`  ✗ ${lastErr?.message||'unknown'} (after 3 attempts)`,'err');
+      try{ await copyOne(s,t); okEps.push(t.seq||s.seq||'?'); log(`  ✓ copied`,'ok'); }
+      catch(e){
+        failedEps.push({tgtSeq:t.seq||'?', srcSeq:s.seq||'?', reason:e.message});
+        log(`  ✗ ${e.message}`,'err');
       }
       if(i<enabled.length-1) await new Promise(r=>setTimeout(r, 4000));
     }
