@@ -209,30 +209,32 @@
     if(!s3.ok) throw new Error('S3 POST HTTP '+s3.status);
     log(`  · S3 upload OK (${s3.status})`);
 
-    // 5. Wait, then re-fetch episode_details to see what CMS registered.
-    //    Hypothesis: CMS auto-updates story_details.s3_unique_key once the
-    //    file lands. If so, we use whatever the server now reports rather
-    //    than overriding with the presigned key.
-    await new Promise(r=>setTimeout(r, 1500));
+    // 5. Poll CMS for upload registration. CMS sometimes takes several
+    //    seconds to associate the S3 file with the chapter. Wait up to ~12s
+    //    in incremental polls before declaring the auto-register stage failed.
     let postKey=beforeKey;
-    try{
-      const a=await rlFetch(detUrl,{headers:hdrs(),credentials:'include'});
-      if(a.ok){
-        const ad=await a.json();
-        if(ad.result?.story_details){
-          tgtStory=ad.result.story_details;
-          tgtChapter=ad.result.chapter_details||tgtChapter;
-          postKey=tgtStory.s3_unique_key||'(empty)';
+    for(let attempt=0; attempt<6; attempt++){
+      await new Promise(r=>setTimeout(r, attempt===0?1500:2000));
+      try{
+        const a=await rlFetch(detUrl,{headers:hdrs(),credentials:'include'});
+        if(a.ok){
+          const ad=await a.json();
+          if(ad.result?.story_details){
+            tgtStory=ad.result.story_details;
+            tgtChapter=ad.result.chapter_details||tgtChapter;
+            postKey=tgtStory.s3_unique_key||'(empty)';
+          }
         }
-      }
-    }catch{}
+      }catch{}
+      if(postKey===policy.s3_unique_key || (postKey!==beforeKey && postKey!=='(empty)')) break;
+    }
     log(`  · key-after-upload=${postKey}`);
     if(postKey===policy.s3_unique_key){
       log(`  ✓ CMS auto-registered our upload`,'ok');
     } else if(postKey!==beforeKey){
       log(`  ℹ CMS picked a different key than presigned — using server's: ${postKey}`);
     } else {
-      log(`  ⚠ CMS did NOT register our upload (key unchanged). update_episode will likely fail.`,'err');
+      log(`  ⚠ CMS did NOT register our upload after 12s of polling. update_episode will likely fail.`,'err');
     }
 
     // Use the server's current key if it changed, otherwise our presigned key.
@@ -256,22 +258,22 @@
     if(!notify.ok) throw new Error('book.update_episode HTTP '+notify.status);
     log(`  · update_episode OK`);
 
-    // 7. Verify by re-fetching
+    // 7. Verify by re-fetching — and treat unbound as a hard failure so
+    //    the caller counts it correctly instead of pretending it succeeded.
+    let persistedKey='';
     try{
       const v=await rlFetch(detUrl,{headers:hdrs(),credentials:'include'});
       if(v.ok){
         const vd=await v.json();
-        const persistedKey=vd.result?.story_details?.s3_unique_key||'';
-        log(`  · final key=${persistedKey||'(empty)'}`);
-        if(persistedKey===commitKey){
-          log(`  ✓ binding confirmed`,'ok');
-        } else if(persistedKey===policy.s3_unique_key){
-          log(`  ✓ binding confirmed (presigned key)`,'ok');
-        } else {
-          log(`  ⚠ binding NOT confirmed — server has "${persistedKey||'empty'}" instead of "${commitKey}"`,'err');
-        }
+        persistedKey=vd.result?.story_details?.s3_unique_key||'';
       }
     }catch{}
+    log(`  · final key=${persistedKey||'(empty)'}`);
+    if(persistedKey===commitKey || persistedKey===policy.s3_unique_key){
+      log(`  ✓ binding confirmed`,'ok');
+      return;
+    }
+    throw new Error('binding NOT confirmed (server has "'+(persistedKey||'empty')+'") — CMS dropped our upload key');
   }
 
   function rebuildPairs(){
@@ -357,18 +359,34 @@
     if(!confirm(`Copy audio for ${enabled.length} episode(s)?\nSource → Target.\nThis modifies CMS data.`)) return;
     state.running=true; state.log=[]; render();
     log(`Starting ${enabled.length} copies…`);
-    let ok=0, fail=0;
+    const failedEps=[]; const okEps=[];
     for(let i=0;i<enabled.length;i++){
       const p=enabled[i];
       const s=state.srcEps[p.srcIdx], t=state.tgtEps[p.tgtIdx];
-      log(`[${i+1}/${enabled.length}] Ep ${s.seq||'?'} → Ep ${t.seq||'?'}`);
-      try{ await copyOne(s,t); ok++; log(`  ✓ copied`,'ok'); }
-      catch(e){ fail++; log(`  ✗ ${e.message}`,'err'); }
-      // Polite delay between pairs to avoid CMS rate-limiting (kicks in after
-      // ~5 rapid uploads). 4s feels safe without making big batches painful.
+      const tag=`Ep ${s.seq||'?'} → Ep ${t.seq||'?'}`;
+      log(`[${i+1}/${enabled.length}] ${tag}`);
+      try{ await copyOne(s,t); okEps.push(t.seq||s.seq||'?'); log(`  ✓ copied`,'ok'); }
+      catch(e){
+        failedEps.push({tgtSeq:t.seq||'?', srcSeq:s.seq||'?', reason:e.message});
+        log(`  ✗ ${e.message}`,'err');
+      }
       if(i<enabled.length-1) await new Promise(r=>setTimeout(r, 4000));
     }
-    log(`Done — ${ok} succeeded, ${fail} failed`, fail?'err':'ok');
+    log(`Done — ${okEps.length} succeeded, ${failedEps.length} failed`, failedEps.length?'err':'ok');
+    if(failedEps.length){
+      const list=failedEps.map(f=>`Ep ${f.tgtSeq}`).join(', ');
+      log(`  Failed episodes: ${list}`, 'err');
+      // Group failures by reason so the user knows what to retry
+      const byReason={};
+      for(const f of failedEps){
+        const k=(f.reason||'unknown').split('—')[0].trim().substring(0,80);
+        if(!byReason[k]) byReason[k]=[];
+        byReason[k].push('Ep '+f.tgtSeq);
+      }
+      for(const [reason, eps] of Object.entries(byReason)){
+        log(`    • ${reason}: ${eps.join(', ')}`, 'err');
+      }
+    }
     state.running=false;
   }
   window.__AR_load_src=loadSrc;
