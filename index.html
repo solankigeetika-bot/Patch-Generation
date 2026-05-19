@@ -2952,7 +2952,7 @@ async function loadQuickAudit(){
         seenChap.add(cid);
         eps.push(ep);
       }
-      log && console.log(`[QuickAudit] ${id}: ${eps.length} episodes (no-chapPag=${epsA.length}, chapPag=${epsB.length})`);
+      console.log(`[QuickAudit] ${id}: ${eps.length} episodes (no-chapPag=${epsA.length}, chapPag=${epsB.length})`);
 
       // 2. Per-episode details — fetch qc_details + audio_duration. Each
       //    chapter is retried once on transient failure so a flaky fetch
