@@ -2999,6 +2999,13 @@ async function loadQuickAudit(){
             reportedAt:q.timestamp||q.created_at||q.updated_at||q.qc_time||null
           }));
           const epDur=_maxDuration(ch, cd);
+          if(!epDur){
+            try{
+              console.log('[QuickAudit] no duration found for chapter ' + chapId);
+              console.log('  chapter_details keys:', Object.keys(ch||{}));
+              console.log('  full chapter_details:', JSON.parse(JSON.stringify(ch||{})));
+            }catch(e){}
+          }
           epOut.push({
             chapId,
             title:ch.chapter_title||cd.chapter_title||'Episode',
