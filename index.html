@@ -2844,6 +2844,18 @@ let _payData=null;   // last computed result, for CSV export
 // the listener did, just with this show's contribution narrowed.
 let _payShowFilter='', _payEpFrom='', _payEpTo='';
 
+// Quick Audit (in-memory only, NEVER written to Firebase). User pastes
+// multiple show IDs, we fetch live from CMS, surface the proof listeners
+// who reported on those shows, let user select which to include, then show
+// hours + ALL errors (verified + unverified) + words for that slice.
+let _quickAudit={
+  showIdsRaw:'',          // textarea raw value
+  loadedShows:[],         // [{showId, name, episodes:[{chapId,title,seq,duration,qc:[...]}]}]
+  selectedPLs:{},         // {email:true} — which PLs to include in compute
+  results:null,           // last computed totals, also drives the render
+  loading:false
+};
+
 function _defaultPayPeriod(){
   // 15th-to-15th cycle. If today > 15: period = 16th(prev month) → 15th(this month).
   // Otherwise: period = 16th(two months ago) → 15th(last month).
@@ -2885,6 +2897,147 @@ function applyPayShowFilter(){
 }
 function clearPayShowFilter(){
   _payShowFilter=''; _payEpFrom=''; _payEpTo='';
+  renderPaymentReport();
+}
+
+// ── Quick Audit (no Firebase writes) ───────────────────────
+async function loadQuickAudit(){
+  const raw=(document.getElementById('quickAuditShowIds')?.value||'').trim();
+  _quickAudit.showIdsRaw=raw;
+  if(!raw){ toast('Paste one or more show IDs (one per line)','warn'); return; }
+  if(!authToken||!uid){ toast('Connect to CMS first via the Connect PatchStudio bookmarklet','warn'); return; }
+  // Parse: one show ID per line. Accept URLs, ?id=hex, show_id=hex, or bare hex.
+  const ids=raw.split(/\r?\n/).map(s=>{
+    s=s.trim(); if(!s) return '';
+    return s.match(/show_id=([a-f0-9]{20,})/i)?.[1]||s.match(/[?&]id=([a-f0-9]{20,})/i)?.[1]||(s.match(/^[a-f0-9]{20,}$/i)?s:'');
+  }).filter(Boolean);
+  if(!ids.length){ toast('Could not parse any valid show IDs','warn'); return; }
+
+  _quickAudit.loading=true; renderPaymentReport();
+  toast(`Pulling ${ids.length} show(s) from CMS…`,'ok');
+  const loaded=[];
+  try{
+    for(const id of ids){
+      // 1. Episodes list (paginated like the existing payment-only-shows fetch).
+      let eps=[]; let page=1;
+      while(page<=100){
+        const r=await fetch(`${CMS_BASE}/book.show_episodes?show_id=${id}&view=cms&is_novel=0&paginate_chapters=true&page_no=${page}`, {headers:hdrs()});
+        if(!r.ok) break;
+        const d=await r.json();
+        const list=d.result?.episodes||[];
+        eps=eps.concat(list);
+        if(list.length<5) break;
+        page++;
+      }
+      // 2. Per-episode details — gives us qc_details + audio_duration.
+      const epOut=[];
+      const BATCH=5;
+      for(let b=0;b<eps.length;b+=BATCH){
+        const slice=eps.slice(b, b+BATCH);
+        await Promise.allSettled(slice.map(async ep=>{
+          const cd=ep.chapter_details||ep;
+          const chapId=cd.chapter_id||ep.chapter_id||'';
+          if(!chapId) return;
+          try{
+            const dr=await fetch(`${CMS_BASE}/book.episode_details?chapter_id=${chapId}&is_novel=0`, {headers:hdrs()});
+            if(!dr.ok) return;
+            const dd=await dr.json();
+            const ch=dd.result?.chapter_details; if(!ch) return;
+            const qc=(ch.qc_details||[]).map(q=>({
+              time:q.time||'', issueType:q.issue_type||'',
+              userEmail:q.user_email||'', rawRemarks:q.remarks||'',
+              reportedAt:q.timestamp||q.created_at||q.updated_at||q.qc_time||null
+            }));
+            epOut.push({
+              chapId,
+              title:ch.chapter_title||cd.chapter_title||'Episode',
+              seq:ch.natural_sequence_number||cd.natural_sequence_number||0,
+              duration:ch.audio_duration||cd.audio_duration||0,
+              qc
+            });
+          }catch{}
+        }));
+      }
+      const showName=epOut[0]?.title?(eps[0]?.chapter_details?.show_title||''):id.substring(0,8);
+      loaded.push({showId:id, name:showName||id.substring(0,8), episodes:epOut});
+    }
+    _quickAudit.loadedShows=loaded;
+    // Initialize PL selections from the QC user emails we saw across all shows.
+    const seen=new Set();
+    for(const s of loaded) for(const e of s.episodes) for(const q of e.qc) if(q.userEmail) seen.add(q.userEmail);
+    // Default: include all PLs.
+    _quickAudit.selectedPLs={};
+    for(const e of seen) _quickAudit.selectedPLs[e]=true;
+    _quickAudit.results=null;
+    toast(`Loaded ${loaded.length} show(s), ${seen.size} proof listener(s) found`,'ok');
+  }catch(e){
+    console.error('Quick audit load failed:',e);
+    toast('Quick audit load failed: '+e.message,'err');
+  }finally{
+    _quickAudit.loading=false;
+    renderPaymentReport();
+  }
+}
+
+function toggleQuickAuditPL(email, on){
+  _quickAudit.selectedPLs[email]=!!on;
+}
+function toggleAllQuickAuditPLs(on){
+  const all={};
+  for(const s of _quickAudit.loadedShows) for(const e of s.episodes) for(const q of e.qc) if(q.userEmail) all[q.userEmail]=true;
+  for(const e of Object.keys(all)) _quickAudit.selectedPLs[e]=!!on;
+  renderPaymentReport();
+}
+
+function computeQuickAudit(){
+  if(!_quickAudit.loadedShows.length){ toast('Load shows first','warn'); return; }
+  if(!_payPeriod) _payPeriod=_defaultPayPeriod();
+  const {fromTs, toTs}=_payPeriod;
+  function parseTs(v){ if(!v) return 0; if(typeof v==='number') return v<1e12?v*1000:v; const n=Date.parse(v); return isNaN(n)?0:n; }
+
+  // Aggregate: per (email, show), count errors (ALL of them — verified+normal),
+  // collect episodes the listener appeared on (drives the hours bucket).
+  const totals={}; // {email: {hours, errors, episodes:Set, byShow:{name:{hours,errors,eps:Set}}}}
+  function getU(email){
+    if(!totals[email]) totals[email]={email, hours:0, errors:0, episodes:new Set(), byShow:{}};
+    return totals[email];
+  }
+  function getS(u, sn){ if(!u.byShow[sn]) u.byShow[sn]={hours:0, errors:0, eps:new Set()}; return u.byShow[sn]; }
+
+  for(const show of _quickAudit.loadedShows){
+    for(const ep of show.episodes){
+      for(const q of ep.qc){
+        if(!q.userEmail) continue;
+        if(!_quickAudit.selectedPLs[q.userEmail]) continue;
+        const ts=parseTs(q.reportedAt);
+        if(ts&&(ts<fromTs||ts>toTs)) continue;
+        const u=getU(q.userEmail);
+        const s=getS(u, show.name);
+        u.errors++;
+        s.errors++;
+        // Track episodes for hour accumulation
+        const epKey=show.showId+':'+ep.chapId;
+        if(!u.episodes.has(epKey)){
+          u.episodes.add(epKey);
+          u.hours+=(ep.duration||0)/3600;
+          s.hours+=(ep.duration||0)/3600;
+        }
+        s.eps.add(ep.chapId);
+      }
+    }
+  }
+
+  _quickAudit.results=Object.values(totals).map(u=>{
+    u.hourPay=u.hours*PAY_RATE_HOUR;
+    u.errorPay=u.errors*PAY_RATE_ERROR;
+    u.total=u.hourPay+u.errorPay;
+    return u;
+  }).sort((a,b)=>b.total-a.total);
+  renderPaymentReport();
+}
+
+function clearQuickAudit(){
+  _quickAudit={showIdsRaw:'', loadedShows:[], selectedPLs:{}, results:null, loading:false};
   renderPaymentReport();
 }
 
@@ -3138,6 +3291,76 @@ async function renderPaymentReport(){
       </div>
     </div>
     <div style="font-size:11px;color:var(--muted);margin-bottom:8px;font-family:var(--mono)">Billing period: ${_fmtPayDate(from)} → ${_fmtPayDate(to)}</div>
+
+    <div style="background:#eef6ff;border:1.5px solid #93c5fd;border-radius:var(--r);padding:14px 16px;margin-bottom:14px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px;margin-bottom:8px">
+        <div>
+          <div style="font-size:14px;font-weight:800;color:#1e40af">⚡ Quick Audit (in-memory, not saved)</div>
+          <div style="font-size:10px;color:var(--muted)">Paste CMS show IDs (one per line), load fresh from CMS, pick proof listeners, and compute hours + ALL errors (verified or not). No Firebase writes.</div>
+        </div>
+        <button class="btn btn-g btn-sm" onclick="clearQuickAudit()" style="font-size:10px">Clear</button>
+      </div>
+      <textarea id="quickAuditShowIds" rows="3" placeholder="Paste show IDs or CMS URLs, one per line.&#10;e.g. 761e43e47901ac9381feec37723b67c11694d52b" style="width:100%;font-family:var(--mono);font-size:11px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;margin-bottom:6px">${esc(_quickAudit.showIdsRaw||'')}</textarea>
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+        <button class="btn btn-p btn-sm" onclick="loadQuickAudit()" ${_quickAudit.loading?'disabled':''} style="font-size:11px">${_quickAudit.loading?'⏳ Loading…':'▶ Load from CMS'}</button>
+        <span style="font-family:var(--mono);font-size:10px;color:var(--muted)">${_quickAudit.loadedShows.length} show(s) loaded</span>
+      </div>`;
+
+    // After load: show PL checklist + Compute button
+    if(_quickAudit.loadedShows.length){
+      const pls=new Set();
+      for(const s of _quickAudit.loadedShows) for(const e of s.episodes) for(const q of e.qc) if(q.userEmail) pls.add(q.userEmail);
+      const plArr=[...pls].sort();
+      const selectedCount=plArr.filter(e=>_quickAudit.selectedPLs[e]).length;
+      html+=`<div style="margin-top:10px;padding:10px;background:#fff;border:1px solid var(--border);border-radius:6px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;flex-wrap:wrap;gap:6px">
+          <div style="font-size:11px;font-weight:700">Proof Listeners found (${plArr.length}) — pick which to include</div>
+          <div style="display:flex;gap:4px">
+            <button class="btn btn-g btn-sm" style="font-size:10px" onclick="toggleAllQuickAuditPLs(true)">All</button>
+            <button class="btn btn-g btn-sm" style="font-size:10px" onclick="toggleAllQuickAuditPLs(false)">None</button>
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:3px;max-height:160px;overflow-y:auto;font-family:var(--mono);font-size:11px">
+          ${plArr.map(e=>`<label style="display:flex;gap:6px;align-items:center;cursor:pointer">
+            <input type="checkbox" ${_quickAudit.selectedPLs[e]?'checked':''} onchange="toggleQuickAuditPL('${esc(e).replace(/'/g,"\\'")}',this.checked)"/>
+            <span>${esc(e)}</span>
+          </label>`).join('')}
+        </div>
+        <div style="margin-top:8px;display:flex;gap:6px;align-items:center">
+          <button class="btn btn-orange btn-sm" onclick="computeQuickAudit()" style="font-size:11px;font-weight:700">▶ Compute (${selectedCount} PL${selectedCount===1?'':'s'})</button>
+          <span style="font-size:10px;color:var(--muted)">Uses current billing period (above) and counts ALL errors — verified + unverified.</span>
+        </div>`;
+
+      if(_quickAudit.results){
+        const grand=_quickAudit.results.reduce((s,u)=>s+u.total,0);
+        html+=`<div style="margin-top:10px;overflow-x:auto">
+          <table style="border-collapse:collapse;width:100%;font-size:11px;font-family:var(--mono)">
+            <thead><tr style="background:var(--surface2)">
+              <th style="padding:5px 8px;text-align:left">Listener</th>
+              <th style="padding:5px 8px;text-align:right">Hours</th>
+              <th style="padding:5px 8px;text-align:right">€ Hour</th>
+              <th style="padding:5px 8px;text-align:right">Errors (all)</th>
+              <th style="padding:5px 8px;text-align:right">€ Errors</th>
+              <th style="padding:5px 8px;text-align:right;background:#FFFFCC">Total €</th>
+            </tr></thead><tbody>`;
+        for(const u of _quickAudit.results){
+          html+=`<tr style="border-bottom:1px solid var(--border)">
+            <td style="padding:4px 8px;font-weight:700">${esc(u.email)}</td>
+            <td style="padding:4px 8px;text-align:right">${u.hours.toFixed(2)}</td>
+            <td style="padding:4px 8px;text-align:right">€${u.hourPay.toFixed(2)}</td>
+            <td style="padding:4px 8px;text-align:right">${u.errors}</td>
+            <td style="padding:4px 8px;text-align:right">€${u.errorPay.toFixed(2)}</td>
+            <td style="padding:4px 8px;text-align:right;background:#FFFFCC;font-weight:700">€${u.total.toFixed(2)}</td>
+          </tr>`;
+        }
+        html+=`<tr style="background:var(--surface2);font-weight:800">
+          <td colspan="5" style="padding:5px 8px">Quick Audit Total</td>
+          <td style="padding:5px 8px;text-align:right;background:#FFFFCC">€${grand.toFixed(2)}</td>
+        </tr></tbody></table></div>`;
+      }
+      html+=`</div>`;
+    }
+    html+=`</div>
 
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 12px;margin-bottom:14px;font-family:var(--mono);font-size:11px">
       <span style="font-weight:700;color:var(--text2)">Scope to show + ep range:</span>
