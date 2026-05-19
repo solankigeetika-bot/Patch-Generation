@@ -2838,6 +2838,11 @@ const PAY_RATE_ERROR=0.40;
 const PAY_RATE_WORD=0.60;
 let _payPeriod=null; // {fromTs,toTs,from,to}
 let _payData=null;   // last computed result, for CSV export
+// Optional per-show episode-range scope: when set, hours+errors are counted
+// only on this show's episodes whose natural_sequence_number is in [from, to].
+// Other shows are still aggregated as normal so the totals reflect everything
+// the listener did, just with this show's contribution narrowed.
+let _payShowFilter='', _payEpFrom='', _payEpTo='';
 
 function _defaultPayPeriod(){
   // 15th-to-15th cycle. If today > 15: period = 16th(prev month) → 15th(this month).
@@ -2868,6 +2873,18 @@ function applyPayPeriod(){
   const fd=new Date(f); fd.setHours(0,0,0,0);
   const td=new Date(t); td.setHours(23,59,59,999);
   _payPeriod={fromTs:fd.getTime(), toTs:td.getTime(), from:fd, to:td};
+  renderPaymentReport();
+}
+function applyPayShowFilter(){
+  _payShowFilter=(document.getElementById('payShowFilterInp')?.value||'').trim();
+  const f=document.getElementById('payEpFromInp')?.value;
+  const t=document.getElementById('payEpToInp')?.value;
+  _payEpFrom=(f===''||f==null)?'':(parseInt(f,10)||'');
+  _payEpTo=(t===''||t==null)?'':(parseInt(t,10)||'');
+  renderPaymentReport();
+}
+function clearPayShowFilter(){
+  _payShowFilter=''; _payEpFrom=''; _payEpTo='';
   renderPaymentReport();
 }
 
@@ -2902,7 +2919,7 @@ async function renderPaymentReport(){
       const showName=showConfig?.name||showId;
       for(const ep of epArr){
         if(!ep||!ep.chapter_id) continue;
-        epMeta[ep.chapter_id]={showName, duration:ep.audio_duration||0};
+        epMeta[ep.chapter_id]={showName, duration:ep.audio_duration||0, seq:ep.natural_sequence_number||0};
       }
     }
 
@@ -2938,6 +2955,24 @@ async function renderPaymentReport(){
       const dispositionMeta=epData.dispositionMeta||{};
       const reviews=epData.reviews||{};
       const meta=epMeta[chapId]||{showName:'Unknown', duration:0};
+
+      // Per-show episode-range filter (if active). Skip the whole chapter
+      // when the user is scoping to a specific show + ep window and this
+      // chapter falls outside it.
+      const filterActive=_payShowFilter&&_payShowFilter.length;
+      if(filterActive){
+        const sn=(meta.showName||'').toLowerCase();
+        const filt=_payShowFilter.toLowerCase();
+        if(sn.includes(filt)){
+          const seq=meta.seq||0;
+          if(_payEpFrom!==''&&seq<_payEpFrom) continue;
+          if(_payEpTo!==''&&seq>_payEpTo) continue;
+        } else {
+          // Different show — when a show filter is set, other shows are
+          // excluded from the totals so the user sees only the scoped slice.
+          continue;
+        }
+      }
 
       for(let ri=0; ri<remarks.length; ri++){
         const r=remarks[ri]; if(!r||!r.userEmail) continue;
@@ -2990,6 +3025,12 @@ async function renderPaymentReport(){
       if(!d||!d.agent||!d.word) continue;
       const ts=_parseDictTs(d.qcReportedAt)||d.addedAt||0;
       if(ts&&(ts<fromTs||ts>toTs)) continue;
+      // Apply show filter to dictionary too (no ep-range — dict entries don't
+      // carry a sequence number, so the show name is the only signal).
+      if(_payShowFilter){
+        const sn=(d.show||'').toLowerCase();
+        if(!sn.includes(_payShowFilter.toLowerCase())) continue;
+      }
       const u=getU(d.agent);
       u.words++;
       getShow(u, d.show||'(no show)').words++;
@@ -3096,7 +3137,19 @@ async function renderPaymentReport(){
         <button class="btn btn-g btn-sm" onclick="exportPaymentCSV()">⬇ CSV</button>
       </div>
     </div>
-    <div style="font-size:11px;color:var(--muted);margin-bottom:14px;font-family:var(--mono)">Billing period: ${_fmtPayDate(from)} → ${_fmtPayDate(to)}</div>`;
+    <div style="font-size:11px;color:var(--muted);margin-bottom:8px;font-family:var(--mono)">Billing period: ${_fmtPayDate(from)} → ${_fmtPayDate(to)}</div>
+
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 12px;margin-bottom:14px;font-family:var(--mono);font-size:11px">
+      <span style="font-weight:700;color:var(--text2)">Scope to show + ep range:</span>
+      <input type="text" id="payShowFilterInp" placeholder="Show name (partial match)" value="${esc(_payShowFilter)}" style="width:220px;font-size:11px;padding:4px 8px;border:1px solid var(--border);border-radius:5px"/>
+      <span style="color:var(--muted)">Ep</span>
+      <input type="number" min="1" id="payEpFromInp" placeholder="from" value="${_payEpFrom}" style="width:64px;font-size:11px;padding:4px 8px;border:1px solid var(--border);border-radius:5px"/>
+      <span style="color:var(--muted)">to</span>
+      <input type="number" min="1" id="payEpToInp" placeholder="to" value="${_payEpTo}" style="width:64px;font-size:11px;padding:4px 8px;border:1px solid var(--border);border-radius:5px"/>
+      <button class="btn btn-p btn-sm" style="font-size:10px" onclick="applyPayShowFilter()">Apply</button>
+      <button class="btn btn-g btn-sm" style="font-size:10px" onclick="clearPayShowFilter()">Clear</button>
+      <span style="color:var(--muted);margin-left:auto">${_payShowFilter?`Filtering: ${esc(_payShowFilter)} Ep ${_payEpFrom||'1'}–${_payEpTo||'∞'}`:'Showing all shows'}</span>
+    </div>`;
 
     if(!arr.length&&!manualArr.length){
       html+=`<div style="padding:24px;text-align:center;color:var(--muted);background:var(--surface);border:1px solid var(--border);border-radius:var(--r);margin-bottom:18px">
