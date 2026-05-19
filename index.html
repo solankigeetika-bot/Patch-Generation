@@ -2921,7 +2921,16 @@ async function renderPaymentReport(){
       return u.shows[sn];
     }
 
-    // Verified errors (per spec: accepted patch OR no_patch, not wrong_error)
+    // Verified errors (per spec: accepted patch OR no_patch, not wrong_error).
+    // Period is bucketed by WHEN THE QC DID THE WORK (r.timestamp from CMS),
+    // not when the SE later verified — so a QCer's hours/errors land in the
+    // billing cycle of their actual work even if SE review happens later.
+    // Verification check still applies (must be accepted or no_patch).
+    function _parseRemarkTs(v){
+      if(!v) return 0;
+      if(typeof v==='number') return v<1e12?v*1000:v;
+      const n=Date.parse(v); return isNaN(n)?0:n;
+    }
     for(const [chapId, epData] of Object.entries(allRem)){
       if(!epData||!epData.remarks) continue;
       const remarks=Array.isArray(epData.remarks)?epData.remarks:Object.values(epData.remarks||{});
@@ -2939,10 +2948,11 @@ async function renderPaymentReport(){
         const noPatch=disp==='no_patch';
         if(!accepted&&!noPatch) continue;
 
-        // Verification timestamp — for date filtering
-        const verifyTs=rev?.ts||dispositionMeta[ri]?.ts||0;
-        if(verifyTs&&(verifyTs<fromTs||verifyTs>toTs)) continue;
-        // No timestamp → include (legacy entries)
+        // Period filter by QC-work timestamp (when the proof listener reported
+        // the remark), falling back to verification time if CMS didn't return
+        // a per-remark timestamp.
+        const qcTs=_parseRemarkTs(r.timestamp)||rev?.ts||dispositionMeta[ri]?.ts||0;
+        if(qcTs&&(qcTs<fromTs||qcTs>toTs)) continue;
 
         const u=getU(r.userEmail);
         u.errors++;
