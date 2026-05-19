@@ -2920,19 +2920,45 @@ async function loadQuickAudit(){
   const loaded=[];
   try{
     for(const id of ids){
-      // 1. Episodes list (paginated like the existing payment-only-shows fetch).
-      let eps=[]; let page=1;
-      while(page<=100){
-        const r=await fetch(`${CMS_BASE}/book.show_episodes?show_id=${id}&view=cms&is_novel=0&paginate_chapters=true&page_no=${page}`, {headers:hdrs()});
-        if(!r.ok) break;
-        const d=await r.json();
-        const list=d.result?.episodes||[];
-        eps=eps.concat(list);
-        if(list.length<5) break;
-        page++;
+      // 1. Episodes list — try BOTH CMS pagination flavours (page_no alone and
+      //    page_no + paginate_chapters=true) like the audio-replace bookmarklet
+      //    does, then dedupe. Different shows expose episodes via different
+      //    flavours; a single flavour misses some. End-of-list is signalled by
+      //    result.next_url being absent.
+      async function paged(chapPag){
+        let eps=[]; let page=1;
+        while(page<=500){
+          const params=[`show_id=${id}`,`view=cms`,'is_novel=0',`page_no=${page}`];
+          if(chapPag) params.push('paginate_chapters=true');
+          let r;
+          try{ r=await fetch(`${CMS_BASE}/book.show_episodes?${params.join('&')}`, {headers:hdrs()}); }catch{ break; }
+          if(!r.ok) break;
+          const d=await r.json();
+          const list=d.result?.episodes||[];
+          if(!list.length) break;
+          eps=eps.concat(list);
+          if(!d.result?.next_url) break;
+          page++;
+        }
+        return eps;
       }
-      // 2. Per-episode details — gives us qc_details + audio_duration.
+      const [epsA, epsB]=await Promise.all([paged(false), paged(true)]);
+      const seenChap=new Set();
+      const eps=[];
+      for(const ep of [...epsA, ...epsB]){
+        const cd=ep.chapter_details||ep;
+        const cid=cd.chapter_id||ep.chapter_id||'';
+        if(!cid||seenChap.has(cid)) continue;
+        seenChap.add(cid);
+        eps.push(ep);
+      }
+      log && console.log(`[QuickAudit] ${id}: ${eps.length} episodes (no-chapPag=${epsA.length}, chapPag=${epsB.length})`);
+
+      // 2. Per-episode details — fetch qc_details + audio_duration. Each
+      //    chapter is retried once on transient failure so a flaky fetch
+      //    doesn't silently drop a real episode.
       const epOut=[];
+      let failedChapters=0;
       const BATCH=5;
       for(let b=0;b<eps.length;b+=BATCH){
         const slice=eps.slice(b, b+BATCH);
@@ -2940,28 +2966,52 @@ async function loadQuickAudit(){
           const cd=ep.chapter_details||ep;
           const chapId=cd.chapter_id||ep.chapter_id||'';
           if(!chapId) return;
-          try{
+          async function fetchOne(){
             const dr=await fetch(`${CMS_BASE}/book.episode_details?chapter_id=${chapId}&is_novel=0`, {headers:hdrs()});
-            if(!dr.ok) return;
-            const dd=await dr.json();
-            const ch=dd.result?.chapter_details; if(!ch) return;
-            const qc=(ch.qc_details||[]).map(q=>({
-              time:q.time||'', issueType:q.issue_type||'',
-              userEmail:q.user_email||'', rawRemarks:q.remarks||'',
-              reportedAt:q.timestamp||q.created_at||q.updated_at||q.qc_time||null
-            }));
+            if(!dr.ok) return null;
+            return await dr.json();
+          }
+          let dd=null;
+          try{ dd=await fetchOne(); }catch{}
+          if(!dd){
+            // Retry once after a short pause for transient 429/5xx
+            await new Promise(r=>setTimeout(r, 800));
+            try{ dd=await fetchOne(); }catch{}
+          }
+          const ch=dd?.result?.chapter_details;
+          if(!ch){
+            // Still include the episode with whatever we have from the list call
+            // so it appears in the seq-sorted output even if QC details failed.
+            failedChapters++;
             epOut.push({
               chapId,
-              title:ch.chapter_title||cd.chapter_title||'Episode',
-              seq:ch.natural_sequence_number||cd.natural_sequence_number||0,
-              duration:ch.audio_duration||cd.audio_duration||0,
-              qc
+              title:cd.chapter_title||'Episode',
+              seq:cd.natural_sequence_number||0,
+              duration:cd.audio_duration||0,
+              qc:[],
+              _qcMissing:true
             });
-          }catch{}
+            return;
+          }
+          const qc=(ch.qc_details||[]).map(q=>({
+            time:q.time||'', issueType:q.issue_type||'',
+            userEmail:q.user_email||'', rawRemarks:q.remarks||'',
+            reportedAt:q.timestamp||q.created_at||q.updated_at||q.qc_time||null
+          }));
+          epOut.push({
+            chapId,
+            title:ch.chapter_title||cd.chapter_title||'Episode',
+            seq:ch.natural_sequence_number||cd.natural_sequence_number||0,
+            duration:ch.audio_duration||cd.audio_duration||0,
+            qc
+          });
         }));
       }
-      const showName=epOut[0]?.title?(eps[0]?.chapter_details?.show_title||''):id.substring(0,8);
-      loaded.push({showId:id, name:showName||id.substring(0,8), episodes:epOut});
+      // Sort episodes by sequence so the drill-down view is in order
+      epOut.sort((a,b)=>(a.seq||0)-(b.seq||0));
+      const showName=eps[0]?.chapter_details?.show_title||eps[0]?.show_title||id.substring(0,8);
+      loaded.push({showId:id, name:showName||id.substring(0,8), episodes:epOut, failedChapters});
+      if(failedChapters>0) toast(`Warning: ${failedChapters} chapter detail(s) failed to fetch on ${showName} — QC remarks may be incomplete`,'warn');
     }
     _quickAudit.loadedShows=loaded;
     // Initialize PL selections from the QC user emails we saw across all shows.
