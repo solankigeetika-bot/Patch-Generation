@@ -2998,15 +2998,17 @@ async function loadQuickAudit(){
             userEmail:q.user_email||'', rawRemarks:q.remarks||'',
             reportedAt:q.timestamp||q.created_at||q.updated_at||q.qc_time||null
           }));
+          const epDur=_maxDuration(ch, cd);
+          if(!epDur){
+            // Help diagnose: dump the chapter response when no duration field
+            // resolves — we can inspect what CMS actually exposes for this chapter.
+            console.log(`[QuickAudit] chapter ${chapId} has no duration; chapter_details keys:`, Object.keys(ch||{}), 'sample:', ch);
+          }
           epOut.push({
             chapId,
             title:ch.chapter_title||cd.chapter_title||'Episode',
             seq:ch.natural_sequence_number||cd.natural_sequence_number||0,
-            // Pick the largest available duration across raw / rm (ready-to-master)
-            // / fm (final mix) / current audio_duration. Some episodes only have
-            // a ready-to-master version recorded, so falling back to audio_duration
-            // alone misses them.
-            duration:_maxDuration(ch, cd),
+            duration:epDur,
             qc
           });
         }));
@@ -3065,16 +3067,22 @@ function toggleQuickAuditIgnoreDates(on){
 // audio_duration is "current playable", but for billing we want whichever
 // version (raw / ready-to-master / final-mix) has the longest available
 // length so episodes that only have a ready-to-master version still count.
+// Walks one level into common nested containers in case CMS nests durations.
 function _maxDuration(){
+  const keys=['audio_duration','raw_audio_duration','rm_audio_duration','rm_duration','fm_audio_duration','fm_duration','ready_to_master_duration','latest_duration','duration','length','audio_length','track_duration','chapter_duration'];
+  const nestKeys=['raw_media_assets','media_details','audio_details','rm_media','fm_media','raw_media','ready_to_master','assets','audio'];
   let best=0;
-  const keys=['audio_duration','raw_audio_duration','rm_audio_duration','rm_duration','fm_audio_duration','fm_duration','ready_to_master_duration','latest_duration'];
-  for(const obj of arguments){
-    if(!obj) continue;
+  function scan(obj){
+    if(!obj||typeof obj!=='object') return;
     for(const k of keys){
       const v=Number(obj[k]||0);
       if(v>best) best=v;
     }
+    for(const nk of nestKeys){
+      if(obj[nk]&&typeof obj[nk]==='object') scan(obj[nk]);
+    }
   }
+  for(const obj of arguments) scan(obj);
   return best;
 }
 
