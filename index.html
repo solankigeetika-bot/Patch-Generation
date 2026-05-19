@@ -2999,11 +2999,6 @@ async function loadQuickAudit(){
             reportedAt:q.timestamp||q.created_at||q.updated_at||q.qc_time||null
           }));
           const epDur=_maxDuration(ch, cd);
-          if(!epDur){
-            // Help diagnose: dump the chapter response when no duration field
-            // resolves — we can inspect what CMS actually exposes for this chapter.
-            console.log(`[QuickAudit] chapter ${chapId} has no duration; chapter_details keys:`, Object.keys(ch||{}), 'sample:', ch);
-          }
           epOut.push({
             chapId,
             title:ch.chapter_title||cd.chapter_title||'Episode',
