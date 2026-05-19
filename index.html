@@ -2853,6 +2853,9 @@ let _quickAudit={
   loadedShows:[],         // [{showId, name, episodes:[{chapId,title,seq,duration,qc:[...]}]}]
   selectedPLs:{},         // {email:true} — which PLs to include in compute
   epFrom:'', epTo:'',     // optional episode-range filter (natural_sequence_number)
+  ignoreDates:true,       // skip billing-period filter — most ad-hoc audits want
+                          // to see ALL of a listener's work on these shows, not
+                          // just whatever falls in the current cycle.
   results:null,           // last computed totals, also drives the render
   expandedPL:'',          // email of the currently expanded listener row
   loading:false
@@ -3053,13 +3056,17 @@ function toggleQuickAuditExpand(email){
   renderPaymentReport();
 }
 
+function toggleQuickAuditIgnoreDates(on){
+  _quickAudit.ignoreDates=!!on;
+}
+
 function computeQuickAudit(){
   if(!_quickAudit.loadedShows.length){ toast('Load shows first','warn'); return; }
-  // Capture any episode-range inputs the user may have just typed.
   setQuickAuditEpRange();
   if(!_payPeriod) _payPeriod=_defaultPayPeriod();
   const {fromTs, toTs}=_payPeriod;
   const epFrom=_quickAudit.epFrom, epTo=_quickAudit.epTo;
+  const ignoreDates=_quickAudit.ignoreDates;
   function parseTs(v){ if(!v) return 0; if(typeof v==='number') return v<1e12?v*1000:v; const n=Date.parse(v); return isNaN(n)?0:n; }
 
   // Aggregate per (email, show). Track per-episode detail too so the user
@@ -3071,16 +3078,18 @@ function computeQuickAudit(){
   }
   function getS(u, sn){ if(!u.byShow[sn]) u.byShow[sn]={hours:0, errors:0, eps:new Set(), epDetail:{}}; return u.byShow[sn]; }
 
+  let filteredOutByDate=0;
   for(const show of _quickAudit.loadedShows){
     for(const ep of show.episodes){
-      // Episode-range filter (applies to natural_sequence_number)
       if(epFrom!==''&&ep.seq<epFrom) continue;
       if(epTo!==''&&ep.seq>epTo) continue;
       for(const q of ep.qc){
         if(!q.userEmail) continue;
         if(!_quickAudit.selectedPLs[q.userEmail]) continue;
-        const ts=parseTs(q.reportedAt);
-        if(ts&&(ts<fromTs||ts>toTs)) continue;
+        if(!ignoreDates){
+          const ts=parseTs(q.reportedAt);
+          if(ts&&(ts<fromTs||ts>toTs)){ filteredOutByDate++; continue; }
+        }
         const u=getU(q.userEmail);
         const s=getS(u, show.name);
         u.errors++;
@@ -3106,6 +3115,9 @@ function computeQuickAudit(){
     u.total=u.hourPay+u.errorPay;
     return u;
   }).sort((a,b)=>b.total-a.total);
+  if(!_quickAudit.ignoreDates && filteredOutByDate>0){
+    toast(`${filteredOutByDate} remark(s) skipped by billing-period filter — toggle "Ignore date" to include them`,'warn');
+  }
   renderPaymentReport();
 }
 
@@ -3438,6 +3450,10 @@ async function renderPaymentReport(){
           <span style="font-size:10px;color:var(--muted);font-family:var(--mono)">Episode range:</span>
           <input type="number" min="1" id="qaEpFromInp" placeholder="from" value="${_quickAudit.epFrom}" style="width:64px;font-size:11px;padding:4px 6px;border:1px solid var(--border);border-radius:5px"/>
           <input type="number" min="1" id="qaEpToInp" placeholder="to" value="${_quickAudit.epTo}" style="width:64px;font-size:11px;padding:4px 6px;border:1px solid var(--border);border-radius:5px"/>
+          <label style="display:inline-flex;gap:4px;align-items:center;font-size:10px;color:var(--text2);cursor:pointer;background:#fffbeb;border:1px solid #fde68a;border-radius:5px;padding:3px 8px">
+            <input type="checkbox" ${_quickAudit.ignoreDates?'checked':''} onchange="toggleQuickAuditIgnoreDates(this.checked)"/>
+            Ignore billing period (show ALL remarks)
+          </label>
           <button class="btn btn-orange btn-sm" onclick="computeQuickAudit()" style="font-size:11px;font-weight:700">▶ Compute (${selectedCount} PL${selectedCount===1?'':'s'})</button>
           ${_quickAudit.results?`<button class="btn btn-g btn-sm" onclick="exportQuickAuditCSV()" style="font-size:11px">⬇ CSV</button>`:''}
           <span style="font-size:10px;color:var(--muted)">Counts ALL errors — verified + unverified. Click a row to see episodes worked.</span>
