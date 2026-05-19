@@ -2852,7 +2852,9 @@ let _quickAudit={
   showIdsRaw:'',          // textarea raw value
   loadedShows:[],         // [{showId, name, episodes:[{chapId,title,seq,duration,qc:[...]}]}]
   selectedPLs:{},         // {email:true} — which PLs to include in compute
+  epFrom:'', epTo:'',     // optional episode-range filter (natural_sequence_number)
   results:null,           // last computed totals, also drives the render
+  expandedPL:'',          // email of the currently expanded listener row
   loading:false
 };
 
@@ -2989,23 +2991,41 @@ function toggleAllQuickAuditPLs(on){
   renderPaymentReport();
 }
 
+function setQuickAuditEpRange(){
+  const f=document.getElementById('qaEpFromInp')?.value;
+  const t=document.getElementById('qaEpToInp')?.value;
+  _quickAudit.epFrom=(f===''||f==null)?'':(parseInt(f,10)||'');
+  _quickAudit.epTo=(t===''||t==null)?'':(parseInt(t,10)||'');
+}
+
+function toggleQuickAuditExpand(email){
+  _quickAudit.expandedPL = _quickAudit.expandedPL===email ? '' : email;
+  renderPaymentReport();
+}
+
 function computeQuickAudit(){
   if(!_quickAudit.loadedShows.length){ toast('Load shows first','warn'); return; }
+  // Capture any episode-range inputs the user may have just typed.
+  setQuickAuditEpRange();
   if(!_payPeriod) _payPeriod=_defaultPayPeriod();
   const {fromTs, toTs}=_payPeriod;
+  const epFrom=_quickAudit.epFrom, epTo=_quickAudit.epTo;
   function parseTs(v){ if(!v) return 0; if(typeof v==='number') return v<1e12?v*1000:v; const n=Date.parse(v); return isNaN(n)?0:n; }
 
-  // Aggregate: per (email, show), count errors (ALL of them — verified+normal),
-  // collect episodes the listener appeared on (drives the hours bucket).
-  const totals={}; // {email: {hours, errors, episodes:Set, byShow:{name:{hours,errors,eps:Set}}}}
+  // Aggregate per (email, show). Track per-episode detail too so the user
+  // can expand a listener row and see exactly which episodes they reported on.
+  const totals={};
   function getU(email){
     if(!totals[email]) totals[email]={email, hours:0, errors:0, episodes:new Set(), byShow:{}};
     return totals[email];
   }
-  function getS(u, sn){ if(!u.byShow[sn]) u.byShow[sn]={hours:0, errors:0, eps:new Set()}; return u.byShow[sn]; }
+  function getS(u, sn){ if(!u.byShow[sn]) u.byShow[sn]={hours:0, errors:0, eps:new Set(), epDetail:{}}; return u.byShow[sn]; }
 
   for(const show of _quickAudit.loadedShows){
     for(const ep of show.episodes){
+      // Episode-range filter (applies to natural_sequence_number)
+      if(epFrom!==''&&ep.seq<epFrom) continue;
+      if(epTo!==''&&ep.seq>epTo) continue;
       for(const q of ep.qc){
         if(!q.userEmail) continue;
         if(!_quickAudit.selectedPLs[q.userEmail]) continue;
@@ -3015,7 +3035,10 @@ function computeQuickAudit(){
         const s=getS(u, show.name);
         u.errors++;
         s.errors++;
-        // Track episodes for hour accumulation
+        // Per-episode detail used in the expand view
+        if(!s.epDetail[ep.chapId]) s.epDetail[ep.chapId]={seq:ep.seq, title:ep.title, errors:0, duration:ep.duration||0};
+        s.epDetail[ep.chapId].errors++;
+        // Hours bucket: full episode duration counted once per listener-per-episode
         const epKey=show.showId+':'+ep.chapId;
         if(!u.episodes.has(epKey)){
           u.episodes.add(epKey);
@@ -3036,8 +3059,43 @@ function computeQuickAudit(){
   renderPaymentReport();
 }
 
+function exportQuickAuditCSV(){
+  if(!_quickAudit.results||!_quickAudit.results.length){ toast('Nothing to export — run Compute first','warn'); return; }
+  if(!_payPeriod) _payPeriod=_defaultPayPeriod();
+  const rows=[];
+  rows.push(['Quick Audit — Billing Period', _fmtPayDate(_payPeriod.from)+' → '+_fmtPayDate(_payPeriod.to)]);
+  rows.push(['Episode range', `${_quickAudit.epFrom||'any'} → ${_quickAudit.epTo||'any'}`]);
+  rows.push([]);
+  // Per-listener summary
+  rows.push(['Listener','Hours','Hour Pay (€)','Errors (all)','Error Pay (€)','Total (€)']);
+  for(const u of _quickAudit.results){
+    rows.push([u.email, u.hours.toFixed(2), u.hourPay.toFixed(2), u.errors, u.errorPay.toFixed(2), u.total.toFixed(2)]);
+  }
+  rows.push([]);
+  // Per-episode detail
+  rows.push(['Listener','Show','Episode #','Episode Title','Errors in episode','Duration (sec)']);
+  for(const u of _quickAudit.results){
+    for(const [sn, s] of Object.entries(u.byShow)){
+      const eps=Object.values(s.epDetail||{}).sort((a,b)=>(a.seq||0)-(b.seq||0));
+      for(const e of eps){
+        rows.push([u.email, sn, e.seq||'', e.title||'', e.errors, e.duration||0]);
+      }
+    }
+  }
+  const grand=_quickAudit.results.reduce((s,u)=>s+u.total,0);
+  rows.push([]);
+  rows.push(['GRAND TOTAL', '', '', '', '', grand.toFixed(2)]);
+  const csv=rows.map(r=>r.map(v=>'"'+String(v==null?'':v).replace(/"/g,'""')+'"').join(',')).join('\n');
+  const blob=new Blob(['﻿'+csv],{type:'text/csv;charset=utf-8'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download=`quick_audit_${_isoDate(_payPeriod.from)}_to_${_isoDate(_payPeriod.to)}.csv`;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  toast('CSV downloaded','ok');
+}
+
 function clearQuickAudit(){
-  _quickAudit={showIdsRaw:'', loadedShows:[], selectedPLs:{}, results:null, loading:false};
+  _quickAudit={showIdsRaw:'', loadedShows:[], selectedPLs:{}, epFrom:'', epTo:'', results:null, expandedPL:'', loading:false};
   renderPaymentReport();
 }
 
@@ -3326,16 +3384,22 @@ async function renderPaymentReport(){
             <span>${esc(e)}</span>
           </label>`).join('')}
         </div>
-        <div style="margin-top:8px;display:flex;gap:6px;align-items:center">
+        <div style="margin-top:8px;display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+          <span style="font-size:10px;color:var(--muted);font-family:var(--mono)">Episode range:</span>
+          <input type="number" min="1" id="qaEpFromInp" placeholder="from" value="${_quickAudit.epFrom}" style="width:64px;font-size:11px;padding:4px 6px;border:1px solid var(--border);border-radius:5px"/>
+          <input type="number" min="1" id="qaEpToInp" placeholder="to" value="${_quickAudit.epTo}" style="width:64px;font-size:11px;padding:4px 6px;border:1px solid var(--border);border-radius:5px"/>
           <button class="btn btn-orange btn-sm" onclick="computeQuickAudit()" style="font-size:11px;font-weight:700">▶ Compute (${selectedCount} PL${selectedCount===1?'':'s'})</button>
-          <span style="font-size:10px;color:var(--muted)">Uses current billing period (above) and counts ALL errors — verified + unverified.</span>
+          ${_quickAudit.results?`<button class="btn btn-g btn-sm" onclick="exportQuickAuditCSV()" style="font-size:11px">⬇ CSV</button>`:''}
+          <span style="font-size:10px;color:var(--muted)">Counts ALL errors — verified + unverified. Click a row to see episodes worked.</span>
         </div>`;
 
       if(_quickAudit.results){
         const grand=_quickAudit.results.reduce((s,u)=>s+u.total,0);
+        const expanded=_quickAudit.expandedPL;
         html+=`<div style="margin-top:10px;overflow-x:auto">
           <table style="border-collapse:collapse;width:100%;font-size:11px;font-family:var(--mono)">
             <thead><tr style="background:var(--surface2)">
+              <th style="padding:5px 8px;text-align:left;width:24px"></th>
               <th style="padding:5px 8px;text-align:left">Listener</th>
               <th style="padding:5px 8px;text-align:right">Hours</th>
               <th style="padding:5px 8px;text-align:right">€ Hour</th>
@@ -3344,7 +3408,9 @@ async function renderPaymentReport(){
               <th style="padding:5px 8px;text-align:right;background:#FFFFCC">Total €</th>
             </tr></thead><tbody>`;
         for(const u of _quickAudit.results){
-          html+=`<tr style="border-bottom:1px solid var(--border)">
+          const isOpen=expanded===u.email;
+          html+=`<tr style="border-bottom:1px solid var(--border);cursor:pointer" onclick="toggleQuickAuditExpand('${esc(u.email).replace(/'/g,"\\'")}')">
+            <td style="padding:4px 8px;text-align:center;color:var(--muted)">${isOpen?'▾':'▸'}</td>
             <td style="padding:4px 8px;font-weight:700">${esc(u.email)}</td>
             <td style="padding:4px 8px;text-align:right">${u.hours.toFixed(2)}</td>
             <td style="padding:4px 8px;text-align:right">€${u.hourPay.toFixed(2)}</td>
@@ -3352,9 +3418,38 @@ async function renderPaymentReport(){
             <td style="padding:4px 8px;text-align:right">€${u.errorPay.toFixed(2)}</td>
             <td style="padding:4px 8px;text-align:right;background:#FFFFCC;font-weight:700">€${u.total.toFixed(2)}</td>
           </tr>`;
+          if(isOpen){
+            // Render the per-show / per-episode detail
+            html+=`<tr style="background:var(--surface2)"><td colspan="7" style="padding:8px 14px">
+              <div style="font-size:10px;font-weight:700;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:1px">Episodes worked on</div>`;
+            const showEntries=Object.entries(u.byShow).sort((a,b)=>b[1].errors-a[1].errors);
+            for(const [sn, s] of showEntries){
+              const eps=Object.values(s.epDetail||{}).sort((a,b)=>(a.seq||0)-(b.seq||0));
+              html+=`<div style="margin-bottom:8px">
+                <div style="font-weight:700;font-size:11px;margin-bottom:3px">${esc(sn)} <span style="color:var(--muted);font-weight:400">— ${eps.length} ep · ${s.errors} errors · ${s.hours.toFixed(2)}h</span></div>
+                <table style="border-collapse:collapse;width:100%;font-size:10px;font-family:var(--mono);background:var(--surface)">
+                  <thead><tr style="background:var(--surface3,#e8ecf2);color:var(--muted)">
+                    <th style="padding:3px 8px;text-align:left;width:60px">Ep #</th>
+                    <th style="padding:3px 8px;text-align:left">Title</th>
+                    <th style="padding:3px 8px;text-align:right;width:80px">Errors</th>
+                    <th style="padding:3px 8px;text-align:right;width:80px">Duration</th>
+                  </tr></thead><tbody>`;
+              for(const e of eps){
+                const mins=e.duration?Math.round(e.duration/60*10)/10:0;
+                html+=`<tr style="border-bottom:1px solid var(--border)">
+                  <td style="padding:3px 8px;font-weight:700">${e.seq||'?'}</td>
+                  <td style="padding:3px 8px">${esc(e.title||'')}</td>
+                  <td style="padding:3px 8px;text-align:right;color:var(--orange);font-weight:700">${e.errors}</td>
+                  <td style="padding:3px 8px;text-align:right">${mins?mins+'m':'—'}</td>
+                </tr>`;
+              }
+              html+=`</tbody></table></div>`;
+            }
+            html+=`</td></tr>`;
+          }
         }
         html+=`<tr style="background:var(--surface2);font-weight:800">
-          <td colspan="5" style="padding:5px 8px">Quick Audit Total</td>
+          <td colspan="6" style="padding:5px 8px">Quick Audit Total</td>
           <td style="padding:5px 8px;text-align:right;background:#FFFFCC">€${grand.toFixed(2)}</td>
         </tr></tbody></table></div>`;
       }
