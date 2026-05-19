@@ -3003,12 +3003,23 @@ async function loadQuickAudit(){
             window._qaNoDur=window._qaNoDur||[];
             try{ window._qaNoDur.push({chapId, ch:JSON.parse(JSON.stringify(ch||{}))}); }catch(e){}
           }
+          // Capture approvers — who marked this chapter as raw / ready-to-master /
+          // final-mix. These are people who LISTENED to the episode (and approved
+          // it) but may not have posted any qc_details remarks, so they wouldn't
+          // appear via the q.userEmail path alone.
+          const approvers=new Set();
+          const apprFields=['raw_audio_approve_email','rm_audio_approve_email','fm_audio_approve_email','audio_approve_email','approved_by_email','reviewer_email','status_updated_by_email','approve_email'];
+          for(const f of apprFields){ if(ch&&ch[f]) approvers.add(ch[f]); }
+          if(Array.isArray(ch?.editorial_qc_details)){
+            for(const x of ch.editorial_qc_details){ if(x?.user_email) approvers.add(x.user_email); }
+          }
           epOut.push({
             chapId,
             title:ch.chapter_title||cd.chapter_title||'Episode',
             seq:ch.natural_sequence_number||cd.natural_sequence_number||0,
             duration:epDur,
-            qc
+            qc,
+            approvers:[...approvers]
           });
         }));
       }
@@ -3019,10 +3030,14 @@ async function loadQuickAudit(){
       if(failedChapters>0) toast(`Warning: ${failedChapters} chapter detail(s) failed to fetch on ${showName} — QC remarks may be incomplete`,'warn');
     }
     _quickAudit.loadedShows=loaded;
-    // Initialize PL selections from the QC user emails we saw across all shows.
+    // Initialize PL selections from BOTH qc_details user_email and the
+    // approver fields. Approvers without remarks still get a row so the
+    // user can include / exclude them.
     const seen=new Set();
-    for(const s of loaded) for(const e of s.episodes) for(const q of e.qc) if(q.userEmail) seen.add(q.userEmail);
-    // Default: include all PLs.
+    for(const s of loaded) for(const e of s.episodes){
+      for(const q of e.qc) if(q.userEmail) seen.add(q.userEmail);
+      for(const a of (e.approvers||[])) if(a) seen.add(a);
+    }
     _quickAudit.selectedPLs={};
     for(const e of seen) _quickAudit.selectedPLs[e]=true;
     _quickAudit.results=null;
@@ -3136,6 +3151,23 @@ function computeQuickAudit(){
     for(const ep of show.episodes){
       if(epFrom!==''&&ep.seq<epFrom) continue;
       if(epTo!==''&&ep.seq>epTo) continue;
+      // Approvers (people who marked the episode raw / ready-to-master /
+      // final-mix) get credit for the duration even without QC remarks.
+      // No errors counted for them — just hours.
+      for(const a of (ep.approvers||[])){
+        if(!_quickAudit.selectedPLs[a]) continue;
+        const u=getU(a);
+        const s=getS(u, show.name);
+        const epKey=show.showId+':'+ep.chapId;
+        if(!u.episodes.has(epKey)){
+          u.episodes.add(epKey);
+          u.hours+=(ep.duration||0)/3600;
+          s.hours+=(ep.duration||0)/3600;
+        }
+        if(!s.epDetail[ep.chapId]){
+          s.epDetail[ep.chapId]={seq:ep.seq, title:ep.title, errors:0, duration:ep.duration||0, viaApprove:true};
+        }
+      }
       for(const q of ep.qc){
         if(!q.userEmail) continue;
         if(!_quickAudit.selectedPLs[q.userEmail]) continue;
