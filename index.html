@@ -2853,9 +2853,8 @@ let _quickAudit={
   loadedShows:[],         // [{showId, name, episodes:[{chapId,title,seq,duration,qc:[...]}]}]
   selectedPLs:{},         // {email:true} — which PLs to include in compute
   epFrom:'', epTo:'',     // optional episode-range filter (natural_sequence_number)
-  ignoreDates:true,       // skip billing-period filter — most ad-hoc audits want
-                          // to see ALL of a listener's work on these shows, not
-                          // just whatever falls in the current cycle.
+  customFromISO:'', customToISO:'',  // optional custom billing period (YYYY-MM-DD)
+  ignoreDates:true,       // when true, no date filter regardless of custom range
   results:null,           // last computed totals, also drives the render
   expandedPL:'',          // email of the currently expanded listener row
   loading:false
@@ -3060,11 +3059,31 @@ function toggleQuickAuditIgnoreDates(on){
   _quickAudit.ignoreDates=!!on;
 }
 
+function setQuickAuditCustomDates(){
+  const f=document.getElementById('qaCustomFrom')?.value||'';
+  const t=document.getElementById('qaCustomTo')?.value||'';
+  _quickAudit.customFromISO=f;
+  _quickAudit.customToISO=t;
+}
+
 function computeQuickAudit(){
   if(!_quickAudit.loadedShows.length){ toast('Load shows first','warn'); return; }
   setQuickAuditEpRange();
+  setQuickAuditCustomDates();
   if(!_payPeriod) _payPeriod=_defaultPayPeriod();
-  const {fromTs, toTs}=_payPeriod;
+  // Custom date range takes precedence over the global billing period when
+  // either field is filled in. Blank from = -∞, blank to = +∞.
+  let fromTs=_payPeriod.fromTs, toTs=_payPeriod.toTs;
+  if(_quickAudit.customFromISO || _quickAudit.customToISO){
+    if(_quickAudit.customFromISO){
+      const d=new Date(_quickAudit.customFromISO); d.setHours(0,0,0,0);
+      fromTs=d.getTime();
+    } else { fromTs=-Infinity; }
+    if(_quickAudit.customToISO){
+      const d=new Date(_quickAudit.customToISO); d.setHours(23,59,59,999);
+      toTs=d.getTime();
+    } else { toTs=Infinity; }
+  }
   const epFrom=_quickAudit.epFrom, epTo=_quickAudit.epTo;
   const ignoreDates=_quickAudit.ignoreDates;
   function parseTs(v){ if(!v) return 0; if(typeof v==='number') return v<1e12?v*1000:v; const n=Date.parse(v); return isNaN(n)?0:n; }
@@ -3446,17 +3465,22 @@ async function renderPaymentReport(){
             <span>${esc(e)}</span>
           </label>`).join('')}
         </div>
-        <div style="margin-top:8px;display:flex;gap:6px;align-items:center;flex-wrap:wrap">
-          <span style="font-size:10px;color:var(--muted);font-family:var(--mono)">Episode range:</span>
+        <div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-family:var(--mono);font-size:11px">
+          <span style="color:var(--muted)">Episode #:</span>
           <input type="number" min="1" id="qaEpFromInp" placeholder="from" value="${_quickAudit.epFrom}" style="width:64px;font-size:11px;padding:4px 6px;border:1px solid var(--border);border-radius:5px"/>
           <input type="number" min="1" id="qaEpToInp" placeholder="to" value="${_quickAudit.epTo}" style="width:64px;font-size:11px;padding:4px 6px;border:1px solid var(--border);border-radius:5px"/>
+          <span style="color:var(--muted);margin-left:8px">Custom dates:</span>
+          <input type="date" id="qaCustomFrom" value="${esc(_quickAudit.customFromISO)}" style="font-size:11px;padding:4px 6px;border:1px solid var(--border);border-radius:5px"/>
+          <input type="date" id="qaCustomTo" value="${esc(_quickAudit.customToISO)}" style="font-size:11px;padding:4px 6px;border:1px solid var(--border);border-radius:5px"/>
           <label style="display:inline-flex;gap:4px;align-items:center;font-size:10px;color:var(--text2);cursor:pointer;background:#fffbeb;border:1px solid #fde68a;border-radius:5px;padding:3px 8px">
             <input type="checkbox" ${_quickAudit.ignoreDates?'checked':''} onchange="toggleQuickAuditIgnoreDates(this.checked)"/>
-            Ignore billing period (show ALL remarks)
+            Ignore all dates
           </label>
+        </div>
+        <div style="margin-top:6px;display:flex;gap:6px;align-items:center;flex-wrap:wrap">
           <button class="btn btn-orange btn-sm" onclick="computeQuickAudit()" style="font-size:11px;font-weight:700">▶ Compute (${selectedCount} PL${selectedCount===1?'':'s'})</button>
           ${_quickAudit.results?`<button class="btn btn-g btn-sm" onclick="exportQuickAuditCSV()" style="font-size:11px">⬇ CSV</button>`:''}
-          <span style="font-size:10px;color:var(--muted)">Counts ALL errors — verified + unverified. Click a row to see episodes worked.</span>
+          <span style="font-size:10px;color:var(--muted)">Counts ALL errors (verified + unverified). Custom dates override the billing period above; tick "Ignore all dates" to skip the filter entirely. Click a row to see episodes worked.</span>
         </div>`;
 
       if(_quickAudit.results){
