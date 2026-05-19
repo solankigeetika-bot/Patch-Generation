@@ -2982,14 +2982,12 @@ async function loadQuickAudit(){
           }
           const ch=dd?.result?.chapter_details;
           if(!ch){
-            // Still include the episode with whatever we have from the list call
-            // so it appears in the seq-sorted output even if QC details failed.
             failedChapters++;
             epOut.push({
               chapId,
               title:cd.chapter_title||'Episode',
               seq:cd.natural_sequence_number||0,
-              duration:cd.audio_duration||0,
+              duration:_maxDuration(cd),
               qc:[],
               _qcMissing:true
             });
@@ -3004,7 +3002,11 @@ async function loadQuickAudit(){
             chapId,
             title:ch.chapter_title||cd.chapter_title||'Episode',
             seq:ch.natural_sequence_number||cd.natural_sequence_number||0,
-            duration:ch.audio_duration||cd.audio_duration||0,
+            // Pick the largest available duration across raw / rm (ready-to-master)
+            // / fm (final mix) / current audio_duration. Some episodes only have
+            // a ready-to-master version recorded, so falling back to audio_duration
+            // alone misses them.
+            duration:_maxDuration(ch, cd),
             qc
           });
         }));
@@ -3057,6 +3059,31 @@ function toggleQuickAuditExpand(email){
 
 function toggleQuickAuditIgnoreDates(on){
   _quickAudit.ignoreDates=!!on;
+}
+
+// Pick the largest non-zero duration across all flavours CMS exposes —
+// audio_duration is "current playable", but for billing we want whichever
+// version (raw / ready-to-master / final-mix) has the longest available
+// length so episodes that only have a ready-to-master version still count.
+function _maxDuration(){
+  let best=0;
+  const keys=['audio_duration','raw_audio_duration','rm_audio_duration','rm_duration','fm_audio_duration','fm_duration','ready_to_master_duration','latest_duration'];
+  for(const obj of arguments){
+    if(!obj) continue;
+    for(const k of keys){
+      const v=Number(obj[k]||0);
+      if(v>best) best=v;
+    }
+  }
+  return best;
+}
+
+function _fmtHMS(secs){
+  const s=Math.max(0, Math.floor(Number(secs)||0));
+  const h=Math.floor(s/3600);
+  const m=Math.floor((s%3600)/60);
+  const sec=s%60;
+  return `${h}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`;
 }
 
 function setQuickAuditCustomDates(){
@@ -3147,19 +3174,17 @@ function exportQuickAuditCSV(){
   rows.push(['Quick Audit — Billing Period', _fmtPayDate(_payPeriod.from)+' → '+_fmtPayDate(_payPeriod.to)]);
   rows.push(['Episode range', `${_quickAudit.epFrom||'any'} → ${_quickAudit.epTo||'any'}`]);
   rows.push([]);
-  // Per-listener summary
-  rows.push(['Listener','Hours','Hour Pay (€)','Errors (all)','Error Pay (€)','Total (€)']);
+  rows.push(['Listener','Duration (h:mm:ss)','Hours (decimal)','Hour Pay (€)','Errors (all)','Error Pay (€)','Total (€)']);
   for(const u of _quickAudit.results){
-    rows.push([u.email, u.hours.toFixed(2), u.hourPay.toFixed(2), u.errors, u.errorPay.toFixed(2), u.total.toFixed(2)]);
+    rows.push([u.email, _fmtHMS(u.hours*3600), u.hours.toFixed(3), u.hourPay.toFixed(2), u.errors, u.errorPay.toFixed(2), u.total.toFixed(2)]);
   }
   rows.push([]);
-  // Per-episode detail
-  rows.push(['Listener','Show','Episode #','Episode Title','Errors in episode','Duration (sec)']);
+  rows.push(['Listener','Show','Episode #','Episode Title','Errors in episode','Duration (h:mm:ss)','Duration (sec)']);
   for(const u of _quickAudit.results){
     for(const [sn, s] of Object.entries(u.byShow)){
       const eps=Object.values(s.epDetail||{}).sort((a,b)=>(a.seq||0)-(b.seq||0));
       for(const e of eps){
-        rows.push([u.email, sn, e.seq||'', e.title||'', e.errors, e.duration||0]);
+        rows.push([u.email, sn, e.seq||'', e.title||'', e.errors, _fmtHMS(e.duration||0), e.duration||0]);
       }
     }
   }
@@ -3491,7 +3516,7 @@ async function renderPaymentReport(){
             <thead><tr style="background:var(--surface2)">
               <th style="padding:5px 8px;text-align:left;width:24px"></th>
               <th style="padding:5px 8px;text-align:left">Listener</th>
-              <th style="padding:5px 8px;text-align:right">Hours</th>
+              <th style="padding:5px 8px;text-align:right">Duration (h:mm:ss)</th>
               <th style="padding:5px 8px;text-align:right">€ Hour</th>
               <th style="padding:5px 8px;text-align:right">Errors (all)</th>
               <th style="padding:5px 8px;text-align:right">€ Errors</th>
@@ -3502,7 +3527,7 @@ async function renderPaymentReport(){
           html+=`<tr style="border-bottom:1px solid var(--border);cursor:pointer" onclick="toggleQuickAuditExpand('${esc(u.email).replace(/'/g,"\\'")}')">
             <td style="padding:4px 8px;text-align:center;color:var(--muted)">${isOpen?'▾':'▸'}</td>
             <td style="padding:4px 8px;font-weight:700">${esc(u.email)}</td>
-            <td style="padding:4px 8px;text-align:right">${u.hours.toFixed(2)}</td>
+            <td style="padding:4px 8px;text-align:right" title="${u.hours.toFixed(3)} h">${_fmtHMS(u.hours*3600)}</td>
             <td style="padding:4px 8px;text-align:right">€${u.hourPay.toFixed(2)}</td>
             <td style="padding:4px 8px;text-align:right">${u.errors}</td>
             <td style="padding:4px 8px;text-align:right">€${u.errorPay.toFixed(2)}</td>
@@ -3516,21 +3541,20 @@ async function renderPaymentReport(){
             for(const [sn, s] of showEntries){
               const eps=Object.values(s.epDetail||{}).sort((a,b)=>(a.seq||0)-(b.seq||0));
               html+=`<div style="margin-bottom:8px">
-                <div style="font-weight:700;font-size:11px;margin-bottom:3px">${esc(sn)} <span style="color:var(--muted);font-weight:400">— ${eps.length} ep · ${s.errors} errors · ${s.hours.toFixed(2)}h</span></div>
+                <div style="font-weight:700;font-size:11px;margin-bottom:3px">${esc(sn)} <span style="color:var(--muted);font-weight:400">— ${eps.length} ep · ${s.errors} errors · ${_fmtHMS(s.hours*3600)}</span></div>
                 <table style="border-collapse:collapse;width:100%;font-size:10px;font-family:var(--mono);background:var(--surface)">
                   <thead><tr style="background:var(--surface3,#e8ecf2);color:var(--muted)">
                     <th style="padding:3px 8px;text-align:left;width:60px">Ep #</th>
                     <th style="padding:3px 8px;text-align:left">Title</th>
                     <th style="padding:3px 8px;text-align:right;width:80px">Errors</th>
-                    <th style="padding:3px 8px;text-align:right;width:80px">Duration</th>
+                    <th style="padding:3px 8px;text-align:right;width:90px">Duration</th>
                   </tr></thead><tbody>`;
               for(const e of eps){
-                const mins=e.duration?Math.round(e.duration/60*10)/10:0;
                 html+=`<tr style="border-bottom:1px solid var(--border)">
                   <td style="padding:3px 8px;font-weight:700">${e.seq||'?'}</td>
                   <td style="padding:3px 8px">${esc(e.title||'')}</td>
                   <td style="padding:3px 8px;text-align:right;color:var(--orange);font-weight:700">${e.errors}</td>
-                  <td style="padding:3px 8px;text-align:right">${mins?mins+'m':'—'}</td>
+                  <td style="padding:3px 8px;text-align:right">${e.duration?_fmtHMS(e.duration):'—'}</td>
                 </tr>`;
               }
               html+=`</tbody></table></div>`;
