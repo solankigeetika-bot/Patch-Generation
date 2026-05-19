@@ -3000,11 +3000,8 @@ async function loadQuickAudit(){
           }));
           const epDur=_maxDuration(ch, cd);
           if(!epDur){
-            try{
-              console.log('[QuickAudit] no duration found for chapter ' + chapId);
-              console.log('  chapter_details keys:', Object.keys(ch||{}));
-              console.log('  full chapter_details:', JSON.parse(JSON.stringify(ch||{})));
-            }catch(e){}
+            window._qaNoDur=window._qaNoDur||[];
+            try{ window._qaNoDur.push({chapId, ch:JSON.parse(JSON.stringify(ch||{}))}); }catch(e){}
           }
           epOut.push({
             chapId,
