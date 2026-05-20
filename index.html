@@ -2334,7 +2334,7 @@ async function _fetchEpisodesFor(showId){
   // Run both in parallel and merge so either / both surface.
   async function fetchPaginated(viewParam, useChapterPaginate){
     let eps=[]; let page=1; let firstStatus=200;
-    while(page<=500){
+    while(page<=2000){
       const params=[`show_id=${showId}`,'is_novel=0',`page_no=${page}`];
       if(viewParam) params.push(`view=${viewParam}`);
       if(useChapterPaginate) params.push('paginate_chapters=true');
@@ -2929,7 +2929,7 @@ async function loadQuickAudit(){
       //    result.next_url being absent.
       async function paged(chapPag){
         let eps=[]; let page=1;
-        while(page<=500){
+        while(page<=2000){
           const params=[`show_id=${id}`,`view=cms`,'is_novel=0',`page_no=${page}`];
           if(chapPag) params.push('paginate_chapters=true');
           let r;
@@ -3812,7 +3812,7 @@ async function _fetchPaymentShowFromCMS(showId){
   if(!authToken||!uid) throw new Error('CMS not connected — set your auth token in the sidebar first.');
   // 1) Episodes list (paginated)
   let eps=[]; let page=1;
-  while(page<=100){
+  while(page<=2000){
     const r=await fetch(`${CMS_BASE}/book.show_episodes?show_id=${showId}&view=cms&is_novel=0&paginate_chapters=true&page_no=${page}`, {headers:hdrs()});
     if(!r.ok){ if(page===1) throw new Error(`CMS HTTP ${r.status} — check token`); break; }
     const d=await r.json();
@@ -4792,8 +4792,12 @@ async function loadShow(directInput, forceRefresh){
     document.getElementById('topTitle').textContent = showTitle;
     let eps = res.episodes || [];
 
+    // Page until CMS stops returning episodes — no arbitrary cap. Shows with
+    // 3000+ episodes were being cut off because the old code bailed at page
+    // 100 or as soon as a page had <5 results. Now we trust empty-list as
+    // the only end signal, plus a generous safety ceiling.
     let page = 2, keepGoing = true;
-    while(keepGoing && page <= 100){
+    while(keepGoing && page <= 2000){
       try{
         const rp = await fetch(`${CMS_BASE}/book.show_episodes?show_id=${activeShowId}&view=cms&is_novel=0&paginate_chapters=true&page_no=${page}`, {headers:hdrs()});
         if(!rp.ok){ keepGoing=false; break; }
@@ -4802,7 +4806,6 @@ async function loadShow(directInput, forceRefresh){
         if(!pageEps.length){ keepGoing=false; break; }
         eps = [...eps, ...pageEps];
         page++;
-        if(pageEps.length < 5) break;
       } catch(e){ break; }
     }
 
@@ -4950,13 +4953,15 @@ async function loadChapter(chapId, idx){
     activeEp._ttsJobDetails = ch.text_to_speech_details || null;
     activeEp._bookId = ch.book_id || '';
 
-    // Merge in any time overrides previously saved via "✏ edit timestamp"
+    // Merge in time overrides + reviewer notes previously saved on this episode
     const fbRemarks=fbData?.remarks||{};
+    const fbReviewerNotes=fbData?.reviewerNotes||{};
     remarks=(ch.qc_details||[]).map((qc,i)=>{
       const stored=Array.isArray(fbRemarks)?fbRemarks[i]:fbRemarks[String(i)];
       const timeOverride=stored?.timeOverride||'';
+      const reviewerNote=(Array.isArray(fbReviewerNotes)?fbReviewerNotes[i]:fbReviewerNotes[String(i)])||'';
       return {
-        idx:i, time:qc.time, timeOverride, issueType:qc.issue_type||'',
+        idx:i, time:qc.time, timeOverride, reviewerNote, issueType:qc.issue_type||'',
         userEmail:qc.user_email||'', timestamp:qc.timestamp||'',
         audioStatus:qc.audio_status||'', cmsStatus:qc.status||'pending',
         scriptLine:extractLine(qc.remarks), note:extractNote(qc.remarks),
@@ -5128,6 +5133,22 @@ function seekEpisodeTo(timeStr){
   player.play().catch(()=>{});
   // Scroll the player into view so the user sees the seek happened
   player.scrollIntoView({behavior:'smooth', block:'nearest'});
+}
+
+async function saveReviewerNote(ri, value){
+  const r=remarks[ri]; if(!r) return;
+  const v=String(value||'').trim();
+  if((r.reviewerNote||'')===v) return; // no-op
+  r.reviewerNote=v;
+  try{
+    const chapId=activeEp?.chapter_id;
+    if(chapId){
+      await dbRef('episodeRemarks/'+chapId+'/reviewerNotes/'+ri).set(v||null);
+    }
+  }catch(e){
+    console.warn('saveReviewerNote failed:',e);
+    toast('Note saved locally but Firebase write failed: '+e.message,'warn');
+  }
 }
 
 async function editRemarkTime(ri){
@@ -5333,6 +5354,11 @@ function mkCard(r){
         <button class="btn btn-g btn-sm" onclick="setDisposition(${r.idx},'no_patch')" style="font-size:10px;color:#2E7D32;border-color:#A5D6A7">✓ No Patch Required</button>
         <button class="btn btn-g btn-sm" onclick="setDisposition(${r.idx},'wrong_error')" style="font-size:10px;color:#C62828;border-color:#EF9A9A">✗ Wrong Error</button>
       </div>`:`<div style="margin-bottom:10px"><button class="btn btn-g btn-sm" onclick="setDisposition(${r.idx},'')" style="font-size:10px">↩ Undo</button></div>`}
+
+      <div style="background:#f1f5f9;border:1px solid #cbd5e1;border-radius:7px;padding:8px 10px;margin-bottom:12px">
+        <div style="font-family:var(--mono);font-size:9px;color:var(--muted);letter-spacing:1px;margin-bottom:4px">📝 REVIEWER NOTES <span style="color:var(--muted2);font-weight:400;letter-spacing:0">— freeform notes for the team; saved automatically</span></div>
+        <textarea id="rn-${r.idx}" rows="2" placeholder="Optional notes (e.g. context that doesn't need a patch, follow-up needed, etc.)" onblur="saveReviewerNote(${r.idx}, this.value)" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:5px;font-size:12px;font-family:var(--sans);resize:vertical;background:#fff">${esc(r.reviewerNote||'')}</textarea>
+      </div>
       ${disp==='no_patch'||disp==='wrong_error'?'':`${r.rawRemarks?`<div style="background:var(--surface2);border:1px solid var(--border);border-radius:7px;padding:9px 12px;margin-bottom:12px">
         <div style="font-family:var(--mono);font-size:9px;color:var(--muted);letter-spacing:1px;margin-bottom:4px">QC REMARKS</div>
         <div style="font-size:12px;color:var(--text2);line-height:1.6;white-space:pre-wrap">${esc(r.rawRemarks)}</div>

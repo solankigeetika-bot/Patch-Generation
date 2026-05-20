@@ -66,7 +66,7 @@
   async function fetchEps(showId){
     async function paged(view, chapPag){
       let eps=[], page=1, firstStatus=200;
-      while(page<=500){
+      while(page<=2000){
         const params=[`show_id=${showId}`,'is_novel=0',`page_no=${page}`];
         if(view) params.push(`view=${view}`);
         if(chapPag) params.push('paginate_chapters=true');
