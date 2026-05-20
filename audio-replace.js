@@ -131,17 +131,28 @@
     }
   }
 
-  // Rate-limit-aware fetch: retries on 429 with exponential backoff
+  // Rate-limit tracking shared across the whole batch. If we just hit a 429,
+  // future fetches and the inter-episode delay back off aggressively.
+  let _lastRateLimitTs=0;
+  let _consecutive429Episodes=0;
+
+  // Rate-limit-aware fetch: retries on 429 with exponential backoff. Throws
+  // a tagged error after 4 retries so the caller can distinguish 'CMS is
+  // hammering us' from 'genuine 4xx/5xx'.
   async function rlFetch(url, opts){
     let delay=2000;
-    for(let attempt=0; attempt<5; attempt++){
+    for(let attempt=0; attempt<4; attempt++){
       const r=await fetch(url, opts);
       if(r.status!==429) return r;
+      _lastRateLimitTs=Date.now();
       log(`  · rate-limited (429), waiting ${Math.round(delay/1000)}s before retry…`);
       await new Promise(res=>setTimeout(res, delay));
       delay=Math.min(delay*2, 60000);
     }
-    return await fetch(url, opts); // last try
+    // Tag the error so the batch loop knows to back off harder.
+    const err=new Error('rate-limited by CMS (429 after 4 retries)');
+    err.rateLimit=true;
+    throw err;
   }
 
   async function copyOne(srcEp, tgtEp){
@@ -344,9 +355,25 @@
     if(!enabled.length){ alert('No pairs enabled'); return; }
     if(!confirm(`Copy audio for ${enabled.length} episode(s)?\nSource → Target.\nThis modifies CMS data.`)) return;
     state.running=true; state.log=[]; render();
-    log(`Starting ${enabled.length} copies…`);
+    log(`Starting ${enabled.length} copies — 5 per minute…`);
     const failedEps=[]; const okEps=[];
+    // Throttle: 5 episodes per 60-second window. After every 5 copies, sleep
+    // until the minute mark before kicking off the next 5. This matches the
+    // CMS rate limit and avoids the cascading 429s seen on big batches.
+    const BATCH_SIZE=5;
+    const BATCH_INTERVAL_MS=60000;
+    let batchStart=Date.now();
     for(let i=0;i<enabled.length;i++){
+      if(i>0 && i%BATCH_SIZE===0){
+        // Finished a batch of 5 — wait out the rest of the minute.
+        const elapsed=Date.now()-batchStart;
+        const remaining=BATCH_INTERVAL_MS-elapsed;
+        if(remaining>0){
+          log(`  ⏳ Batch of ${BATCH_SIZE} done. Waiting ${Math.round(remaining/1000)}s before the next batch…`);
+          await new Promise(r=>setTimeout(r, remaining));
+        }
+        batchStart=Date.now();
+      }
       const p=enabled[i];
       const s=state.srcEps[p.srcIdx], t=state.tgtEps[p.tgtIdx];
       const tag=`Ep ${s.seq||'?'} → Ep ${t.seq||'?'}`;
@@ -356,7 +383,9 @@
         failedEps.push({tgtSeq:t.seq||'?', srcSeq:s.seq||'?', reason:e.message});
         log(`  ✗ ${e.message}`,'err');
       }
-      if(i<enabled.length-1) await new Promise(r=>setTimeout(r, 4000));
+      // Tiny gap between episodes within a batch so the 5 calls don't fire
+      // back-to-back the instant copyOne returns.
+      if(i<enabled.length-1 && (i+1)%BATCH_SIZE!==0) await new Promise(r=>setTimeout(r, 1000));
     }
     log(`Done — ${okEps.length} succeeded, ${failedEps.length} failed`, failedEps.length?'err':'ok');
     if(failedEps.length){
