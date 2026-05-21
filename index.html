@@ -262,6 +262,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
     <button class="btn btn-g btn-sm" onclick="goPage('pay')" style="width:100%;margin-bottom:4px;justify-content:flex-start">💰 Payments</button>
     <button class="btn btn-g btn-sm" onclick="goPage('analytics')" style="width:100%;margin-bottom:4px;justify-content:flex-start">📈 Error Analytics</button>
     <button class="btn btn-g btn-sm" onclick="goPage('replace')" style="width:100%;margin-bottom:4px;justify-content:flex-start">🔀 Audio Replace</button>
+    <button class="btn btn-g btn-sm" onclick="goPage('audiosave')" style="width:100%;margin-bottom:4px;justify-content:flex-start">💾 Audio Save</button>
     <div style="margin-top:10px;padding:10px;background:var(--surface2);border-radius:7px">
       <label class="fl" style="margin-bottom:3px">Logged in as (SE/QC)</label>
       <input class="inp" id="currentUserInp" placeholder="e.g. Marine" style="font-size:11px" oninput="setCurrentUser(this.value)"/>
@@ -432,6 +433,10 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
     <!-- PAGE: Audio Replace -->
     <div class="pg" id="page-replace">
       <div id="replaceReport"></div>
+    </div>
+    <!-- PAGE: Audio Save -->
+    <div class="pg" id="page-audiosave">
+      <div id="audioSaveReport"></div>
     </div>
     <!-- PAGE: Dictionary -->
     <div class="pg" id="page-dict">
@@ -789,6 +794,12 @@ function goPage(name){
     genBtn.style.display='none';
     stitchBtn.style.display='none';
     renderAudioReplaceTool();
+  } else if(name==='audiosave'){
+    back.style.display='inline-flex';
+    document.getElementById('topTitle').textContent='Audio Save';
+    genBtn.style.display='none';
+    stitchBtn.style.display='none';
+    renderAudioSaveTool();
   } else if(name==='dict'){
     back.style.display='inline-flex';
     document.getElementById('topTitle').textContent='Mispronunciation Dictionary';
@@ -813,6 +824,7 @@ function goBack(){
   else if(currentPage==='pay') goPage('dashboard');
   else if(currentPage==='analytics') goPage('dashboard');
   else if(currentPage==='replace') goPage('dashboard');
+  else if(currentPage==='audiosave') goPage('dashboard');
 }
 
 // ── Sidebar Nav ─────────────────────────────────────────────
@@ -2718,6 +2730,44 @@ function renderAudioReplaceTool(){
     <div style="font-size:11px;color:var(--muted);line-height:1.6">
       CMS's upload commit (<code>book.update_episode</code>) validates that the upload pre-registration and the commit come from the same browser session origin. When this PatchStudio tool ran from <code>github.io</code>, CMS silently dropped the new <code>s3_unique_key</code> — leaving the timestamp updated but the audio unchanged.<br/><br/>
       The bookmarklet runs inside <code>cms.pocketfm.com</code>'s page context, so CMS sees the calls as coming from its own UI and honors them. Nothing else changes — same logic, same payloads.
+    </div>
+  </div>`;
+  el.innerHTML=html;
+}
+
+function renderAudioSaveTool(){
+  const el=document.getElementById('audioSaveReport');
+  if(!el) return;
+  const bmkHref='javascript:(function(){if(window.__ASV_PANEL){window.__ASV_PANEL.style.display=\'block\';return;}var s=document.createElement(\'script\');s.src=\'https://solankigeetika-bot.github.io/Patch-Generation/audio-save.js?t=\'+Date.now();s.onerror=function(){alert(\'Failed to load Audio Save — check internet\');};document.body.appendChild(s);})();';
+
+  const html=`<div style="margin-bottom:14px">
+    <div style="font-size:16px;font-weight:800">💾 Audio Save</div>
+    <div style="font-size:11px;color:var(--muted)">Automates the CMS flow you showed: open an episode, click <strong>Use Current Audio</strong>, confirm <strong>Save Audio</strong>, and optionally click the main page <strong>Save</strong>. Because those controls live inside CMS, this also runs as a bookmarklet inside <code>cms.pocketfm.com</code>.</div>
+  </div>
+
+  <div style="background:#f0fdf4;border:1.5px solid #86efac;border-radius:var(--r);padding:14px 18px;margin-bottom:16px">
+    <div style="font-size:14px;font-weight:800;color:#14532d;margin-bottom:8px">Step 1: Drag this button to your bookmarks bar</div>
+    <a href="${bmkHref}" onclick="alert('Drag this button to your bookmarks bar — don\\'t click it here. Then click it from a logged-in cms.pocketfm.com show page.'); return false;" style="display:inline-block;padding:8px 16px;background:#14532d;color:#fff;text-decoration:none;border-radius:8px;font-weight:700;font-size:13px;cursor:grab" draggable="true">💾 Audio Save</a>
+    <div style="font-size:11px;color:var(--muted);margin-top:8px;line-height:1.6">
+      If the bookmarks bar is hidden, press <strong>Cmd+Shift+B</strong> on Mac or <strong>Ctrl+Shift+B</strong> on Windows.
+    </div>
+  </div>
+
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:14px 18px;margin-bottom:16px">
+    <div style="font-size:14px;font-weight:800;margin-bottom:8px">Step 2: Use it in CMS</div>
+    <ol style="font-size:12px;line-height:1.8;padding-left:18px;color:var(--text2)">
+      <li>Open the show in <strong>cms.pocketfm.com</strong> where you normally see the episode list and the <strong>Use Current Audio</strong> button.</li>
+      <li>Click the <strong>💾 Audio Save</strong> bookmarklet from your bookmarks bar.</li>
+      <li>Use <strong>Save Current Open Episode</strong> for one episode, or enter an episode range and click <strong>Run Range</strong>.</li>
+      <li>If CMS only keeps a few rows loaded at once, scroll the list, click <strong>Scan Visible</strong>, then <strong>Run Visible</strong>.</li>
+      <li>Watch the log. Failed rows are skipped and listed so you can retry them manually.</li>
+    </ol>
+  </div>
+
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:14px 18px">
+    <div style="font-size:13px;font-weight:800;margin-bottom:6px">Important</div>
+    <div style="font-size:11px;color:var(--muted);line-height:1.6">
+      This is a click assistant, not a hidden API write. It performs the same visible CMS actions you do manually, so keep the CMS tab active while it runs and stop the batch if the wrong episode opens.
     </div>
   </div>`;
   el.innerHTML=html;
