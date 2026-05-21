@@ -122,9 +122,11 @@
     const r=el.getBoundingClientRect();
     const opts={bubbles:true,cancelable:true,view:w,clientX:r.left+r.width/2,clientY:r.top+r.height/2};
     for(const type of ['mouseover','mousedown','mouseup','click']){
+      if(type==='click') continue;
       try{ el.dispatchEvent(new w.MouseEvent(type,opts)); }catch{}
     }
-    try{ el.click(); }catch{}
+    try{ el.click(); }
+    catch{ try{ el.dispatchEvent(new w.MouseEvent('click',opts)); }catch{} }
   }
   async function waitFor(fn,timeout=12000,interval=250){
     const start=Date.now();
@@ -194,11 +196,61 @@
   function candidateText(el){
     return norm(el.innerText||el.textContent||el.getAttribute('aria-label')||el.title||'');
   }
+  function rowCandidatesFromElement(el,re,w){
+    const win=w||ownerWin(el);
+    const out=[];
+    const seen=new Set();
+    let cur=el;
+    let depth=0;
+    while(cur&&cur.nodeType===1&&cur!==cur.ownerDocument.body&&depth<9){
+      if(isVisible(cur)&&!seen.has(cur)){
+        seen.add(cur);
+        const text=candidateText(cur);
+        if(text&&re.test(text)){
+          const r=cur.getBoundingClientRect();
+          const cs=win.getComputedStyle(cur);
+          const tooLarge=r.height>220||(r.width*r.height)>win.innerWidth*win.innerHeight*.45;
+          const tooTiny=r.height<16||r.width<28;
+          const leftBias=r.left<win.innerWidth*.72 ? 0 : 600;
+          const sizePenalty=tooLarge?900:tooTiny?160:Math.abs(Math.min(r.height,120)-72);
+          const pointerBonus=(cs.cursor==='pointer'||cur.getAttribute('role')==='button'||cur.onclick)?-80:0;
+          const titlePenalty=/script document|creator|generate ai voice|current audio|save audio/i.test(text)?700:0;
+          out.push({
+            target:cur,
+            score:leftBias+sizePenalty+titlePenalty+text.length/18+r.width/180+pointerBonus
+          });
+        }
+      }
+      cur=cur.parentElement;
+      depth++;
+    }
+    return out;
+  }
+  function textNodeEpisodeCandidates(seq,w){
+    const doc=docOf(w);
+    const win=doc.defaultView||window;
+    const re=episodeRegex(seq);
+    const out=[];
+    const walker=doc.createTreeWalker(doc.body, win.NodeFilter.SHOW_TEXT, {
+      acceptNode(node){
+        const txt=norm(node.nodeValue||'');
+        if(!txt||!re.test(txt)) return win.NodeFilter.FILTER_REJECT;
+        const parent=node.parentElement;
+        if(!parent||!isVisible(parent)) return win.NodeFilter.FILTER_REJECT;
+        return win.NodeFilter.FILTER_ACCEPT;
+      }
+    });
+    let node;
+    while((node=walker.nextNode())){
+      out.push(...rowCandidatesFromElement(node.parentElement,re,win));
+    }
+    return out;
+  }
   function findEpisodeRow(seq,w){
     const doc=docOf(w);
     const win=doc.defaultView||window;
     const re=episodeRegex(seq);
-    const els=[...doc.querySelectorAll('li,tr,button,[role="button"],a,div,span')];
+    const els=[...doc.querySelectorAll('li,tr,td,button,[role="button"],a,div,span,p,h1,h2,h3,h4,[class*="episode"],[class*="Episode"]')];
     const matches=[];
     const seen=new Set();
     for(const el of els){
@@ -213,6 +265,18 @@
       const titlePenalty=/script document|creator|generate ai voice|current audio|save audio/i.test(text)?650:0;
       const area=Math.max(1,r.width*r.height);
       matches.push({target,score:leftListBias+titlePenalty+area/1000+text.length/10});
+      for(const cand of rowCandidatesFromElement(el,re,win)){
+        if(!seen.has(cand.target)){
+          seen.add(cand.target);
+          matches.push(cand);
+        }
+      }
+    }
+    for(const cand of textNodeEpisodeCandidates(seq,w)){
+      if(!seen.has(cand.target)){
+        seen.add(cand.target);
+        matches.push(cand);
+      }
     }
     matches.sort((a,b)=>a.score-b.score);
     return matches[0]?.target||null;
