@@ -9,7 +9,8 @@
 
   const STORE_KEY='patchstudio_audio_save_settings';
   const CMS_SHOW_BASE='https://cms.pocketfm.com/shows/audiobooks';
-  const VERSION='2026-05-21.2';
+  const VERSION='2026-05-21.3';
+  const EPISODE_LIST_WAIT_MS=30000;
 
   function readStored(){
     try{ return JSON.parse(localStorage.getItem(STORE_KEY)||'{}')||{}; }
@@ -305,6 +306,23 @@
     }
     return null;
   }
+  function pageHasAnyEpisodeText(w){
+    try{
+      const doc=docOf(w);
+      const body=norm(doc.body?.innerText||doc.body?.textContent||'');
+      return /\bEpisode\s+\d+\b/i.test(body)||/\bTo Be Recorded\b/i.test(body);
+    }catch{ return false; }
+  }
+  async function waitForEpisodeListOrRow(seq,w,timeout=EPISODE_LIST_WAIT_MS){
+    const start=Date.now();
+    while(Date.now()-start<timeout){
+      const found=findEpisodeRow(seq,w);
+      if(found) return found;
+      if(windowsToSearch(w).some(pageHasAnyEpisodeText)) return null;
+      await sleep(650);
+    }
+    return null;
+  }
   function episodeDiagnostics(seq,w){
     const parts=[];
     for(const win of windowsToSearch(w)){
@@ -347,7 +365,7 @@
     });
   }
   async function openEpisode(seq,w){
-    let found=findEpisodeRow(seq,w);
+    let found=await waitForEpisodeListOrRow(seq,w);
     if(found){
       clickEl(found.row);
       await sleep(state.delayMs);
@@ -372,7 +390,7 @@
         }
       }
     }
-    found=findEpisodeRow(seq,w);
+    found=await waitForEpisodeListOrRow(seq,w,5000);
     if(found){
       clickEl(found.row);
       await sleep(state.delayMs);
