@@ -1,18 +1,30 @@
-// Audio Save bookmarklet - runs INSIDE cms.pocketfm.com so it can click the
-// CMS-only "Use Current Audio" and "Save Audio" controls for the active show.
+// Audio Save bookmarklet - runs INSIDE cms.pocketfm.com and automates:
+// open show by CMS id/url -> open each episode in range -> Use Current Audio
+// -> Save Audio -> optional page Save.
 (function(){
   if(window.__ASV_PANEL){
     window.__ASV_PANEL.style.display='block';
     return;
   }
 
+  const STORE_KEY='patchstudio_audio_save_settings';
+  const CMS_SHOW_BASE='https://cms.pocketfm.com/shows/audiobooks';
+
+  function readStored(){
+    try{ return JSON.parse(localStorage.getItem(STORE_KEY)||'{}')||{}; }
+    catch{ return {}; }
+  }
+  const stored=readStored();
   const state={
     running:false,
     stop:false,
     log:[],
-    delayMs:1600,
-    clickMainSave:true,
-    visibleEps:[]
+    workWin:null,
+    showInput:stored.showInput||defaultShowInput(),
+    from:stored.from||'',
+    to:stored.to||'',
+    delayMs:Number(stored.delayMs||1800),
+    clickMainSave:stored.clickMainSave!==false
   };
 
   const panel=document.createElement('div');
@@ -22,7 +34,7 @@
     'position:fixed',
     'top:62px',
     'right:20px',
-    'width:520px',
+    'width:540px',
     'max-height:86vh',
     'overflow:auto',
     'background:#fff',
@@ -36,6 +48,12 @@
   ].join(';');
   document.body.appendChild(panel);
 
+  function defaultShowInput(){
+    try{
+      const u=new URL(location.href);
+      return u.searchParams.get('id')||u.searchParams.get('show_id')||'';
+    }catch{ return ''; }
+  }
   function esc(s){
     return String(s==null?'':s)
       .replace(/&/g,'&amp;')
@@ -46,16 +64,31 @@
   }
   function norm(s){ return String(s||'').replace(/\s+/g,' ').trim(); }
   function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
-  function isVisible(el){
-    if(!el||panel.contains(el)) return false;
-    const st=getComputedStyle(el);
-    if(st.display==='none'||st.visibility==='hidden'||Number(st.opacity)===0) return false;
-    const r=el.getBoundingClientRect();
-    return r.width>0&&r.height>0&&r.bottom>0&&r.right>0&&r.top<innerHeight&&r.left<innerWidth;
+  function persist(){
+    try{
+      localStorage.setItem(STORE_KEY, JSON.stringify({
+        showInput:state.showInput,
+        from:state.from,
+        to:state.to,
+        delayMs:state.delayMs,
+        clickMainSave:state.clickMainSave
+      }));
+    }catch{}
   }
-  function isDisabled(el){
-    if(!el) return true;
-    return !!(el.disabled||el.getAttribute('aria-disabled')==='true'||/\bdisabled\b/i.test(el.className||''));
+  function parseShowTarget(input){
+    const s=String(input||'').trim();
+    if(!s) return null;
+    try{
+      if(/^https?:\/\//i.test(s)){
+        const u=new URL(s);
+        const id=u.searchParams.get('id')||u.searchParams.get('show_id')||'';
+        return {url:u.href, showId:id||s};
+      }
+    }catch{}
+    const m=s.match(/(?:show_id|id)=([a-f0-9]{20,})/i)||s.match(/([a-f0-9]{20,})/i);
+    if(!m) return null;
+    const id=m[1];
+    return {url:`${CMS_SHOW_BASE}?tab=to_be_recorded&id=${encodeURIComponent(id)}`, showId:id};
   }
   function log(msg,kind='info'){
     const t=new Date().toLocaleTimeString();
@@ -67,17 +100,33 @@
       el.scrollTop=el.scrollHeight;
     }
   }
+  function ownerWin(el){ return el?.ownerDocument?.defaultView||window; }
+  function sameDocAsPanel(el){ return el?.ownerDocument===panel.ownerDocument; }
+  function isVisible(el){
+    if(!el) return false;
+    if(sameDocAsPanel(el)&&panel.contains(el)) return false;
+    const w=ownerWin(el);
+    const st=w.getComputedStyle(el);
+    if(st.display==='none'||st.visibility==='hidden'||Number(st.opacity)===0) return false;
+    const r=el.getBoundingClientRect();
+    return r.width>0&&r.height>0&&r.bottom>0&&r.right>0&&r.top<w.innerHeight&&r.left<w.innerWidth;
+  }
+  function isDisabled(el){
+    if(!el) return true;
+    return !!(el.disabled||el.getAttribute('aria-disabled')==='true'||/\bdisabled\b/i.test(el.className||''));
+  }
   function clickEl(el){
     if(!el) return;
+    const w=ownerWin(el);
     try{ el.scrollIntoView({block:'center',inline:'center'}); }catch{}
     const r=el.getBoundingClientRect();
-    const opts={bubbles:true,cancelable:true,view:window,clientX:r.left+r.width/2,clientY:r.top+r.height/2};
-    try{ el.dispatchEvent(new MouseEvent('mouseover',opts)); }catch{}
-    try{ el.dispatchEvent(new MouseEvent('mousedown',opts)); }catch{}
-    try{ el.dispatchEvent(new MouseEvent('mouseup',opts)); }catch{}
-    try{ el.dispatchEvent(new MouseEvent('click',opts)); }catch{ try{ el.click(); }catch{} }
+    const opts={bubbles:true,cancelable:true,view:w,clientX:r.left+r.width/2,clientY:r.top+r.height/2};
+    for(const type of ['mouseover','mousedown','mouseup','click']){
+      try{ el.dispatchEvent(new w.MouseEvent(type,opts)); }catch{}
+    }
+    try{ el.click(); }catch{}
   }
-  async function waitFor(fn,timeout=10000,interval=250){
+  async function waitFor(fn,timeout=12000,interval=250){
     const start=Date.now();
     while(Date.now()-start<timeout){
       const v=fn();
@@ -86,8 +135,13 @@
     }
     return null;
   }
-  function actionCandidates(re){
-    const raw=[...document.querySelectorAll('button,[role="button"],a,input[type="button"],input[type="submit"],div,span')];
+  function docOf(w){
+    try{ return w?.document||document; }
+    catch{ return document; }
+  }
+  function actionCandidates(re,w){
+    const doc=docOf(w);
+    const raw=[...doc.querySelectorAll('button,[role="button"],a,input[type="button"],input[type="submit"],div,span')];
     const out=[];
     const seen=new Set();
     for(const el of raw){
@@ -95,7 +149,7 @@
       const text=norm(el.innerText||el.textContent||el.value||el.getAttribute('aria-label')||el.title||'');
       if(!text||!re.test(text)) continue;
       const target=el.closest('button,[role="button"],a,input,[tabindex]')||el;
-      if(!isVisible(target)||panel.contains(target)||seen.has(target)) continue;
+      if(!isVisible(target)||seen.has(target)) continue;
       seen.add(target);
       const exact=re.test(norm(target.innerText||target.textContent||target.value||''));
       const tag=target.tagName.toLowerCase();
@@ -105,30 +159,30 @@
     out.sort((a,b)=>a.score-b.score);
     return out.map(x=>x.target);
   }
-  function findAction(re){
-    return actionCandidates(re).find(el=>!isDisabled(el))||null;
+  function findAction(re,w){
+    return actionCandidates(re,w).find(el=>!isDisabled(el))||null;
   }
 
-  async function saveCurrentEpisode(){
-    const useBtn=await waitFor(()=>findAction(/\buse current audio\b/i),12000);
-    if(!useBtn) throw new Error('Use Current Audio button not found on the open episode');
+  async function saveCurrentEpisode(w){
+    const useBtn=await waitFor(()=>findAction(/\buse current audio\b/i,w),15000);
+    if(!useBtn) throw new Error('Use Current Audio button not found');
     clickEl(useBtn);
     log('Clicked Use Current Audio');
 
-    const saveAudioBtn=await waitFor(()=>findAction(/^save audio$/i),9000);
+    const saveAudioBtn=await waitFor(()=>findAction(/^save audio$/i,w),10000);
     if(!saveAudioBtn) throw new Error('Save Audio confirmation button not found');
     clickEl(saveAudioBtn);
     log('Clicked Save Audio');
     await sleep(1200);
 
     if(state.clickMainSave){
-      const saveBtn=await waitFor(()=>findAction(/^save$/i),6000,300);
+      const saveBtn=await waitFor(()=>findAction(/^save$/i,w),7000,300);
       if(saveBtn&&!isDisabled(saveBtn)){
         clickEl(saveBtn);
         log('Clicked page Save');
-        await sleep(1400);
+        await sleep(1500);
       }else{
-        log('Page Save was not available/enabled after Save Audio', 'warn');
+        log('Page Save was not available/enabled after Save Audio','warn');
       }
     }
   }
@@ -140,10 +194,11 @@
   function candidateText(el){
     return norm(el.innerText||el.textContent||el.getAttribute('aria-label')||el.title||'');
   }
-  function findEpisodeRow(seq){
+  function findEpisodeRow(seq,w){
+    const doc=docOf(w);
+    const win=doc.defaultView||window;
     const re=episodeRegex(seq);
-    const els=[...document.querySelectorAll('li,tr,button,[role="button"],a,div,span')];
-    const panelRect=panel.getBoundingClientRect();
+    const els=[...doc.querySelectorAll('li,tr,button,[role="button"],a,div,span')];
     const matches=[];
     const seen=new Set();
     for(const el of els){
@@ -154,44 +209,45 @@
       if(!isVisible(target)||seen.has(target)) continue;
       seen.add(target);
       const r=target.getBoundingClientRect();
-      const leftListBias=(r.right<panelRect.left-10||r.left<innerWidth*0.62)?0:800;
-      const titlePenalty=/script document|creator|generate ai voice|current audio/i.test(text)?600:0;
+      const leftListBias=r.left<win.innerWidth*.66 ? 0 : 700;
+      const titlePenalty=/script document|creator|generate ai voice|current audio|save audio/i.test(text)?650:0;
       const area=Math.max(1,r.width*r.height);
       matches.push({target,score:leftListBias+titlePenalty+area/1000+text.length/10});
     }
     matches.sort((a,b)=>a.score-b.score);
     return matches[0]?.target||null;
   }
-  function scrollContainers(){
-    const els=[document.scrollingElement||document.documentElement,...document.querySelectorAll('aside,main,section,div,[role="list"],[class*="list"],[class*="List"],[class*="drawer"],[class*="Drawer"],[class*="episode"],[class*="Episode"]')];
+  function scrollContainers(w){
+    const doc=docOf(w);
+    const win=doc.defaultView||window;
+    const els=[doc.scrollingElement||doc.documentElement,...doc.querySelectorAll('aside,main,section,div,[role="list"],[class*="list"],[class*="List"],[class*="drawer"],[class*="Drawer"],[class*="episode"],[class*="Episode"]')];
     const seen=new Set();
     return els.filter(el=>{
-      if(!el||seen.has(el)||panel.contains(el)) return false;
+      if(!el||seen.has(el)||!isVisible(el)) return false;
       seen.add(el);
-      if(el!==document.scrollingElement&&!isVisible(el)) return false;
       if(el.scrollHeight<=el.clientHeight+80) return false;
       const text=norm(el.innerText||el.textContent||'');
-      return /episode\s*\d+/i.test(text)||el===document.scrollingElement;
+      return /episode\s*\d+/i.test(text)||el===doc.scrollingElement||el===doc.documentElement;
     }).sort((a,b)=>{
-      const ar=a.getBoundingClientRect?a.getBoundingClientRect():{left:0,width:innerWidth,height:innerHeight};
-      const br=b.getBoundingClientRect?b.getBoundingClientRect():{left:0,width:innerWidth,height:innerHeight};
+      const ar=a.getBoundingClientRect?a.getBoundingClientRect():{left:0,width:win.innerWidth,height:win.innerHeight};
+      const br=b.getBoundingClientRect?b.getBoundingClientRect():{left:0,width:win.innerWidth,height:win.innerHeight};
       return ar.left-br.left || (ar.width*ar.height)-(br.width*br.height);
     });
   }
-  async function openEpisode(seq){
-    let row=findEpisodeRow(seq);
+  async function openEpisode(seq,w){
+    let row=findEpisodeRow(seq,w);
     if(row){
       clickEl(row);
       await sleep(state.delayMs);
       return true;
     }
-    for(const c of scrollContainers()){
+    for(const c of scrollContainers(w)){
       const max=Math.max(0,c.scrollHeight-c.clientHeight);
       let last=-1;
       try{ c.scrollTop=0; }catch{}
-      await sleep(220);
+      await sleep(250);
       while(c.scrollTop!==last){
-        row=findEpisodeRow(seq);
+        row=findEpisodeRow(seq,w);
         if(row){
           clickEl(row);
           await sleep(state.delayMs);
@@ -199,77 +255,86 @@
         }
         last=c.scrollTop;
         try{ c.scrollTop=Math.min(max,c.scrollTop+Math.max(180,Math.floor(c.clientHeight*.78))); }catch{ break; }
-        await sleep(260);
+        await sleep(280);
       }
     }
-    row=findEpisodeRow(seq);
+    row=findEpisodeRow(seq,w);
     if(row){
       clickEl(row);
       await sleep(state.delayMs);
       return true;
     }
-    throw new Error(`Episode ${seq} row not found in the CMS list`);
+    throw new Error(`Episode ${seq} row not found on the show page`);
   }
-  async function saveEpisodeNumber(seq){
+  async function saveEpisodeNumber(seq,w){
     log(`Opening Ep ${seq}`);
-    await openEpisode(seq);
-    await saveCurrentEpisode();
-    log(`Ep ${seq} saved`, 'ok');
+    await openEpisode(seq,w);
+    await saveCurrentEpisode(w);
+    log(`Ep ${seq} saved`,'ok');
   }
-  function scanVisibleEpisodes(){
-    const nums=new Set();
-    const panelRect=panel.getBoundingClientRect();
-    for(const el of [...document.querySelectorAll('li,tr,button,[role="button"],a,div')]){
-      if(!isVisible(el)) continue;
-      const r=el.getBoundingClientRect();
-      if(!(r.right<panelRect.left-10||r.left<innerWidth*.62)) continue;
-      const text=candidateText(el);
-      const m=text.match(/\bEpisode\s*(\d{1,5})\b/i)||text.match(/^\s*(\d{1,5})\s+Episode\b/i);
-      if(m) nums.add(Number(m[1]));
-    }
-    return [...nums].filter(n=>Number.isFinite(n)).sort((a,b)=>a-b);
+  async function waitForWorkWindow(w){
+    const ok=await waitFor(()=>{
+      try{ return w&&!w.closed&&w.document&&w.document.body; }
+      catch{ return null; }
+    },30000,300);
+    if(!ok) throw new Error('Could not access CMS automation window. Run this bookmarklet from cms.pocketfm.com and allow popups.');
+    await waitFor(()=>{
+      try{ return w.document.readyState!=='loading'; }
+      catch{ return false; }
+    },30000,300);
+    await sleep(2500);
+    return w;
   }
-  function readSettings(){
-    state.delayMs=Math.max(500,Number(document.getElementById('asv-delay')?.value||state.delayMs)||1600);
+  async function openWorkWindow(url){
+    const w=window.open(url,'patchstudio_audio_save','width=1360,height=900');
+    if(!w) throw new Error('Popup blocked. Allow popups for cms.pocketfm.com and try again.');
+    state.workWin=w;
+    try{ w.focus(); }catch{}
+    log(`Opened CMS show page: ${url}`);
+    return waitForWorkWindow(w);
+  }
+  function readInputs(){
+    state.showInput=(document.getElementById('asv-show')?.value||'').trim();
+    state.from=(document.getElementById('asv-from')?.value||'').trim();
+    state.to=(document.getElementById('asv-to')?.value||'').trim();
+    state.delayMs=Math.max(700,Number(document.getElementById('asv-delay')?.value||state.delayMs)||1800);
     state.clickMainSave=!!document.getElementById('asv-main-save')?.checked;
+    persist();
   }
-  async function runList(list,label){
+  function buildRange(from,to){
+    const f=Number(from), t=Number(to);
+    if(!f||!t||t<f) return [];
+    const list=[];
+    for(let n=f;n<=t;n++) list.push(n);
+    return list;
+  }
+  async function runAuto(){
     if(state.running) return;
-    readSettings();
-    if(!list.length){ alert('No episodes selected'); return; }
-    if(!confirm(`Audio-save ${list.length} episode(s)?\n\n${label}\n\nThis will click CMS buttons and modify CMS data.`)) return;
+    readInputs();
+    const target=parseShowTarget(state.showInput);
+    if(!target){ alert('Enter a valid CMS show ID or full CMS show URL'); return; }
+    const eps=buildRange(state.from,state.to);
+    if(!eps.length){ alert('Enter a valid episode range'); return; }
+
     state.running=true;
     state.stop=false;
     render();
-    log(`Starting ${label}: ${list.join(', ')}`);
+    log(`Starting audio save for ${target.showId}, episodes ${state.from}-${state.to}`);
     let ok=0,fail=0;
-    for(const seq of list){
-      if(state.stop){ log('Stopped by user','warn'); break; }
-      try{
-        await saveEpisodeNumber(seq);
-        ok++;
-      }catch(e){
-        fail++;
-        log(`Ep ${seq} failed: ${e.message}`,'err');
-      }
-      if(!state.stop) await sleep(state.delayMs);
-    }
-    log(`Done - ${ok} succeeded, ${fail} failed`, fail?'warn':'ok');
-    state.running=false;
-    render();
-  }
-
-  window.__ASV_close=()=>{ panel.style.display='none'; };
-  window.__ASV_set=(key,val)=>{ state[key]=val; };
-  window.__ASV_stop=()=>{ state.stop=true; log('Stop requested; finishing current click sequence','warn'); };
-  window.__ASV_save_current=async()=>{
-    if(state.running) return;
-    readSettings();
-    state.running=true;
-    render();
     try{
-      await saveCurrentEpisode();
-      log('Current open episode saved','ok');
+      const w=await openWorkWindow(target.url);
+      for(const seq of eps){
+        if(state.stop){ log('Stopped by user','warn'); break; }
+        try{
+          await saveEpisodeNumber(seq,w);
+          ok++;
+        }catch(e){
+          fail++;
+          log(`Ep ${seq} failed: ${e.message}`,'err');
+        }
+        if(!state.stop) await sleep(state.delayMs);
+      }
+      log(`Done - ${ok} succeeded, ${fail} failed`, fail?'warn':'ok');
     }catch(e){
       log(e.message,'err');
       alert(e.message);
@@ -277,70 +342,48 @@
       state.running=false;
       render();
     }
-  };
-  window.__ASV_scan=()=>{
-    state.visibleEps=scanVisibleEpisodes();
-    render();
-    log(state.visibleEps.length?`Visible episodes: ${state.visibleEps.join(', ')}`:'No visible episode rows detected', state.visibleEps.length?'info':'warn');
-  };
-  window.__ASV_run_visible=()=>{
-    const list=state.visibleEps.length?state.visibleEps:scanVisibleEpisodes();
-    runList(list,'visible episode rows');
-  };
-  window.__ASV_run_range=()=>{
-    const from=Number(document.getElementById('asv-from')?.value||0);
-    const to=Number(document.getElementById('asv-to')?.value||0);
-    if(!from||!to||to<from){ alert('Enter a valid From and To episode number'); return; }
-    const list=[];
-    for(let n=from;n<=to;n++) list.push(n);
-    runList(list,`episode range ${from}-${to}`);
-  };
+  }
+
+  window.__ASV_close=()=>{ panel.style.display='none'; };
+  window.__ASV_stop=()=>{ state.stop=true; log('Stop requested; finishing current episode first','warn'); };
+  window.__ASV_start=runAuto;
+  window.__ASV_set=(key,val)=>{ state[key]=val; persist(); };
 
   function render(){
-    const visibleLabel=state.visibleEps.length?state.visibleEps.join(', '):'none scanned yet';
     panel.innerHTML=`<div style="padding:12px 14px;background:#14532d;color:#fff;border-radius:12px 12px 0 0;display:flex;justify-content:space-between;align-items:center">
       <div>
         <div style="font-size:14px;font-weight:800">Audio Save</div>
-        <div style="font-size:10px;color:#bbf7d0">Use Current Audio -> Save Audio</div>
+        <div style="font-size:10px;color:#bbf7d0">Show ID + range -> automatic CMS clicks</div>
       </div>
       <button onclick="window.__ASV_close()" style="background:transparent;border:none;color:#dcfce7;font-size:20px;cursor:pointer;line-height:1">x</button>
     </div>
     <div style="padding:13px 14px">
       <div style="background:#f0fdf4;border:1px solid #86efac;border-radius:9px;padding:10px 12px;margin-bottom:10px;color:#14532d;font-size:12px;line-height:1.45">
-        Open the CMS show on the episode list, open one episode, then use this panel. Batch mode finds episode rows by number and clicks the same CMS buttons you click manually.
-      </div>
-
-      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
-        <button onclick="window.__ASV_save_current()" ${state.running?'disabled':''} style="padding:8px 12px;border:none;background:#16a34a;color:#fff;border-radius:7px;font-weight:700;cursor:pointer">Save Current Open Episode</button>
-        <button onclick="window.__ASV_stop()" ${state.running?'':'disabled'} style="padding:8px 12px;border:1px solid #fecaca;background:#fef2f2;color:#dc2626;border-radius:7px;font-weight:700;cursor:pointer">Stop</button>
+        Paste the CMS show ID or full CMS show URL, enter the episode range, then start. The tool opens the show page and performs Use Current Audio -> Save Audio for each episode.
       </div>
 
       <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:9px;padding:10px 12px;margin-bottom:10px">
-        <div style="font-size:12px;font-weight:800;margin-bottom:7px">Batch by episode number</div>
-        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-          <label style="font-size:11px;color:#475569">From <input id="asv-from" type="number" min="1" style="width:72px;margin-left:4px;padding:5px;border:1px solid #cbd5e1;border-radius:5px"/></label>
-          <label style="font-size:11px;color:#475569">To <input id="asv-to" type="number" min="1" style="width:72px;margin-left:4px;padding:5px;border:1px solid #cbd5e1;border-radius:5px"/></label>
-          <button onclick="window.__ASV_run_range()" ${state.running?'disabled':''} style="padding:7px 12px;border:none;background:#2563eb;color:#fff;border-radius:7px;font-weight:700;cursor:pointer">Run Range</button>
-        </div>
-      </div>
-
-      <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:9px;padding:10px 12px;margin-bottom:10px">
-        <div style="font-size:12px;font-weight:800;margin-bottom:7px">Visible rows helper</div>
-        <div style="font-size:11px;color:#64748b;margin-bottom:7px;line-height:1.45">Use this when CMS has only a small loaded/visible slice. Scroll the list, scan, then run visible rows.</div>
-        <div style="display:flex;gap:7px;align-items:center;flex-wrap:wrap">
-          <button onclick="window.__ASV_scan()" style="padding:7px 10px;border:1px solid #cbd5e1;background:#fff;border-radius:7px;font-weight:700;cursor:pointer">Scan Visible</button>
-          <button onclick="window.__ASV_run_visible()" ${state.running?'disabled':''} style="padding:7px 10px;border:none;background:#0f172a;color:#fff;border-radius:7px;font-weight:700;cursor:pointer">Run Visible</button>
-          <span style="font-family:monospace;font-size:10px;color:#64748b;max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Detected: ${esc(visibleLabel)}</span>
+        <label style="display:block;font-size:11px;font-weight:800;color:#334155;margin-bottom:5px">CMS show ID or full CMS URL</label>
+        <input id="asv-show" value="${esc(state.showInput)}" placeholder="show id or https://cms.pocketfm.com/shows/audiobooks?..." style="width:100%;padding:8px 10px;border:1px solid #cbd5e1;border-radius:7px;font-family:monospace;font-size:11px"/>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:9px">
+          <label style="font-size:11px;color:#475569">From <input id="asv-from" value="${esc(state.from)}" type="number" min="1" style="width:76px;margin-left:4px;padding:6px;border:1px solid #cbd5e1;border-radius:5px"/></label>
+          <label style="font-size:11px;color:#475569">To <input id="asv-to" value="${esc(state.to)}" type="number" min="1" style="width:76px;margin-left:4px;padding:6px;border:1px solid #cbd5e1;border-radius:5px"/></label>
+          <button onclick="window.__ASV_start()" ${state.running?'disabled':''} style="padding:8px 14px;border:none;background:#16a34a;color:#fff;border-radius:7px;font-weight:800;cursor:pointer">${state.running?'Running...':'Start Auto Save'}</button>
+          <button onclick="window.__ASV_stop()" ${state.running?'':'disabled'} style="padding:8px 12px;border:1px solid #fecaca;background:#fef2f2;color:#dc2626;border-radius:7px;font-weight:700;cursor:pointer">Stop</button>
         </div>
       </div>
 
       <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:10px;font-size:11px;color:#475569">
         <label><input id="asv-main-save" type="checkbox" ${state.clickMainSave?'checked':''} onchange="window.__ASV_set('clickMainSave',this.checked)"/> click main Save after Save Audio</label>
-        <label>Delay <input id="asv-delay" type="number" min="500" step="100" value="${state.delayMs}" onchange="window.__ASV_set('delayMs',Math.max(500,Number(this.value)||1600))" style="width:82px;padding:4px;border:1px solid #cbd5e1;border-radius:5px"/> ms</label>
+        <label>Delay <input id="asv-delay" type="number" min="700" step="100" value="${state.delayMs}" onchange="window.__ASV_set('delayMs',Math.max(700,Number(this.value)||1800))" style="width:82px;padding:4px;border:1px solid #cbd5e1;border-radius:5px"/> ms</label>
+      </div>
+
+      <div style="font-size:11px;color:#64748b;line-height:1.45;margin-bottom:10px">
+        If a plain show ID opens the wrong tab in your CMS, paste the exact CMS show URL instead.
       </div>
 
       <div style="font-size:11px;font-weight:800;margin-bottom:5px">Execution log</div>
-      <div id="asv-log" style="max-height:230px;overflow:auto;background:#0f172a;color:#cbd5e1;border-radius:7px;padding:8px 10px;font-family:monospace;font-size:10px;line-height:1.5">${state.log.map(L=>{const c=L.kind==='err'?'#f87171':L.kind==='ok'?'#4ade80':L.kind==='warn'?'#fbbf24':'#cbd5e1';return `<div style="color:${c};padding:2px 0">[${esc(L.t)}] ${esc(L.msg)}</div>`;}).join('')||'<span style="color:#64748b">Waiting...</span>'}</div>
+      <div id="asv-log" style="max-height:260px;overflow:auto;background:#0f172a;color:#cbd5e1;border-radius:7px;padding:8px 10px;font-family:monospace;font-size:10px;line-height:1.5">${state.log.map(L=>{const c=L.kind==='err'?'#f87171':L.kind==='ok'?'#4ade80':L.kind==='warn'?'#fbbf24':'#cbd5e1';return `<div style="color:${c};padding:2px 0">[${esc(L.t)}] ${esc(L.msg)}</div>`;}).join('')||'<span style="color:#64748b">Waiting...</span>'}</div>
     </div>`;
   }
 

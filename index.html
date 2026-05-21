@@ -2742,7 +2742,7 @@ function renderAudioSaveTool(){
 
   const html=`<div style="margin-bottom:14px">
     <div style="font-size:16px;font-weight:800">💾 Audio Save</div>
-    <div style="font-size:11px;color:var(--muted)">Automates the CMS flow you showed: open an episode, click <strong>Use Current Audio</strong>, confirm <strong>Save Audio</strong>, and optionally click the main page <strong>Save</strong>. Because those controls live inside CMS, this also runs as a bookmarklet inside <code>cms.pocketfm.com</code>.</div>
+    <div style="font-size:11px;color:var(--muted)">Automates the CMS flow you showed: enter a CMS show ID and episode range, then it opens each episode and clicks <strong>Use Current Audio</strong>, confirms <strong>Save Audio</strong>, and optionally clicks the main page <strong>Save</strong>. Because those controls live inside CMS, this runs as a bookmarklet inside <code>cms.pocketfm.com</code>.</div>
   </div>
 
   <div style="background:#f0fdf4;border:1.5px solid #86efac;border-radius:var(--r);padding:14px 18px;margin-bottom:16px">
@@ -2756,10 +2756,10 @@ function renderAudioSaveTool(){
   <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:14px 18px;margin-bottom:16px">
     <div style="font-size:14px;font-weight:800;margin-bottom:8px">Step 2: Use it in CMS</div>
     <ol style="font-size:12px;line-height:1.8;padding-left:18px;color:var(--text2)">
-      <li>Open the show in <strong>cms.pocketfm.com</strong> where you normally see the episode list and the <strong>Use Current Audio</strong> button.</li>
+      <li>Open any logged-in <strong>cms.pocketfm.com</strong> tab.</li>
       <li>Click the <strong>💾 Audio Save</strong> bookmarklet from your bookmarks bar.</li>
-      <li>Use <strong>Save Current Open Episode</strong> for one episode, or enter an episode range and click <strong>Run Range</strong>.</li>
-      <li>If CMS only keeps a few rows loaded at once, scroll the list, click <strong>Scan Visible</strong>, then <strong>Run Visible</strong>.</li>
+      <li>Paste the CMS show ID or full CMS show URL, enter From and To episode numbers, then click <strong>Start Auto Save</strong>.</li>
+      <li>The bookmarklet opens the show page in an automation window and works through the episode range automatically.</li>
       <li>Watch the log. Failed rows are skipped and listed so you can retry them manually.</li>
     </ol>
   </div>
@@ -2767,7 +2767,7 @@ function renderAudioSaveTool(){
   <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:14px 18px">
     <div style="font-size:13px;font-weight:800;margin-bottom:6px">Important</div>
     <div style="font-size:11px;color:var(--muted);line-height:1.6">
-      This is a click assistant, not a hidden API write. It performs the same visible CMS actions you do manually, so keep the CMS tab active while it runs and stop the batch if the wrong episode opens.
+      This is a click assistant, not a hidden API write. It performs the same visible CMS actions you do manually, so keep the CMS automation window active while it runs and stop the batch if the wrong episode opens. If a plain show ID opens the wrong CMS tab, paste the exact CMS show URL instead.
     </div>
   </div>`;
   el.innerHTML=html;
