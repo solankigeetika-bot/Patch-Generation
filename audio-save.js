@@ -141,6 +141,22 @@
     try{ return w?.document||document; }
     catch{ return document; }
   }
+  function usableWindow(w){
+    try{ return !!(w&&!w.closed&&w.document&&w.document.body); }
+    catch{ return false; }
+  }
+  function windowsToSearch(primary){
+    const out=[];
+    const add=w=>{
+      if(!usableWindow(w)) return;
+      if(out.includes(w)) return;
+      out.push(w);
+    };
+    add(primary);
+    add(state.workWin);
+    add(window);
+    return out;
+  }
   function actionCandidates(re,w){
     const doc=docOf(w);
     const raw=[...doc.querySelectorAll('button,[role="button"],a,input[type="button"],input[type="submit"],div,span')];
@@ -246,7 +262,7 @@
     }
     return out;
   }
-  function findEpisodeRow(seq,w){
+  function findEpisodeRowInWindow(seq,w){
     const doc=docOf(w);
     const win=doc.defaultView||window;
     const re=episodeRegex(seq);
@@ -281,6 +297,37 @@
     matches.sort((a,b)=>a.score-b.score);
     return matches[0]?.target||null;
   }
+  function findEpisodeRow(seq,w){
+    for(const win of windowsToSearch(w)){
+      const row=findEpisodeRowInWindow(seq,win);
+      if(row) return {row, win};
+    }
+    return null;
+  }
+  function episodeDiagnostics(seq,w){
+    const parts=[];
+    for(const win of windowsToSearch(w)){
+      try{
+        const doc=docOf(win);
+        const href=win.location?.href||'(unknown URL)';
+        const body=norm(doc.body?.innerText||doc.body?.textContent||'');
+        const needle=new RegExp(`episode\\s*${seq}\\b|\\b${seq}\\s+episode\\b`,'i');
+        const textFound=needle.test(body);
+        const visibleMatches=[...doc.querySelectorAll('body *')].filter(el=>{
+          if(!isVisible(el)) return false;
+          const t=candidateText(el);
+          return t&&needle.test(t);
+        }).slice(0,3).map(el=>{
+          const r=el.getBoundingClientRect();
+          return `${el.tagName.toLowerCase()}@${Math.round(r.left)},${Math.round(r.top)} ${candidateText(el).slice(0,80)}`;
+        });
+        parts.push(`${href} text=${textFound?'yes':'no'} visible=${visibleMatches.length}${visibleMatches.length?' ['+visibleMatches.join(' | ')+']':''}`);
+      }catch(e){
+        parts.push(`window inaccessible: ${e.message}`);
+      }
+    }
+    return parts.join(' || ');
+  }
   function scrollContainers(w){
     const doc=docOf(w);
     const win=doc.defaultView||window;
@@ -299,41 +346,44 @@
     });
   }
   async function openEpisode(seq,w){
-    let row=findEpisodeRow(seq,w);
-    if(row){
-      clickEl(row);
+    let found=findEpisodeRow(seq,w);
+    if(found){
+      clickEl(found.row);
       await sleep(state.delayMs);
-      return true;
+      return found.win;
     }
-    for(const c of scrollContainers(w)){
-      const max=Math.max(0,c.scrollHeight-c.clientHeight);
-      let last=-1;
-      try{ c.scrollTop=0; }catch{}
-      await sleep(250);
-      while(c.scrollTop!==last){
-        row=findEpisodeRow(seq,w);
-        if(row){
-          clickEl(row);
-          await sleep(state.delayMs);
-          return true;
+    for(const win of windowsToSearch(w)){
+      for(const c of scrollContainers(win)){
+        const max=Math.max(0,c.scrollHeight-c.clientHeight);
+        let last=-1;
+        try{ c.scrollTop=0; }catch{}
+        await sleep(250);
+        while(c.scrollTop!==last){
+          found=findEpisodeRow(seq,win);
+          if(found){
+            clickEl(found.row);
+            await sleep(state.delayMs);
+            return found.win;
+          }
+          last=c.scrollTop;
+          try{ c.scrollTop=Math.min(max,c.scrollTop+Math.max(180,Math.floor(c.clientHeight*.78))); }catch{ break; }
+          await sleep(280);
         }
-        last=c.scrollTop;
-        try{ c.scrollTop=Math.min(max,c.scrollTop+Math.max(180,Math.floor(c.clientHeight*.78))); }catch{ break; }
-        await sleep(280);
       }
     }
-    row=findEpisodeRow(seq,w);
-    if(row){
-      clickEl(row);
+    found=findEpisodeRow(seq,w);
+    if(found){
+      clickEl(found.row);
       await sleep(state.delayMs);
-      return true;
+      return found.win;
     }
+    log(`Ep ${seq} diagnostics: ${episodeDiagnostics(seq,w)}`,'warn');
     throw new Error(`Episode ${seq} row not found on the show page`);
   }
   async function saveEpisodeNumber(seq,w){
     log(`Opening Ep ${seq}`);
-    await openEpisode(seq,w);
-    await saveCurrentEpisode(w);
+    const episodeWin=await openEpisode(seq,w);
+    await saveCurrentEpisode(episodeWin||w);
     log(`Ep ${seq} saved`,'ok');
   }
   async function waitForWorkWindow(w){
