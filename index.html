@@ -242,7 +242,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
     <script>
     (function(){
       var b=document.location.href.split('?')[0].split('#')[0];
-      var js="javascript:void((function(){var t=localStorage.getItem('token')||'',u=localStorage.getItem('uid')||'';if(!t||!u){alert('No token/uid in localStorage. Log into cms.pocketfm.com first.');return;}var a=String.fromCharCode(38);window.location='"+b+"?_t='+encodeURIComponent(t)+a+'_u='+encodeURIComponent(u);})())";
+      var js="javascript:void((function(){var tk=['access-token','access_token','accessToken','token','auth_token','authToken','ps_token'],uk=['uid','user_id','userId','ps_uid'];function pick(keys,min){for(var i=0;i<keys.length;i++){try{var v=localStorage.getItem(keys[i]);if(v&&v.length>=min)return v;}catch(e){}}return '';}var t=pick(tk,20),u=pick(uk,3);if(!t||!u){alert('No CMS token/uid found. Log into cms.pocketfm.com first, then click this bookmarklet from that CMS tab.');return;}var a=String.fromCharCode(38);window.location='"+b+"?_t='+encodeURIComponent(t)+a+'_u='+encodeURIComponent(u);})())";
       document.getElementById('bookmarkletWrap').innerHTML='<a href="'+js.replace(/"/g,"&quot;")+'" style="display:inline-block;padding:6px 14px;background:#2563eb;color:#fff;border-radius:6px;font-family:Syne,sans-serif;font-weight:700;font-size:10px;text-decoration:none;cursor:grab" onclick="event.preventDefault();alert(\'Drag this to your bookmarks bar, then click it on the CMS site\')">Connect PatchStudio</a>';
     })();
     </script>
@@ -4492,6 +4492,9 @@ function _cleanCmsId(v){
          s.match(/[a-f0-9]{30,}/i)?.[0] ||
          s;
 }
+function _cmsAuthExpiredMessage(status){
+  return `CMS auth expired (${status}). Click Connect PatchStudio from a logged-in cms.pocketfm.com tab, then retry.`;
+}
 
 async function _processRawDlQueue(){
   _rawDlRunning=true;
@@ -4510,6 +4513,7 @@ async function _processRawDlQueue(){
       let lastErr='';
       for(const ev of ['download','play']){
         const muResp=await fetch(`${CMS_BASE}/get_media_url?type=episode&media_type=audio&event=${ev}&chapter_id=${chapId}&show_id=${showId}`,{headers:hdrs()});
+        if(muResp.status===401) throw new Error(_cmsAuthExpiredMessage(muResp.status));
         if(!muResp.ok){ lastErr='CMS API '+ev+' HTTP '+muResp.status; continue; }
         const muData=await muResp.json();
         const u=muData.result?.media_url||muData.result?.url||muData.media_url||muData.url;
