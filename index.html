@@ -4593,8 +4593,9 @@ async function _doDownloadAllPatches(chapId){
     for(const p of patchesWithAudio){
       const src=p.audioBase64||p.blobUrl;
       try{
-        const blob=await patchAudioBlobFromSrc(src);
-        const buf=await blobToAudioBuf(blob);
+        const label=`patch ${p.time||'?'}`;
+        const blob=await patchAudioBlobFromSrc(src,label);
+        const buf=await blobToAudioBuf(blob,label);
         const startSec=parseTime(p.time);
         console.log(`Patch time="${p.time}" → ${startSec}s, duration ${buf.duration.toFixed(2)}s`);
         items.push({buf, startSec, origStart:startSec, time:p.time});
@@ -4673,7 +4674,7 @@ async function _doDownloadAllPatches(chapId){
   }
 }
 
-async function patchAudioBlobFromSrc(src){
+async function patchAudioBlobFromSrc(src,label='patch audio'){
   if(!src) throw new Error('missing audio');
   if(typeof src!=='string') throw new Error('invalid audio source');
   if(src.startsWith('blob:')){
@@ -4682,12 +4683,12 @@ async function patchAudioBlobFromSrc(src){
   if(src.startsWith('data:')){
     const resp=await fetch(src);
     if(!resp.ok) throw new Error('data URL fetch failed');
-    return resp.blob();
+    return ensureAudioBlob(await resp.blob(),label);
   }
   if(/^https?:\/\//i.test(src)){
     const resp=await fetch(src);
     if(!resp.ok) throw new Error('audio HTTP '+resp.status);
-    return resp.blob();
+    return ensureAudioBlob(await resp.blob(),label);
   }
   // Legacy rows may contain raw base64 without a data: prefix.
   const clean=src.replace(/\s+/g,'');
@@ -4695,7 +4696,7 @@ async function patchAudioBlobFromSrc(src){
     const bin=atob(clean);
     const bytes=new Uint8Array(bin.length);
     for(let i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i);
-    return new Blob([bytes],{type:'audio/mpeg'});
+    return ensureAudioBlob(new Blob([bytes],{type:'audio/mpeg'}),label);
   }
   throw new Error('unsupported audio source');
 }
@@ -5081,7 +5082,7 @@ async function loadChapter(chapId, idx){
         const blob=await dbGetBlob(`${chapId}_r${r2.idx}_t${t}`);
         // Treat empty/tiny blobs as "no take" — the player would render but
         // play nothing, which is what was producing the 0-byte blob: rows.
-        if(blob && blob.size>1024){
+        if(blob && isLikelyAudioBlob(blob)){
           RS[r2.idx].takes[t]=URL.createObjectURL(blob);
         } else if(blob){
           // Clean up the bad entry so it doesn't keep loading as a phantom take
@@ -5662,6 +5663,7 @@ async function genOneTake(text,ri,ti,chapId){
       blob=await dl.blob();
     }
 
+    blob=await ensureAudioBlob(blob,`${provider} take ${ti+1}`);
     await dbSetBlob(`${chapId}_r${ri}_t${ti}`,blob);
     st.takes[ti]=URL.createObjectURL(blob);
     const el=document.getElementById(`tc-${ri}-${ti}`);
@@ -5748,7 +5750,8 @@ async function updateSEDataForCurrentEp(){
     if(blobUrl){
       try{
         const resp=await fetch(blobUrl);
-        const blob=await resp.blob();
+        if(!resp.ok) throw new Error('audio fetch failed: '+resp.status);
+        const blob=await ensureAudioBlob(await resp.blob(),`accepted patch ${r.time||r.idx+1}`);
         audioBase64=await new Promise((res)=>{
           const reader=new FileReader();
           reader.onloadend=()=>res(reader.result);
@@ -5829,17 +5832,20 @@ async function stitchAll(){
   try{
     const epResp=await fetch(epAudioUrl);
     if(!epResp.ok) throw new Error('Cannot fetch episode audio: '+epResp.status);
-    const epBlob=await epResp.blob();
+    const epBlob=await ensureAudioBlob(await epResp.blob(),'episode audio from CMS');
     showOv('🎛','Decoding Audio','Preparing buffers...',25);
-    const epBuf=await blobToAudioBuf(epBlob);
+    const epBuf=await blobToAudioBuf(epBlob,'episode audio from CMS');
 
     // Sort patches by start time, parse time ranges
     const sorted=[...accepted].sort((a,b)=>parseTime(a.time)-parseTime(b.time));
     showOv('🎙','Loading Patches','Decoding accepted takes...',40);
     const patches=[];
     for(const r of sorted){
-      const pBlob=await fetch(RS[r.idx].takes[RS[r.idx].acceptedTake]).then(x=>x.blob());
-      const pBuf=await blobToAudioBuf(pBlob);
+      const patchLabel=`accepted patch ${r.time||r.idx+1}`;
+      const pResp=await fetch(RS[r.idx].takes[RS[r.idx].acceptedTake]);
+      if(!pResp.ok) throw new Error(`${patchLabel}: audio fetch failed (${pResp.status})`);
+      const pBlob=await ensureAudioBlob(await pResp.blob(),patchLabel);
+      const pBuf=await blobToAudioBuf(pBlob,patchLabel);
       const range=parseTimeRange(r.time);
       patches.push({startSec:range.startSec, endSec:range.endSec, buf:pBuf});
     }
@@ -5990,9 +5996,47 @@ async function uploadToCMS(){
 }
 
 // ── Audio Utilities ──────────────────────────────────────────
-async function blobToAudioBuf(blob){
-  const ab=await blob.arrayBuffer(), ctx=new AudioContext();
-  try{ return await ctx.decodeAudioData(ab); } finally{ ctx.close(); }
+function isLikelyAudioBlob(blob){
+  if(!blob || !blob.size || blob.size<=1024) return false;
+  const type=(blob.type||'').toLowerCase();
+  if(!type) return true;
+  return type.startsWith('audio/') || type==='application/octet-stream' || type==='binary/octet-stream';
+}
+
+async function ensureAudioBlob(blob,label='audio'){
+  if(!(blob instanceof Blob)) throw new Error(`${label}: missing audio blob`);
+  const type=(blob.type||'').toLowerCase();
+  const size=blob.size||0;
+  if(size<=64) throw new Error(`${label}: empty audio response (${size} bytes)`);
+
+  const textLike=/^(text\/|application\/json|application\/xml)/.test(type) || type.includes('html');
+  const tinyUnknown=size<1024 && !type.startsWith('audio/');
+  const needsSniff=textLike || tinyUnknown || !type;
+  if(needsSniff){
+    let snippet='';
+    try{ snippet=(await blob.slice(0,500).text()).replace(/\s+/g,' ').trim().slice(0,180); }catch{}
+    const looksLikeText=/^[<{\[]/.test(snippet) || /^(error|unauthorized|forbidden|invalid|failed)\b/i.test(snippet);
+    if(textLike || looksLikeText){
+      throw new Error(`${label}: provider returned ${type||'text'} instead of audio${snippet?': '+snippet:''}`);
+    }
+  }
+  return blob;
+}
+
+async function blobToAudioBuf(blob,label='audio'){
+  const safeBlob=await ensureAudioBlob(blob,label);
+  const ab=await safeBlob.arrayBuffer();
+  const Ctx=window.AudioContext||window.webkitAudioContext;
+  const ctx=new Ctx();
+  try{
+    return await ctx.decodeAudioData(ab.slice(0));
+  }catch(e){
+    const type=safeBlob.type||'unknown type';
+    const msg=e?.message||e?.name||String(e);
+    throw new Error(`${label}: could not decode audio (${type}, ${safeBlob.size} bytes). Regenerate this patch. Browser said: ${msg}`);
+  } finally{
+    try{ await ctx.close(); }catch{}
+  }
 }
 function cropBuf(buf,s,e){
   const sr=buf.sampleRate,ch=buf.numberOfChannels;
