@@ -5842,10 +5842,25 @@ async function stitchAll(){
     const patches=[];
     for(const r of sorted){
       const patchLabel=`accepted patch ${r.time||r.idx+1}`;
-      const pResp=await fetch(RS[r.idx].takes[RS[r.idx].acceptedTake]);
-      if(!pResp.ok) throw new Error(`${patchLabel}: audio fetch failed (${pResp.status})`);
-      const pBlob=await ensureAudioBlob(await pResp.blob(),patchLabel);
-      const pBuf=await blobToAudioBuf(pBlob,patchLabel);
+      const takeIdx=RS[r.idx].acceptedTake;
+      let pBuf;
+      try{
+        const pResp=await fetch(RS[r.idx].takes[takeIdx]);
+        if(!pResp.ok) throw new Error(`audio fetch failed (${pResp.status})`);
+        const pBlob=await ensureAudioBlob(await pResp.blob(),patchLabel);
+        pBuf=await blobToAudioBuf(pBlob,patchLabel);
+      }catch(e){
+        const src=RS[r.idx].takes[takeIdx]||'';
+        if(src.startsWith('blob:')){
+          try{ await dbDelBlob(`${activeEp.chapter_id}_r${r.idx}_t${takeIdx}`); }catch{}
+        }
+        RS[r.idx].takes[takeIdx]=null;
+        RS[r.idx].acceptedTake=-1;
+        RS[r.idx].status=RS[r.idx].takes.some(Boolean)?'done':'error';
+        try{ await dbSet('config',`${activeEp.chapter_id}_r${r.idx}_acc`,-1); }catch{}
+        refreshCard(r.idx); updateStitchBtn();
+        throw new Error(`${patchLabel}: saved audio was corrupt and has been cleared. Generate this take again. ${e.message}`);
+      }
       const range=parseTimeRange(r.time);
       patches.push({startSec:range.startSec, endSec:range.endSec, buf:pBuf});
     }
