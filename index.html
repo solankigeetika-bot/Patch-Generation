@@ -4553,32 +4553,48 @@ function downloadAllPatches(chapId){
 }
 async function _processPatchDlQueue(){
   _patchDlRunning=true;
-  while(_patchDlQueue.length){
-    const chapId=_patchDlQueue.shift();
-    await _doDownloadAllPatches(chapId);
-    if(_patchDlQueue.length) await sleep(800);
+  try{
+    while(_patchDlQueue.length){
+      const chapId=_patchDlQueue.shift();
+      try{
+        await _doDownloadAllPatches(chapId);
+      }catch(e){
+        console.error('Patch download failed for', chapId, e);
+        toast(`Patch download failed: ${e.message}`,'err');
+      }
+      if(_patchDlQueue.length) await sleep(800);
+    }
+  }finally{
+    _patchDlRunning=false;
   }
-  _patchDlRunning=false;
 }
 async function _doDownloadAllPatches(chapId){
+  await loadEpisodePatches(chapId);
   const seData=getSEData();
   const ep=seData[chapId];
   if(!ep?.patches?.length){toast('No patches for '+chapId,'warn');return;}
-  const patchesWithAudio=ep.patches.filter(p=>p.audioBase64&&p.time);
+  const patchesWithAudio=ep.patches.filter(p=>(p.audioBase64||p.blobUrl)&&p.time);
   if(!patchesWithAudio.length){toast('No audio available','warn');return;}
   toast(`Placing ${patchesWithAudio.length} patches at timestamps for "${ep.title||''}"...`,'ok');
 
   try{
     // Decode all patches and parse their timestamps
     const items=[];
+    const skipped=[];
     for(const p of patchesWithAudio){
-      const resp=await fetch(p.audioBase64);
-      const blob=await resp.blob();
-      const buf=await blobToAudioBuf(blob);
-      const startSec=parseTime(p.time);
-      console.log(`Patch time="${p.time}" → ${startSec}s, duration ${buf.duration.toFixed(2)}s`);
-      items.push({buf, startSec, origStart:startSec, time:p.time});
+      const src=p.audioBase64||p.blobUrl;
+      try{
+        const blob=await patchAudioBlobFromSrc(src);
+        const buf=await blobToAudioBuf(blob);
+        const startSec=parseTime(p.time);
+        console.log(`Patch time="${p.time}" → ${startSec}s, duration ${buf.duration.toFixed(2)}s`);
+        items.push({buf, startSec, origStart:startSec, time:p.time});
+      }catch(e){
+        skipped.push(`${p.time||'?'} (${e.message})`);
+      }
     }
+    if(skipped.length) toast(`Skipped ${skipped.length} broken patch audio item(s)`,'warn');
+    if(!items.length) throw new Error('No usable patch audio found. Open the episode and regenerate the patch audio.');
     // Sort by original timestamp
     items.sort((a,b)=>a.origStart-b.origStart);
 
@@ -4641,12 +4657,38 @@ async function _doDownloadAllPatches(chapId){
     setTimeout(()=>URL.revokeObjectURL(url),2000);
     toast(`Downloaded v${ts}: ${ep.title||chapId} — ${items.length} patches over ${Math.floor(totalSec/60)}m${Math.floor(totalSec%60)}s (${_patchDlQueue.length} remaining)`,'ok');
   }catch(e){
-    toast('Failed to combine: '+e.message,'err');
     console.error('downloadAllPatches error:',e);
     // Remember last failed chapId for retry
     window._lastFailedPatchDl=chapId;
     throw e;
   }
+}
+
+async function patchAudioBlobFromSrc(src){
+  if(!src) throw new Error('missing audio');
+  if(typeof src!=='string') throw new Error('invalid audio source');
+  if(src.startsWith('blob:')){
+    throw new Error('stale browser blob');
+  }
+  if(src.startsWith('data:')){
+    const resp=await fetch(src);
+    if(!resp.ok) throw new Error('data URL fetch failed');
+    return resp.blob();
+  }
+  if(/^https?:\/\//i.test(src)){
+    const resp=await fetch(src);
+    if(!resp.ok) throw new Error('audio HTTP '+resp.status);
+    return resp.blob();
+  }
+  // Legacy rows may contain raw base64 without a data: prefix.
+  const clean=src.replace(/\s+/g,'');
+  if(/^[A-Za-z0-9+/=]+$/.test(clean)&&clean.length>100){
+    const bin=atob(clean);
+    const bytes=new Uint8Array(bin.length);
+    for(let i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i);
+    return new Blob([bytes],{type:'audio/mpeg'});
+  }
+  throw new Error('unsupported audio source');
 }
 
 function retryLastPatchDownload(){
