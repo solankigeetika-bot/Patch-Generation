@@ -242,7 +242,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
     <script>
     (function(){
       var b=document.location.href.split('?')[0].split('#')[0];
-      var js="javascript:void((function(){var tk=['access-token','access_token','accessToken','token','auth_token','authToken','ps_token'],uk=['uid','user_id','userId','ps_uid'];function pick(keys,min){for(var i=0;i<keys.length;i++){try{var v=localStorage.getItem(keys[i]);if(v&&v.length>=min)return v;}catch(e){}}return '';}var t=pick(tk,20),u=pick(uk,3);if(!t||!u){alert('No CMS token/uid found. Log into cms.pocketfm.com first, then click this bookmarklet from that CMS tab.');return;}var a=String.fromCharCode(38);window.location='"+b+"?_t='+encodeURIComponent(t)+a+'_u='+encodeURIComponent(u);})())";
+      var js="javascript:void((function(){var stores=[localStorage,sessionStorage],tk=['access-token','access_token','accessToken','token','auth_token','authToken','ps_token'],uk=['uid','user_id','userId','ps_uid'];function val(k){for(var s=0;s<stores.length;s++){try{var v=stores[s].getItem(k);if(v)return v;}catch(e){}}return '';}function keys(){var out=[];for(var s=0;s<stores.length;s++){try{for(var i=0;i<stores[s].length;i++)out.push(stores[s].key(i));}catch(e){}}return out;}function pick(exact,re,min){for(var i=0;i<exact.length;i++){var v=val(exact[i]);if(v&&v.length>=min)return v;}var ks=keys();for(var j=0;j<ks.length;j++){if(re.test(ks[j])){var v2=val(ks[j]);if(v2&&v2.length>=min)return v2;}}for(var k=0;k<ks.length;k++){var raw=val(ks[k]);if(!raw||raw[0]!=='{')continue;try{var o=JSON.parse(raw);var names=exact.concat(['access_token','accessToken','authToken','id_token','user_id','userId']);for(var n=0;n<names.length;n++){var x=o[names[n]]||(o.user_info&&o.user_info[names[n]]);if(x&&String(x).length>=min)return String(x);}}catch(e){}}return '';}var t=pick(tk,/token|auth|access/i,20),u=pick(uk,/uid|user.?id/i,3);if(!t||!u){alert('No CMS token/uid found. Log into cms.pocketfm.com first, then click this bookmarklet from that CMS tab.');return;}var a=String.fromCharCode(38);window.location='"+b+"?_t='+encodeURIComponent(t)+a+'_u='+encodeURIComponent(u);})())";
       document.getElementById('bookmarkletWrap').innerHTML='<a href="'+js.replace(/"/g,"&quot;")+'" style="display:inline-block;padding:6px 14px;background:#2563eb;color:#fff;border-radius:6px;font-family:Syne,sans-serif;font-weight:700;font-size:10px;text-decoration:none;cursor:grab" onclick="event.preventDefault();alert(\'Drag this to your bookmarks bar, then click it on the CMS site\')">Connect PatchStudio</a>';
     })();
     </script>
@@ -4493,6 +4493,15 @@ function _cleanCmsId(v){
          s;
 }
 function _cmsAuthExpiredMessage(status){
+  authToken='';
+  uid='';
+  localStorage.removeItem('ps_token');
+  localStorage.removeItem('ps_uid');
+  const tokenEl=document.getElementById('tokenInp');
+  const uidEl=document.getElementById('uidInp');
+  if(tokenEl) tokenEl.value='';
+  if(uidEl) uidEl.value='';
+  setTokOk(false);
   return `CMS auth expired (${status}). Click Connect PatchStudio from a logged-in cms.pocketfm.com tab, then retry.`;
 }
 
