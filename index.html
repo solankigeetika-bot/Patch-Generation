@@ -2893,6 +2893,7 @@ let _payData=null;   // last computed result, for CSV export
 // Other shows are still aggregated as normal so the totals reflect everything
 // the listener did, just with this show's contribution narrowed.
 let _payShowFilter='', _payEpFrom='', _payEpTo='';
+let _dePayStatusWorkers={}; // Germany-only: paymentOnlyShowId -> selected status worker
 
 // Quick Audit (in-memory only, NEVER written to Firebase). User pastes
 // multiple show IDs, we fetch live from CMS, surface the proof listeners
@@ -2923,6 +2924,111 @@ function _defaultPayPeriod(){
 }
 function _fmtPayDate(d){return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()}`;}
 function _isoDate(d){return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;}
+function _parsePaymentTs(v){
+  if(!v) return 0;
+  if(typeof v==='number') return v<1e12?v*1000:v;
+  const n=Date.parse(v);
+  return isNaN(n)?0:n;
+}
+function _sameEmail(a,b){ return String(a||'').trim().toLowerCase()===String(b||'').trim().toLowerCase(); }
+function _paymentStatusSelectionEmail(sel){
+  if(!sel) return '';
+  if(typeof sel==='string') return sel;
+  return sel.email||'';
+}
+function _paymentRemarkWrongError(allRem, chapId, q, fallbackIdx){
+  const epData=allRem?.[chapId];
+  if(!epData) return false;
+  const dispositions=epData.dispositions||{};
+  if(dispositions[fallbackIdx]==='wrong_error') return true;
+  const remarks=Array.isArray(epData.remarks)?epData.remarks:Object.values(epData.remarks||{});
+  const qEmail=(q.userEmail||q.user_email||'').toLowerCase();
+  const qTime=String(q.time||'').trim();
+  const qRaw=String(q.rawRemarks||q.remarks||'').trim().slice(0,160);
+  const idx=remarks.findIndex(r=>{
+    const rEmail=String(r?.userEmail||r?.user_email||'').toLowerCase();
+    const rTime=String(r?.time||'').trim();
+    const rRaw=String(r?.rawRemarks||r?.remarks||'').trim().slice(0,160);
+    return (!qEmail||rEmail===qEmail) && (!qTime||rTime===qTime) && (!qRaw||!rRaw||rRaw===qRaw);
+  });
+  return idx>=0 && dispositions[idx]==='wrong_error';
+}
+function _addStatusWorker(list, email, label, changedAt='', extra={}){
+  email=String(email||'').trim();
+  if(!email || !/@/.test(email)) return;
+  list.push({email, label:label||'Status update', changedAt:changedAt||'', ...extra});
+}
+function _extractCMSStatusWorkers(ch={}, cd={}){
+  const out=[];
+  const fieldGroups=[
+    ['raw_audio_approve_email','raw_audio_approve_time','Raw audio approval'],
+    ['raw_audio_approved_by_email','raw_audio_approved_at','Raw audio approval'],
+    ['raw_audio_qc_email','raw_audio_qc_time','Raw under QC'],
+    ['raw_audio_qc_by_email','raw_audio_qc_at','Raw under QC'],
+    ['qc_approve_email','qc_approve_time','QC approval'],
+    ['qc_approved_by_email','qc_approved_at','QC approval'],
+    ['audio_approve_email','audio_approve_time','Audio approval'],
+    ['approved_by_email','approved_at','Approval'],
+    ['reviewer_email','reviewed_at','Review'],
+    ['status_updated_by_email','status_updated_at','Status update'],
+    ['updated_by_email','updated_at','Update'],
+    ['last_updated_by_email','last_updated_at','Update']
+  ];
+  for(const src of [ch, cd]){
+    if(!src||typeof src!=='object') continue;
+    for(const [emailKey,timeKey,label] of fieldGroups){
+      _addStatusWorker(out, src[emailKey], label, src[timeKey]||src.updated_at||src.update_time||'', {field:emailKey, status:src.audio_status||src.chapter_status||src.status||''});
+    }
+    const arrays=['editorial_qc_details','status_history','status_logs','status_change_logs','audit_logs','activity_logs'];
+    for(const arrKey of arrays){
+      const arr=Array.isArray(src[arrKey])?src[arrKey]:[];
+      for(const x of arr){
+        if(!x||typeof x!=='object') continue;
+        const email=x.user_email||x.email||x.updated_by_email||x.approved_by_email||x.reviewer_email;
+        const changedAt=x.timestamp||x.created_at||x.updated_at||x.time||x.ts||'';
+        const label=x.action||x.event||x.status||x.audio_status||x.chapter_status||arrKey;
+        _addStatusWorker(out, email, label, changedAt, {
+          field:arrKey,
+          fromStatus:x.from_status||x.old_status||x.previous_status||'',
+          toStatus:x.to_status||x.new_status||x.status||x.audio_status||''
+        });
+      }
+    }
+  }
+  const seen=new Set();
+  return out.filter(w=>{
+    const key=[w.email,w.label,w.changedAt,w.field,w.fromStatus,w.toStatus].join('|').toLowerCase();
+    if(seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+function _isGermanyRawQcStatusEvent(w){
+  const text=[w?.label,w?.field,w?.status,w?.fromStatus,w?.toStatus].filter(Boolean).join(' ').replace(/[_-]/g,' ').toLowerCase();
+  if(!text) return true;
+  return /raw/.test(text) || /under\s*qc/.test(text) || /\bqc\b/.test(text) || /approve|review|status|update/.test(text);
+}
+function _paymentStatusWorkerOptions(eps){
+  const map={};
+  for(const ep of (eps||[])){
+    for(const w of (ep.statusWorkers||[])){
+      if(!_isGermanyRawQcStatusEvent(w)) continue;
+      const k=String(w.email||'').trim().toLowerCase();
+      if(!k) continue;
+      if(!map[k]) map[k]={email:w.email, count:0};
+      map[k].count++;
+    }
+  }
+  return Object.values(map).sort((a,b)=>a.email.localeCompare(b.email));
+}
+function _episodeHasGermanyStatusWorker(ep,email,fromTs,toTs){
+  const events=(ep.statusWorkers||[]).filter(w=>_sameEmail(w.email,email)&&_isGermanyRawQcStatusEvent(w));
+  if(!events.length) return false;
+  return events.some(w=>{
+    const ts=_parsePaymentTs(w.changedAt)||_parsePaymentTs(ep.updatedAt);
+    return !ts || (ts>=fromTs&&ts<=toTs);
+  });
+}
 
 function shiftPayPeriod(dir){
   if(!_payPeriod) _payPeriod=_defaultPayPeriod();
@@ -2951,6 +3057,19 @@ function applyPayShowFilter(){
 }
 function clearPayShowFilter(){
   _payShowFilter=''; _payEpFrom=''; _payEpTo='';
+  renderPaymentReport();
+}
+async function setGermanyStatusWorker(showId,email){
+  if(currentCountry!=='de') return;
+  email=String(email||'').trim();
+  if(!showId) return;
+  if(email){
+    await dbRef('paymentStatusWorkers/'+showId).set({showId,email,updatedAt:Date.now()});
+    toast('Germany status worker selected','ok');
+  } else {
+    await dbRef('paymentStatusWorkers/'+showId).remove();
+    toast('Germany status worker cleared','ok');
+  }
   renderPaymentReport();
 }
 
@@ -3063,13 +3182,16 @@ async function loadQuickAudit(){
           if(Array.isArray(ch?.editorial_qc_details)){
             for(const x of ch.editorial_qc_details){ if(x?.user_email) approvers.add(x.user_email); }
           }
+          const statusWorkers=_extractCMSStatusWorkers(ch, cd);
+          for(const w of statusWorkers){ if(w?.email) approvers.add(w.email); }
           epOut.push({
             chapId,
             title:ch.chapter_title||cd.chapter_title||'Episode',
             seq:ch.natural_sequence_number||cd.natural_sequence_number||0,
             duration:epDur,
             qc,
-            approvers:[...approvers]
+            approvers:[...approvers],
+            statusWorkers
           });
         }));
       }
@@ -3106,7 +3228,10 @@ function toggleQuickAuditPL(email, on){
 }
 function toggleAllQuickAuditPLs(on){
   const all={};
-  for(const s of _quickAudit.loadedShows) for(const e of s.episodes) for(const q of e.qc) if(q.userEmail) all[q.userEmail]=true;
+  for(const s of _quickAudit.loadedShows) for(const e of s.episodes){
+    for(const q of e.qc) if(q.userEmail) all[q.userEmail]=true;
+    for(const a of (e.approvers||[])) if(a) all[a]=true;
+  }
   for(const e of Object.keys(all)) _quickAudit.selectedPLs[e]=!!on;
   renderPaymentReport();
 }
@@ -3165,7 +3290,7 @@ function setQuickAuditCustomDates(){
   _quickAudit.customToISO=t;
 }
 
-function computeQuickAudit(){
+async function computeQuickAudit(){
   if(!_quickAudit.loadedShows.length){ toast('Load shows first','warn'); return; }
   setQuickAuditEpRange();
   setQuickAuditCustomDates();
@@ -3185,6 +3310,7 @@ function computeQuickAudit(){
   }
   const epFrom=_quickAudit.epFrom, epTo=_quickAudit.epTo;
   const ignoreDates=_quickAudit.ignoreDates;
+  const allRem=currentCountry==='de' ? ((await dbRef('episodeRemarks').once('value')).val()||{}) : {};
   function parseTs(v){ if(!v) return 0; if(typeof v==='number') return v<1e12?v*1000:v; const n=Date.parse(v); return isNaN(n)?0:n; }
 
   // Aggregate per (email, show). Track per-episode detail too so the user
@@ -3218,9 +3344,11 @@ function computeQuickAudit(){
           s.epDetail[ep.chapId]={seq:ep.seq, title:ep.title, errors:0, duration:ep.duration||0, viaApprove:true};
         }
       }
-      for(const q of ep.qc){
+      for(let qi=0; qi<ep.qc.length; qi++){
+        const q=ep.qc[qi];
         if(!q.userEmail) continue;
         if(!_quickAudit.selectedPLs[q.userEmail]) continue;
+        if(currentCountry==='de' && _paymentRemarkWrongError(allRem, ep.chapId, q, qi)) continue;
         if(!ignoreDates){
           const ts=parseTs(q.reportedAt);
           if(ts&&(ts<fromTs||ts>toTs)){ filteredOutByDate++; continue; }
@@ -3263,7 +3391,7 @@ function exportQuickAuditCSV(){
   rows.push(['Quick Audit — Billing Period', _fmtPayDate(_payPeriod.from)+' → '+_fmtPayDate(_payPeriod.to)]);
   rows.push(['Episode range', `${_quickAudit.epFrom||'any'} → ${_quickAudit.epTo||'any'}`]);
   rows.push([]);
-  rows.push(['Listener','Duration (h:mm:ss)','Hours (decimal)','Hour Pay (€)','Errors (all)','Error Pay (€)','Total (€)']);
+  rows.push(['Listener','Duration (h:mm:ss)','Hours (decimal)','Hour Pay (€)',currentCountry==='de'?'Errors (not Wrong Error)':'Errors (all)','Error Pay (€)','Total (€)']);
   for(const u of _quickAudit.results){
     rows.push([u.email, _fmtHMS(u.hours*3600), u.hours.toFixed(3), u.hourPay.toFixed(2), u.errors, u.errorPay.toFixed(2), u.total.toFixed(2)]);
   }
@@ -3301,18 +3429,21 @@ async function renderPaymentReport(){
   const {fromTs,toTs,from,to}=_payPeriod;
 
   try{
-    const [epRemSnap, showEpsSnap, dictSnap, manualSnap, payShowSnap]=await Promise.all([
+    const [epRemSnap, showEpsSnap, dictSnap, manualSnap, payShowSnap, deStatusSnap]=await Promise.all([
       dbRef('episodeRemarks').once('value'),
       dbRef('showEpisodes').once('value'),
       dbRef('dictionary').once('value'),
       dbRef('paymentManualRows').once('value'),
-      dbRef('paymentOnlyShows').once('value')
+      dbRef('paymentOnlyShows').once('value'),
+      currentCountry==='de' ? dbRef('paymentStatusWorkers').once('value') : Promise.resolve({val:()=>({})})
     ]);
     const allRem=epRemSnap.val()||{};
     const allEps=showEpsSnap.val()||{};
     const allDict=dictSnap.val()||{};
     const manualRows=manualSnap.val()||{};
     const paymentOnlyShows=payShowSnap.val()||{};
+    const paymentStatusWorkers=currentCountry==='de'?(deStatusSnap.val()||{}):{};
+    _dePayStatusWorkers=paymentStatusWorkers;
 
     // Build chapId → {showName, duration}
     const epMeta={};
@@ -3387,7 +3518,10 @@ async function renderPaymentReport(){
         if(disp==='wrong_error') continue;
         const accepted=rev&&rev.action==='accept';
         const noPatch=disp==='no_patch';
-        if(!accepted&&!noPatch) continue;
+        // Germany rule: payable verified errors are every marked error where
+        // the SE did not pick "Wrong Error". France/Italy keep the stricter
+        // accepted/no-patch verification rule.
+        if(currentCountry!=='de' && !accepted && !noPatch) continue;
 
         // Period filter by QC-work timestamp (when the proof listener reported
         // the remark), falling back to verification time if CMS didn't return
@@ -3457,6 +3591,9 @@ async function renderPaymentReport(){
       const eps=ps.episodes||[];
       const epFallbackTs=ts=>_parseTs(ts);
       const perListener={};
+      const deSelectedStatusEmail=currentCountry==='de'?_paymentStatusSelectionEmail(paymentStatusWorkers[ps.showId]):'';
+      const deStatusOptions=currentCountry==='de'?_paymentStatusWorkerOptions(eps):[];
+      let deStatusCreditedEpisodes=0, deStatusCreditedSec=0;
       function getPL(email){
         if(!perListener[email]) perListener[email]={email, episodes:new Set(), dates:new Set(), errors:0, durationSec:0};
         return perListener[email];
@@ -3466,8 +3603,10 @@ async function renderPaymentReport(){
         const qc=ep.qc||[];
         // Track listeners whose remarks fall in the billing period.
         const epListenersInPeriod=new Set();
-        for(const q of qc){
+        for(let qi=0; qi<qc.length; qi++){
+          const q=qc[qi];
           const email=q.userEmail||q.user_email||''; if(!email) continue;
+          if(currentCountry==='de' && _paymentRemarkWrongError(allRem, ep.chapId, q, qi)) continue;
           const remarkTs=_parseTs(q.reportedAt)||epTsFallback;
           if(remarkTs&&(remarkTs<fromTs||remarkTs>toTs)) continue;
           const pl=getPL(email);
@@ -3496,12 +3635,33 @@ async function renderPaymentReport(){
             getShow(u, sn).hours+=((ep.duration||0)/3600);
           }
         }
+        // Germany-only fixed worker credit: a selected person gets the full
+        // episode duration when CMS status/approval fields show they worked on
+        // this show's raw/QC flow during the billing period.
+        if(currentCountry==='de' && deSelectedStatusEmail && _episodeHasGermanyStatusWorker(ep, deSelectedStatusEmail, fromTs, toTs)){
+          const u=getU(deSelectedStatusEmail);
+          if(!u._payOnlyEps) u._payOnlyEps=new Set();
+          const epKey=ps.showId+':'+ep.chapId;
+          if(!u._payOnlyEps.has(epKey)){
+            u._payOnlyEps.add(epKey);
+            u.hours+=((ep.duration||0)/3600);
+            getShow(u, sn).hours+=((ep.duration||0)/3600);
+            deStatusCreditedEpisodes++;
+            deStatusCreditedSec+=(ep.duration||0);
+          }
+        }
       }
       payShowBreakdown.push({
         showId:ps.showId, name:sn,
         episodeCount:eps.length,
         listeners:Object.values(perListener).sort((a,b)=>b.durationSec-a.durationSec),
-        lastSyncedAt:ps.lastSyncedAt||0
+        lastSyncedAt:ps.lastSyncedAt||0,
+        deStatus:{
+          selectedEmail:deSelectedStatusEmail,
+          options:deStatusOptions,
+          creditedEpisodes:deStatusCreditedEpisodes,
+          creditedSec:deStatusCreditedSec
+        }
       });
     }
 
@@ -3544,12 +3704,13 @@ async function renderPaymentReport(){
       </div>
     </div>
     <div style="font-size:11px;color:var(--muted);margin-bottom:8px;font-family:var(--mono)">Billing period: ${_fmtPayDate(from)} → ${_fmtPayDate(to)}</div>
+    ${currentCountry==='de'?`<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:8px 12px;margin-bottom:12px;font-family:var(--mono);font-size:10px;color:#78350f">Germany mode: €0.40 errors count only remarks that are not marked Wrong Error. Payment-only shows can also credit a selected raw/QC status worker from the per-show dropdown.</div>`:''}
 
     <div style="background:#eef6ff;border:1.5px solid #93c5fd;border-radius:var(--r);padding:14px 16px;margin-bottom:14px">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px;margin-bottom:8px">
         <div>
           <div style="font-size:14px;font-weight:800;color:#1e40af">⚡ Quick Audit (in-memory, not saved)</div>
-          <div style="font-size:10px;color:var(--muted)">Paste CMS show IDs (one per line), load fresh from CMS, pick proof listeners, and compute hours + ALL errors (verified or not). No Firebase writes.</div>
+          <div style="font-size:10px;color:var(--muted)">Paste CMS show IDs (one per line), load fresh from CMS, pick proof listeners, and compute hours + ${currentCountry==='de'?'verified errors (not Wrong Error)':'ALL errors (verified or not)'}. No Firebase writes.</div>
         </div>
         <button class="btn btn-g btn-sm" onclick="clearQuickAudit()" style="font-size:10px">Clear</button>
       </div>
@@ -3562,9 +3723,13 @@ async function renderPaymentReport(){
     // After load: show PL checklist + Compute button
     if(_quickAudit.loadedShows.length){
       const pls=new Set();
-      for(const s of _quickAudit.loadedShows) for(const e of s.episodes) for(const q of e.qc) if(q.userEmail) pls.add(q.userEmail);
+      for(const s of _quickAudit.loadedShows) for(const e of s.episodes){
+        for(const q of e.qc) if(q.userEmail) pls.add(q.userEmail);
+        for(const a of (e.approvers||[])) if(a) pls.add(a);
+      }
       const plArr=[...pls].sort();
       const selectedCount=plArr.filter(e=>_quickAudit.selectedPLs[e]).length;
+      const qaErrorLabel=currentCountry==='de'?'verified errors (not Wrong Error)':'ALL errors (verified + unverified)';
       html+=`<div style="margin-top:10px;padding:10px;background:#fff;border:1px solid var(--border);border-radius:6px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;flex-wrap:wrap;gap:6px">
           <div style="font-size:11px;font-weight:700">Proof Listeners found (${plArr.length}) — pick which to include</div>
@@ -3594,7 +3759,7 @@ async function renderPaymentReport(){
         <div style="margin-top:6px;display:flex;gap:6px;align-items:center;flex-wrap:wrap">
           <button class="btn btn-orange btn-sm" onclick="computeQuickAudit()" style="font-size:11px;font-weight:700">▶ Compute (${selectedCount} PL${selectedCount===1?'':'s'})</button>
           ${_quickAudit.results?`<button class="btn btn-g btn-sm" onclick="exportQuickAuditCSV()" style="font-size:11px">⬇ CSV</button>`:''}
-          <span style="font-size:10px;color:var(--muted)">Counts ALL errors (verified + unverified). Custom dates override the billing period above; tick "Ignore all dates" to skip the filter entirely. Click a row to see episodes worked.</span>
+          <span style="font-size:10px;color:var(--muted)">Counts ${qaErrorLabel}. Custom dates override the billing period above; tick "Ignore all dates" to skip the filter entirely. Click a row to see episodes worked.</span>
         </div>`;
 
       if(_quickAudit.results){
@@ -3767,6 +3932,18 @@ async function renderPaymentReport(){
               <button class="btn btn-g btn-sm" onclick="deletePaymentOnlyShow('${esc(ps.showId)}')" style="font-size:10px;color:var(--red);border-color:#fca5a5">× Remove</button>
             </div>
           </div>`;
+        if(currentCountry==='de'){
+          const opts=ps.deStatus?.options||[];
+          const selected=ps.deStatus?.selectedEmail||'';
+          html+=`<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;background:#fff;border:1px solid var(--border);border-radius:7px;padding:8px 10px;margin-bottom:8px;font-family:var(--mono);font-size:10px">
+            <span style="font-weight:700;color:#92400e">Germany raw/QC status worker</span>
+            <select onchange="setGermanyStatusWorker('${esc(ps.showId)}',this.value)" style="min-width:260px;font-size:11px;padding:5px 8px;border:1px solid var(--border);border-radius:6px;background:#fff">
+              <option value="">Select worker...</option>
+              ${opts.map(o=>`<option value="${esc(o.email)}" ${_sameEmail(o.email,selected)?'selected':''}>${esc(o.email)} (${o.count} status change${o.count===1?'':'s'})</option>`).join('')}
+            </select>
+            <span style="color:var(--muted)">${selected?`${ps.deStatus.creditedEpisodes} episode(s), ${_fmtHMS(ps.deStatus.creditedSec)} credited in this period`:(opts.length?'Pick a worker to credit status-changed episodes':'Refresh show to load worker dropdown')}</span>
+          </div>`;
+        }
         if(ps.listeners.length){
           html+=`<table style="border-collapse:collapse;width:100%;font-size:11px;font-family:var(--mono);background:var(--surface)">
             <thead><tr style="background:var(--surface3,#e8ecf2);color:var(--muted)">
@@ -3835,8 +4012,9 @@ async function renderPaymentReport(){
     html+=`</div>`;
 
     html+=`<div style="margin-top:12px;font-size:10px;color:var(--muted);font-family:var(--mono);line-height:1.6">
-      <div>· Hours = sum of CMS audio_duration for episodes where the listener had at least one verified remark (verification ts in period).</div>
-      <div>· Verified error = QC remark where SE accepted a patch OR marked "No Patch Required" (not "Wrong Error").</div>
+      <div>· Hours = sum of CMS audio_duration for episodes where the listener had payable work in the period.</div>
+      <div>· ${currentCountry==='de'?'Germany verified error = any QC remark that was not marked "Wrong Error".':'Verified error = QC remark where SE accepted a patch OR marked "No Patch Required" (not "Wrong Error").'}</div>
+      ${currentCountry==='de'?'<div>· Germany status worker dropdown credits the selected person for payment-only show episodes where CMS raw/QC status or approval fields show their work.</div>':''}
       <div>· Words = dictionary entries added by the listener (agent = CMS user email, addedAt in period).</div>
     </div>`;
 
@@ -3896,8 +4074,10 @@ async function _fetchPaymentShowFromCMS(showId){
         const ts=ch.raw_audio_update_time||ch.rm_audio_update_time||ch.fm_audio_update_time||ch.script_update_time||cd.script_update_time||'';
         out.push({
           chapId, title:ch.chapter_title||cd.chapter_title||'Episode',
-          duration:ch.audio_duration||cd.audio_duration||0,
-          updatedAt:ts||null, qc
+          seq:ch.natural_sequence_number||cd.natural_sequence_number||0,
+          duration:_maxDuration(ch, cd),
+          updatedAt:ts||null, qc,
+          statusWorkers:_extractCMSStatusWorkers(ch, cd)
         });
       }catch(e){}
     }));
