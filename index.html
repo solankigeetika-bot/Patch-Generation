@@ -695,6 +695,33 @@ function hdrs(){
     'source': 'cms',
   };
 }
+async function cmsFetch(url, options={}, label='CMS request', retries=3){
+  for(let attempt=1; attempt<=retries; attempt++){
+    const ctrl=new AbortController();
+    const timeout=setTimeout(()=>ctrl.abort(),30000);
+    try{
+      const resp=await fetch(url,{...options,signal:ctrl.signal});
+      clearTimeout(timeout);
+      if((resp.status===429 || resp.status>=500) && attempt<retries){
+        console.warn(`${label} got HTTP ${resp.status}; retrying ${attempt}/${retries}`);
+        await sleep(1500*attempt);
+        continue;
+      }
+      return resp;
+    }catch(e){
+      clearTimeout(timeout);
+      if(attempt<retries){
+        console.warn(`${label} failed (${e.message}); retrying ${attempt}/${retries}`);
+        await sleep(1500*attempt);
+        continue;
+      }
+      const msg=e.name==='AbortError'
+        ? `${label} timed out. Try again after a minute.`
+        : `${label} failed to reach CMS. This is usually CMS rate limit, expired CMS credentials, CORS, or internet/VPN connectivity.`;
+      throw new Error(msg);
+    }
+  }
+}
 
 // ── Load Show ────────────────────────────────────────────────
 // ── Show Management ──────────────────────────────────────────
@@ -5071,7 +5098,7 @@ async function loadShow(directInput, forceRefresh){
   document.getElementById('showEpList').innerHTML='<div class="empty"><div class="empty-icon">⏳</div><div class="empty-title">Loading episodes...</div></div>';
 
   try{
-    const r=await fetch(`${CMS_BASE}/book.show_episodes?show_id=${activeShowId}&view=cms&is_novel=0&paginate_chapters=true&page_no=1`,{headers:hdrs()});
+    const r=await cmsFetch(`${CMS_BASE}/book.show_episodes?show_id=${activeShowId}&view=cms&is_novel=0&paginate_chapters=true&page_no=1`,{headers:hdrs()},'Load show episodes page 1');
     if(!r.ok) throw new Error(`HTTP ${r.status} — check token`);
     const d=await r.json(), res=d.result;
     const showTitle = res.show_title || activeShowId;
@@ -5085,14 +5112,15 @@ async function loadShow(directInput, forceRefresh){
     let page = 2, keepGoing = true;
     while(keepGoing && page <= 2000){
       try{
-        const rp = await fetch(`${CMS_BASE}/book.show_episodes?show_id=${activeShowId}&view=cms&is_novel=0&paginate_chapters=true&page_no=${page}`, {headers:hdrs()});
+        const rp = await cmsFetch(`${CMS_BASE}/book.show_episodes?show_id=${activeShowId}&view=cms&is_novel=0&paginate_chapters=true&page_no=${page}`, {headers:hdrs()},`Load show episodes page ${page}`,2);
         if(!rp.ok){ keepGoing=false; break; }
         const dp = await rp.json();
         const pageEps = dp.result?.episodes || [];
         if(!pageEps.length){ keepGoing=false; break; }
         eps = [...eps, ...pageEps];
         page++;
-      } catch(e){ break; }
+        if(page%10===0) await sleep(400);
+      } catch(e){ console.warn('Stopping pagination:',e.message); break; }
     }
 
     episodes = eps;
@@ -5101,7 +5129,7 @@ async function loadShow(directInput, forceRefresh){
     setStatus('load', 'Checking QC status...');
     document.getElementById('showEpList').innerHTML=`<div class="empty"><div class="empty-icon">🔍</div><div class="empty-title">Checking QC status...</div><div class="empty-sub" id="bulkProgress">0/${eps.length} episodes</div></div>`;
     let qcCount=0;
-    const BATCH=5;
+    const BATCH=2;
     for(let b=0; b<eps.length; b+=BATCH){
       const batch=eps.slice(b, b+BATCH);
       await Promise.allSettled(batch.map(async ep=>{
@@ -5109,7 +5137,7 @@ async function loadShow(directInput, forceRefresh){
         const chapId=cd.chapter_id||ep.chapter_id||'';
         if(!chapId) return;
         try{
-          const dr=await fetch(`${CMS_BASE}/book.episode_details?chapter_id=${chapId}&is_novel=0`,{headers:hdrs()});
+          const dr=await cmsFetch(`${CMS_BASE}/book.episode_details?chapter_id=${chapId}&is_novel=0`,{headers:hdrs()},`Episode QC details ${chapId}`,2);
           if(!dr.ok) return;
           const dd=await dr.json();
           const ch=dd.result?.chapter_details;
@@ -5134,8 +5162,9 @@ async function loadShow(directInput, forceRefresh){
               remarks:remarkData, updatedAt:Date.now()
             });
           }
-        }catch(e){}
+        }catch(e){ console.warn('QC detail fetch failed:',chapId,e.message); }
       }));
+      await sleep(500);
       const done=Math.min(b+BATCH, eps.length);
       const progEl=document.getElementById('bulkProgress');
       if(progEl) progEl.textContent=`${done}/${eps.length} episodes`;
