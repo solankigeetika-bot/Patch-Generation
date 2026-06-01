@@ -120,26 +120,54 @@
 
   try{
     status(`Loading show ${showId}...`);
-    let eps=[], page=1, showTitle='';
-    while(page<=2000){
-      let d;
-      try{
-        d=await cmsGet(`book.show_episodes?show_id=${encodeURIComponent(showId)}&view=cms&is_novel=0&paginate_chapters=true&page_no=${page}`,`show page ${page}`,3);
-      }catch(e){
-        if(page>1 && /HTTP 404/i.test(e.message)){
-          console.warn('No more CMS pages after page',page-1,e.message);
+    let showTitle='';
+    async function fetchEpisodeFlavor(label, view, paginateChapters){
+      let out=[], page=1;
+      while(page<=2000){
+        const parts=[`show_id=${encodeURIComponent(showId)}`,'is_novel=0',`page_no=${page}`];
+        if(view) parts.push(`view=${encodeURIComponent(view)}`);
+        if(paginateChapters) parts.push('paginate_chapters=true');
+        let d;
+        try{
+          d=await cmsGet(`book.show_episodes?${parts.join('&')}`,`${label} page ${page}`,3);
+        }catch(e){
+          // Some CMS list flavors 404 when a page/flavor does not exist. That
+          // means "this flavor is done", not "the whole refresh failed".
+          console.warn(`${label} stopped at page ${page}:`, e.message);
           break;
         }
-        throw e;
+        const list=d.result?.episodes||[];
+        if(!list.length) break;
+        out=out.concat(list);
+        showTitle=showTitle||d.result?.show_title||list[0]?.chapter_details?.show_title||'';
+        status(`Loaded ${label}: ${out.length} episodes (${showTitle||showId})...`);
+        if(!d.result?.next_url) break;
+        page++;
+        if(page%10===0) await sleep(400);
       }
-      const list=d.result?.episodes||[];
-      if(!list.length) break;
-      eps=eps.concat(list);
-      showTitle=showTitle||d.result?.show_title||list[0]?.chapter_details?.show_title||'';
-      status(`Loaded episode list: ${eps.length} episodes...`);
-      page++;
-      if(page%10===0) await sleep(400);
+      return out;
     }
+
+    // CMS exposes different episode sets through different list flavours.
+    // Fetch all known flavours and merge, otherwise QC shows with >10 eps can
+    // look like they only have page 1.
+    const flavorResults=await Promise.all([
+      fetchEpisodeFlavor('cms', 'cms', false),
+      fetchEpisodeFlavor('cms+chapters', 'cms', true),
+      fetchEpisodeFlavor('plain', '', false),
+      fetchEpisodeFlavor('plain+chapters', '', true),
+    ]);
+    const seenChap=new Set();
+    const eps=[];
+    for(const ep of flavorResults.flat()){
+      const cd=ep.chapter_details||ep;
+      const cid=cd.chapter_id||ep.chapter_id||'';
+      if(!cid||seenChap.has(cid)) continue;
+      seenChap.add(cid);
+      eps.push(ep);
+    }
+    if(!eps.length) throw new Error('No episodes found for this show ID across CMS list flavors.');
+    status(`Merged ${eps.length} unique episodes from CMS (${flavorResults.map(x=>x.length).join(' + ')})...`);
     let qcCount=0;
     const epData=[];
     const BATCH=2;
