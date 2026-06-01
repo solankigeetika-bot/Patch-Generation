@@ -4224,9 +4224,11 @@ function exportPaymentCSV(){
 // ── Show View (episodes list) ───────────────────────────────
 let epFilter='', epFilterMode='all';
 function refreshQCBookmarkletHref(){
+  const showId=activeShowId||_extractShowId(activeShowConfig?.showInput||'');
   const country=currentCountry||'fr';
+  const showKey=activeShowConfig?.id||'';
   const appBase=new URL('.', location.href).href;
-  const scriptUrl=`${appBase}refresh-qc.js?country=${encodeURIComponent(country)}&v=`;
+  const scriptUrl=`${appBase}refresh-qc.js?show_id=${encodeURIComponent(showId)}&country=${encodeURIComponent(country)}&show_key=${encodeURIComponent(showKey)}&v=`;
   return `javascript:(()=>{var s=document.createElement('script');s.src=${JSON.stringify(scriptUrl)}+Date.now();document.body.appendChild(s);})()`;
 }
 function renderShowView(){
@@ -4243,7 +4245,7 @@ function renderShowView(){
       <input class="inp" id="epSearch" placeholder="Search episodes..." style="max-width:260px;font-size:11px" oninput="epFilter=this.value.toLowerCase();renderEpCards()" value="${esc(epFilter)}"/>
       <button class="btn btn-sm ${epFilterMode==='all'?'btn-p':'btn-g'}" onclick="epFilterMode='all';renderShowView()">All</button>
       <button class="btn btn-sm ${epFilterMode==='qc'?'btn-orange':'btn-g'}" onclick="epFilterMode='qc';renderShowView()">QC Only</button>
-      <a class="btn btn-sm btn-g" href="${esc(refreshQCBookmarkletHref())}" onclick="alert('Drag this Universal Refresh QC button to your bookmarks bar once. Then open any logged-in CMS show page and click the bookmark there. It detects that show_id automatically and avoids CMS CORS blocking.');return false;" draggable="true" style="font-size:10px;text-decoration:none">🔄 Universal Refresh QC</a>
+      <a class="btn btn-sm btn-g" href="${esc(refreshQCBookmarkletHref())}" onclick="alert('This Refresh QC bookmark is tied to the selected PatchStudio show. Drag it to your bookmarks bar, then click it from any logged-in CMS tab. It will refresh this show ID: '+(activeShowId||_extractShowId(activeShowConfig?.showInput||'')));return false;" draggable="true" style="font-size:10px;text-decoration:none">🔄 Refresh QC Data</a>
       <span style="font-family:var(--mono);font-size:10px;color:var(--muted);margin-left:auto" id="epFilterCount"></span>
     </div>`;
 
