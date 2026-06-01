@@ -722,6 +722,12 @@ async function cmsFetch(url, options={}, label='CMS request', retries=3){
     }
   }
 }
+async function cmsError(resp,label){
+  let body='';
+  try{ body=await resp.text(); }catch{}
+  const path=String(resp.url||'').replace(PROXY_BASE,'');
+  return new Error(`${label} HTTP ${resp.status}${path?` at ${path}`:''}${body?` — ${body.substring(0,180)}`:''}`);
+}
 
 // ── Load Show ────────────────────────────────────────────────
 // ── Show Management ──────────────────────────────────────────
@@ -5099,7 +5105,7 @@ async function loadShow(directInput, forceRefresh){
 
   try{
     const r=await cmsFetch(`${CMS_BASE}/book.show_episodes?show_id=${activeShowId}&view=cms&is_novel=0&paginate_chapters=true&page_no=1`,{headers:hdrs()},'Load show episodes page 1');
-    if(!r.ok) throw new Error(`HTTP ${r.status} — check token`);
+    if(!r.ok) throw await cmsError(r,'Load show episodes page 1');
     const d=await r.json(), res=d.result;
     const showTitle = res.show_title || activeShowId;
     document.getElementById('topTitle').textContent = showTitle;
@@ -5113,7 +5119,7 @@ async function loadShow(directInput, forceRefresh){
     while(keepGoing && page <= 2000){
       try{
         const rp = await cmsFetch(`${CMS_BASE}/book.show_episodes?show_id=${activeShowId}&view=cms&is_novel=0&paginate_chapters=true&page_no=${page}`, {headers:hdrs()},`Load show episodes page ${page}`,2);
-        if(!rp.ok){ keepGoing=false; break; }
+        if(!rp.ok){ console.warn(await cmsError(rp,`Load show episodes page ${page}`)); keepGoing=false; break; }
         const dp = await rp.json();
         const pageEps = dp.result?.episodes || [];
         if(!pageEps.length){ keepGoing=false; break; }
@@ -5138,7 +5144,7 @@ async function loadShow(directInput, forceRefresh){
         if(!chapId) return;
         try{
           const dr=await cmsFetch(`${CMS_BASE}/book.episode_details?chapter_id=${chapId}&is_novel=0`,{headers:hdrs()},`Episode QC details ${chapId}`,2);
-          if(!dr.ok) return;
+          if(!dr.ok){ console.warn(await cmsError(dr,`Episode QC details ${chapId}`)); return; }
           const dd=await dr.json();
           const ch=dd.result?.chapter_details;
           if(!ch) return;
