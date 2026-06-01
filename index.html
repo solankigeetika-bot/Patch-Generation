@@ -693,10 +693,6 @@ function hdrs(){
     'Content-Type':'application/json',
     'access-token': authToken,
     'uid': uid,
-    'app-client': 'consumer-web',
-    'app-version': '180',
-    'auth-token': 'web-auth',
-    'source': 'cms',
   };
 }
 async function cmsFetch(url, options={}, label='CMS request', retries=3){
