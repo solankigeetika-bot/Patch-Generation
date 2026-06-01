@@ -521,11 +521,15 @@ function pickCountry(c){
   setCountry(c);
 }
 
-const CMS_BASE = 'https://api.cms.pocketfm.com/v2/content_api';
 // All TTS calls route through this proxy. The proxy verifies our PocketFM
 // CMS auth (access-token + uid) and attaches the provider's secret API key
 // server-side, so the real keys never live in this HTML or any browser.
 const PROXY_BASE = 'https://patchproxy.solanki-geetika.workers.dev';
+// CMS blocks GitHub Pages with CORS for token-authenticated calls. Route
+// browser-side CMS API traffic through the same proxy so Refresh QC Data and
+// episode loading are not blocked by the browser preflight.
+const CMS_DIRECT_BASE = 'https://api.cms.pocketfm.com/v2/content_api';
+const CMS_BASE = `${PROXY_BASE}/cms`;
 const AS_BASE    = `${PROXY_BASE}/audiostack`;
 const EL_BASE    = `${PROXY_BASE}/elevenlabs`;
 const DB_NAME  = 'PatchStudioDB';
