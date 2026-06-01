@@ -525,11 +525,8 @@ function pickCountry(c){
 // CMS auth (access-token + uid) and attaches the provider's secret API key
 // server-side, so the real keys never live in this HTML or any browser.
 const PROXY_BASE = 'https://patchproxy.solanki-geetika.workers.dev';
-// CMS blocks GitHub Pages with CORS for some token-authenticated calls. The
-// Cloudflare proxy currently supports only TTS routes, so CMS data refresh is
-// handled by a CMS-side bookmarklet (see refresh-qc.js).
 const CMS_DIRECT_BASE = 'https://api.cms.pocketfm.com/v2/content_api';
-const CMS_BASE = CMS_DIRECT_BASE;
+const CMS_BASE = `${PROXY_BASE}/cms`;
 const AS_BASE    = `${PROXY_BASE}/audiostack`;
 const EL_BASE    = `${PROXY_BASE}/elevenlabs`;
 const DB_NAME  = 'PatchStudioDB';
@@ -4223,12 +4220,6 @@ function exportPaymentCSV(){
 
 // ── Show View (episodes list) ───────────────────────────────
 let epFilter='', epFilterMode='all';
-function refreshQCBookmarkletHref(){
-  const country=currentCountry||'fr';
-  const appBase=new URL('.', location.href).href;
-  const scriptUrl=`${appBase}refresh-qc.js?country=${encodeURIComponent(country)}&v=`;
-  return `javascript:(()=>{var s=document.createElement('script');s.src=${JSON.stringify(scriptUrl)}+Date.now();document.body.appendChild(s);})()`;
-}
 function renderShowView(){
   if(!activeShowConfig) return;
   const st=activeShowConfig.stats||{};
@@ -4243,7 +4234,7 @@ function renderShowView(){
       <input class="inp" id="epSearch" placeholder="Search episodes..." style="max-width:260px;font-size:11px" oninput="epFilter=this.value.toLowerCase();renderEpCards()" value="${esc(epFilter)}"/>
       <button class="btn btn-sm ${epFilterMode==='all'?'btn-p':'btn-g'}" onclick="epFilterMode='all';renderShowView()">All</button>
       <button class="btn btn-sm ${epFilterMode==='qc'?'btn-orange':'btn-g'}" onclick="epFilterMode='qc';renderShowView()">QC Only</button>
-      <a class="btn btn-sm btn-g" href="${esc(refreshQCBookmarkletHref())}" onclick="alert('Drag this Universal Refresh QC bookmark to your bookmarks bar once. Then open any logged-in CMS show page and click it there. It auto-detects that CMS show_id, so you do not need to type or recreate anything.');return false;" draggable="true" style="font-size:10px;text-decoration:none">🔄 Universal Refresh QC</a>
+      <button class="btn btn-sm btn-g" onclick="loadShow(activeShowConfig?.showInput,true)" style="font-size:10px">🔄 Refresh QC Data</button>
       <span style="font-family:var(--mono);font-size:10px;color:var(--muted);margin-left:auto" id="epFilterCount"></span>
     </div>`;
 
