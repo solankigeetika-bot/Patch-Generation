@@ -122,7 +122,16 @@
     status(`Loading show ${showId}...`);
     let eps=[], page=1, showTitle='';
     while(page<=2000){
-      const d=await cmsGet(`book.show_episodes?show_id=${encodeURIComponent(showId)}&view=cms&is_novel=0&paginate_chapters=true&page_no=${page}`,`show page ${page}`,3);
+      let d;
+      try{
+        d=await cmsGet(`book.show_episodes?show_id=${encodeURIComponent(showId)}&view=cms&is_novel=0&paginate_chapters=true&page_no=${page}`,`show page ${page}`,3);
+      }catch(e){
+        if(page>1 && /HTTP 404/i.test(e.message)){
+          console.warn('No more CMS pages after page',page-1,e.message);
+          break;
+        }
+        throw e;
+      }
       const list=d.result?.episodes||[];
       if(!list.length) break;
       eps=eps.concat(list);
