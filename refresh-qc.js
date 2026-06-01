@@ -2,7 +2,30 @@
   const CMS='https://api.cms.pocketfm.com/v2/content_api';
   const DB='https://patch-generation-default-rtdb.firebaseio.com';
   const params=new URL(document.currentScript.src).searchParams;
-  const showId=params.get('show_id')||'';
+  function extractShowId(input){
+    if(!input) return '';
+    const s=String(input);
+    return s.match(/show_id=([a-f0-9]{20,})/i)?.[1] ||
+           s.match(/[?&]id=([a-f0-9]{20,})/i)?.[1] ||
+           s.match(/\/([a-f0-9]{30,})(?:[/?#]|$)/i)?.[1] ||
+           s.match(/[a-f0-9]{30,}/i)?.[0] ||
+           '';
+  }
+  function detectShowId(){
+    let id=extractShowId(location.href);
+    if(id) return id;
+    const links=[...document.querySelectorAll('a[href]')].slice(0,500);
+    for(const a of links){
+      id=extractShowId(a.getAttribute('href')||'');
+      if(id) return id;
+    }
+    return '';
+  }
+  const detectedShowId=detectShowId();
+  const promptShowId=!params.get('show_id') && !detectedShowId
+    ? extractShowId(prompt('Could not detect show_id from this CMS page. Paste show_id or full CMS show URL:')||'')
+    : '';
+  const showId=params.get('show_id')||detectedShowId||promptShowId||'';
   const country=params.get('country')||'fr';
   const showKey=params.get('show_key')||'';
   const dbPath=p=>(country&&country!=='fr')?`${country}/${p}`:p;
@@ -84,8 +107,25 @@
     const r=await fetch(`${DB}/${dbPath(path)}.json`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
     if(!r.ok) throw new Error(`Firebase PATCH ${path} HTTP ${r.status}`);
   }
+  async function fbGet(path){
+    const r=await fetch(`${DB}/${dbPath(path)}.json`);
+    if(!r.ok) throw new Error(`Firebase GET ${path} HTTP ${r.status}`);
+    return await r.json();
+  }
   async function fbDel(path){
     await fetch(`${DB}/${dbPath(path)}.json`,{method:'DELETE'});
+  }
+  async function findShowKey(){
+    if(showKey) return showKey;
+    try{
+      const shows=await fbGet('shows')||{};
+      for(const [key,s] of Object.entries(shows)){
+        const input=s?.showInput||'';
+        const sid=extractShowId(input)||String(s?.id||'');
+        if(sid===showId || input.includes(showId)) return key;
+      }
+    }catch(e){ console.warn('Could not resolve PatchStudio show key:',e); }
+    return '';
   }
   function extractLine(remarks){
     if(!remarks) return '';
@@ -216,7 +256,8 @@
     }
     epData.sort((a,b)=>(a.natural_sequence_number||999999)-(b.natural_sequence_number||999999));
     await fbPut(`showEpisodes/${showId}`,epData);
-    if(showKey) await fbPatch(`shows/${showKey}/stats`,{total:epData.length,qc:qcCount});
+    const resolvedShowKey=await findShowKey();
+    if(resolvedShowKey) await fbPatch(`shows/${resolvedShowKey}/stats`,{total:epData.length,qc:qcCount});
     status(`Done: ${epData.length} episodes synced, ${qcCount} with QC. Go back to PatchStudio and hard refresh.`);
     alert(`PatchStudio QC Refresh complete:\n${epData.length} episodes synced\n${qcCount} episodes with QC remarks\n\nGo back to PatchStudio and hard refresh.`);
   }catch(e){
