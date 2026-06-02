@@ -4715,6 +4715,57 @@ function _cmsAuthExpiredMessage(status){
   return `CMS auth expired (${status}). Click Connect PatchStudio from a logged-in cms.pocketfm.com tab, then retry.`;
 }
 
+function _rawAudioExtFromUrl(audioUrl){
+  const m=String(audioUrl||'').match(/\.(mp3|wav|m4a|aac|ogg)(?:[?#]|$)/i);
+  return (m?.[1]||'mp3').toLowerCase();
+}
+
+function _rawAudioFilename(epTitle, chapId, audioUrl){
+  const ext=_rawAudioExtFromUrl(audioUrl);
+  const cleanTitle=(epTitle||'Episode').replace(/[^a-zA-ZÀ-ÿ0-9 ]/g,'').replace(/ /g,'_') || 'Episode';
+  return `raw_${cleanTitle}_${chapId}.${ext}`;
+}
+
+function _downloadBlob(blob, fileName){
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url;
+  a.download=fileName;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
+
+function _downloadDirectMediaUrl(audioUrl, fileName){
+  const a=document.createElement('a');
+  a.href=audioUrl;
+  a.download=fileName;
+  a.target='_blank';
+  a.rel='noopener';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+}
+
+async function _downloadRawMediaUrl(audioUrl, fileName){
+  // Signed CMS/S3 media URLs often reject browser fetch() because of CORS.
+  // The Worker fetches the same signed URL server-side and returns it with
+  // CORS + Content-Disposition so the SE panel can save it as a real file.
+  try{
+    const proxyUrl=`${PROXY_BASE}/media-download?url=${encodeURIComponent(audioUrl)}&filename=${encodeURIComponent(fileName)}`;
+    const resp=await fetch(proxyUrl,{headers:hdrs()});
+    if(resp.status===401 || resp.status===403) throw new Error(_cmsAuthExpiredMessage(resp.status));
+    if(!resp.ok) throw new Error('media proxy HTTP '+resp.status);
+    _downloadBlob(await resp.blob(), fileName);
+    return 'proxy';
+  }catch(e){
+    console.warn('media proxy failed, falling back to direct CMS URL:', e);
+    _downloadDirectMediaUrl(audioUrl, fileName);
+    return 'direct';
+  }
+}
+
 async function _processRawDlQueue(){
   _rawDlRunning=true;
   while(_rawDlQueue.length){
@@ -4740,18 +4791,9 @@ async function _processRawDlQueue(){
         lastErr='no audio URL in CMS '+ev+' response';
       }
       if(!audioUrl) throw new Error(lastErr||'CMS returned no audio URL — chapter may have no raw or live audio yet');
-      const audioResp=await fetch(audioUrl);
-      if(!audioResp.ok) throw new Error('Audio fetch failed: '+audioResp.status+(audioResp.status===403?' (likely DRM-protected)':''));
-      const blob=await audioResp.blob();
-      const url=URL.createObjectURL(blob);
-      const ext=audioUrl.match(/\.(mp3|wav|m4a|aac)(\?|$)/i)?.[1]||'mp3';
-      const cleanTitle=(epTitle||'Episode').replace(/[^a-zA-ZÀ-ÿ0-9 ]/g,'').replace(/ /g,'_');
-      const a=document.createElement('a');
-      a.href=url;
-      a.download=`raw_${cleanTitle}_${chapId}.${ext}`;
-      document.body.appendChild(a);a.click();document.body.removeChild(a);
-      setTimeout(()=>URL.revokeObjectURL(url),1000);
-      toast(`Downloaded: ${epTitle||chapId}`,'ok');
+      const fileName=_rawAudioFilename(epTitle, chapId, audioUrl);
+      const mode=await _downloadRawMediaUrl(audioUrl, fileName);
+      toast(`${mode==='proxy'?'Downloaded':'Opened download'}: ${epTitle||chapId}`,'ok');
     }catch(e){
       console.error('downloadRawCMSAudio failed:',e);
       toast(`Failed: ${epTitle||chapId} — ${e.message}`,'err');
