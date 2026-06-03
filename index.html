@@ -4766,6 +4766,49 @@ async function _downloadRawMediaUrl(audioUrl, fileName){
   }
 }
 
+function _retryAfterMs(resp, fallbackMs){
+  const raw=resp?.headers?.get?.('Retry-After')||'';
+  const seconds=Number(raw);
+  if(Number.isFinite(seconds) && seconds>0) return Math.min(seconds*1000, 90000);
+  const dateMs=Date.parse(raw);
+  if(Number.isFinite(dateMs)) return Math.min(Math.max(dateMs-Date.now(), 1000), 90000);
+  return fallbackMs;
+}
+
+async function _fetchRawCMSAudioUrl(chapId, showId, epTitle){
+  let lastErr='';
+  for(const ev of ['download','play']){
+    for(let attempt=1; attempt<=4; attempt++){
+      const muResp=await fetch(`${CMS_BASE}/get_media_url?type=episode&media_type=audio&event=${ev}&chapter_id=${chapId}&show_id=${showId}`,{headers:hdrs()});
+      if(muResp.status===401 || muResp.status===403) throw new Error(_cmsAuthExpiredMessage(muResp.status));
+      if(muResp.status===429){
+        lastErr='CMS API '+ev+' HTTP 429';
+        const waitMs=_retryAfterMs(muResp, Math.min(15000*attempt, 60000));
+        toast(`CMS rate limit hit for ${epTitle||chapId}; retrying in ${Math.ceil(waitMs/1000)}s (${attempt}/4)…`,'warn');
+        await sleep(waitMs);
+        continue;
+      }
+      if(muResp.status>=500 && attempt<4){
+        lastErr='CMS API '+ev+' HTTP '+muResp.status;
+        const waitMs=Math.min(6000*attempt, 30000);
+        toast(`CMS temporary error for ${epTitle||chapId}; retrying in ${Math.ceil(waitMs/1000)}s (${attempt}/4)…`,'warn');
+        await sleep(waitMs);
+        continue;
+      }
+      if(!muResp.ok){
+        lastErr='CMS API '+ev+' HTTP '+muResp.status;
+        break;
+      }
+      const muData=await muResp.json();
+      const u=muData.result?.media_url||muData.result?.url||muData.media_url||muData.url;
+      if(u) return u;
+      lastErr='no audio URL in CMS '+ev+' response';
+      break;
+    }
+  }
+  throw new Error(lastErr||'CMS returned no audio URL — chapter may have no raw or live audio yet');
+}
+
 async function _processRawDlQueue(){
   _rawDlRunning=true;
   while(_rawDlQueue.length){
@@ -4776,21 +4819,7 @@ async function _processRawDlQueue(){
     showId=_cleanCmsId(showId);
     toast(`Downloading: ${epTitle||chapId} (${_rawDlQueue.length} remaining)...`,'ok');
     try{
-      // event=play 404s when the chapter has no live audio (raw still in
-      // to-be-recorded). Try event=download first (raw file), fall back to
-      // event=play if download isn't available.
-      let audioUrl='';
-      let lastErr='';
-      for(const ev of ['download','play']){
-        const muResp=await fetch(`${CMS_BASE}/get_media_url?type=episode&media_type=audio&event=${ev}&chapter_id=${chapId}&show_id=${showId}`,{headers:hdrs()});
-        if(muResp.status===401) throw new Error(_cmsAuthExpiredMessage(muResp.status));
-        if(!muResp.ok){ lastErr='CMS API '+ev+' HTTP '+muResp.status; continue; }
-        const muData=await muResp.json();
-        const u=muData.result?.media_url||muData.result?.url||muData.media_url||muData.url;
-        if(u){ audioUrl=u; break; }
-        lastErr='no audio URL in CMS '+ev+' response';
-      }
-      if(!audioUrl) throw new Error(lastErr||'CMS returned no audio URL — chapter may have no raw or live audio yet');
+      const audioUrl=await _fetchRawCMSAudioUrl(chapId, showId, epTitle);
       const fileName=_rawAudioFilename(epTitle, chapId, audioUrl);
       const mode=await _downloadRawMediaUrl(audioUrl, fileName);
       toast(`${mode==='proxy'?'Downloaded':'Opened download'}: ${epTitle||chapId}`,'ok');
@@ -4798,8 +4827,8 @@ async function _processRawDlQueue(){
       console.error('downloadRawCMSAudio failed:',e);
       toast(`Failed: ${epTitle||chapId} — ${e.message}`,'err');
     }
-    // Wait 3 seconds before next download to avoid 429
-    if(_rawDlQueue.length) await sleep(3000);
+    // Raw CMS audio URL generation is rate-limited more aggressively than patch downloads.
+    if(_rawDlQueue.length) await sleep(8000);
   }
   _rawDlRunning=false;
 }
