@@ -11,7 +11,7 @@
   const STORE_KEY='patchstudio_audio_save_settings';
   const CMS='https://api.cms.pocketfm.com/v2/content_api';
   const CMS_SHOW_BASE='https://cms.pocketfm.com/shows/audiobooks';
-  const VERSION='2026-05-21.6-api-create';
+  const VERSION='2026-06-04.1-api-list-fix';
   const EPISODE_LIST_WAIT_MS=30000;
 
   function readStored(){
@@ -127,36 +127,112 @@
     const id=m[1];
     return {url:`${CMS_SHOW_BASE}?tab=to_be_recorded&id=${encodeURIComponent(id)}`, showId:id};
   }
-  async function fetchEps(showId){
-    async function paged(view, chapPag){
-      let eps=[], page=1, firstStatus=200;
-      while(page<=2000){
-        const params=[`show_id=${encodeURIComponent(showId)}`,'is_novel=0',`page_no=${page}`];
-        if(view) params.push(`view=${view}`);
-        if(chapPag) params.push('paginate_chapters=true');
-        let r;
-        try{
-          r=await fetch(`${CMS}/book.show_episodes?${params.join('&')}`,{headers:hdrs(),credentials:'include'});
-        }catch(e){
-          break;
-        }
-        if(!r.ok){ if(page===1) firstStatus=r.status; break; }
-        const d=await r.json();
-        const list=d.result?.episodes||[];
-        if(!list.length) break;
-        eps=eps.concat(list);
-        if(!d.result?.next_url) break;
-        page++;
+  function looksLikeEpisode(v){
+    if(!v||typeof v!=='object') return false;
+    const cd=v.chapter_details||v;
+    return !!(cd&&typeof cd==='object'&&(
+      cd.chapter_id||v.chapter_id||
+      cd.natural_sequence_number||v.natural_sequence_number||
+      cd.seq_number||v.seq_number||
+      cd.chapter_title||v.chapter_title
+    ));
+  }
+  function episodeListFromPayload(data){
+    const roots=[data?.result,data?.results,data?.data,data].filter(Boolean);
+    const directKeys=['episodes','chapters','chapter_details','chapter_list','stories','story_details','results','data','list','items'];
+    for(const root of roots){
+      for(const key of directKeys){
+        const val=root?.[key];
+        if(Array.isArray(val)&&val.some(looksLikeEpisode)) return val;
       }
-      return {eps, firstStatus};
     }
-    const attempts=[['cms',false],['cms',true],['',false],['',true]];
-    const results=await Promise.all(attempts.map(([v,c])=>paged(v,c)));
+    const seen=new Set();
+    function walk(obj,depth=0){
+      if(!obj||typeof obj!=='object'||depth>5||seen.has(obj)) return null;
+      seen.add(obj);
+      if(Array.isArray(obj)){
+        if(obj.some(looksLikeEpisode)) return obj;
+        for(const item of obj){
+          const found=walk(item,depth+1);
+          if(found) return found;
+        }
+        return null;
+      }
+      for(const val of Object.values(obj)){
+        const found=walk(val,depth+1);
+        if(found) return found;
+      }
+      return null;
+    }
+    return walk(data)||[];
+  }
+  function nextListUrl(data){
+    const raw=data?.result?.next_url||data?.results?.next_url||data?.data?.next_url||data?.next_url||'';
+    if(!raw) return '';
+    if(/^https?:\/\//i.test(raw)) return raw;
+    if(raw.startsWith('/v2/content_api/')) return `https://api.cms.pocketfm.com${raw}`;
+    if(raw.startsWith('/content_api/')) return `${CMS}${raw.replace(/^\/content_api/,'')}`;
+    if(raw.startsWith('/')) return `${CMS}${raw}`;
+    return `${CMS}/${raw}`;
+  }
+  function buildEpisodeListUrl(showId,view,chapPag,page){
+    const params=new URLSearchParams({show_id:showId,is_novel:'0'});
+    if(view) params.set('view',view);
+    if(chapPag) params.set('paginate_chapters','true');
+    if(page) params.set('page_no',String(page));
+    return `${CMS}/book.show_episodes?${params.toString()}`;
+  }
+  async function fetchEps(showId){
+    async function getList(url){
+      const r=await fetch(url,{headers:hdrs(),credentials:'include'});
+      if(!r.ok) return {status:r.status, eps:[], nextUrl:''};
+      const d=await r.json();
+      return {status:r.status, eps:episodeListFromPayload(d), nextUrl:nextListUrl(d)};
+    }
+    async function paged(label,view,chapPag){
+      let eps=[], firstStatus=200;
+      const seenUrls=new Set();
+      const addPage=async url=>{
+        if(seenUrls.has(url)) return '';
+        seenUrls.add(url);
+        let res;
+        try{ res=await getList(url); }
+        catch(e){ return ''; }
+        if(seenUrls.size===1) firstStatus=res.status;
+        if(res.eps.length) eps=eps.concat(res.eps);
+        return res.nextUrl||'';
+      };
+
+      // CMS itself loads the first page without page_no. For some shows,
+      // forcing page_no=1 returns 200 with an empty payload.
+      let next=await addPage(buildEpisodeListUrl(showId,view,chapPag,0));
+      let guard=0;
+      while(next&&guard<2000){
+        guard++;
+        next=await addPage(next);
+        if(guard%10===0) await sleep(300);
+      }
+
+      for(let page=1;page<=2000;page++){
+        const before=eps.length;
+        await addPage(buildEpisodeListUrl(showId,view,chapPag,page));
+        if(eps.length===before) break;
+        if(page%10===0) await sleep(300);
+      }
+      return {label, eps, firstStatus};
+    }
+    const attempts=[
+      ['cms+chapPag','cms',true],
+      ['cms','cms',false],
+      ['plain+chapPag','',true],
+      ['plain','',false]
+    ];
+    const results=await Promise.all(attempts.map(([label,v,c])=>paged(label,v,c)));
     const combined=results.flatMap(r=>r.eps);
     if(!combined.length){
       const allAuth=results.every(r=>r.firstStatus===401||r.firstStatus===403);
       if(allAuth) throw new Error('CMS auth failed. Run this from a logged-in cms.pocketfm.com tab.');
-      throw new Error('No episodes returned from CMS API - '+results.map((r,i)=>`${attempts[i][0]||'(none)'}${attempts[i][1]?'+chapPag':''}=${r.firstStatus}`).join(', '));
+      throw new Error('No episodes returned from CMS API - '+results.map(r=>`${r.label}=${r.firstStatus}`).join(', '));
     }
     const seen=new Set(), merged=[];
     for(const ep of combined){
@@ -168,7 +244,7 @@
         chapter_id:cid,
         book_id:cd.book_id||ep.book_id||'',
         chapter_title:cd.chapter_title||ep.chapter_title||'',
-        seq:cd.natural_sequence_number||ep.natural_sequence_number||0,
+        seq:cd.natural_sequence_number||ep.natural_sequence_number||cd.seq_number||ep.seq_number||cd.sequence_number||ep.sequence_number||cd.episode_number||ep.episode_number||cd.sn||ep.sn||0,
         audio_duration:cd.audio_duration||ep.audio_duration||0,
         audio_status:cd.audio_status||ep.audio_status||'',
         chapter_status:cd.chapter_Status||cd.chapter_status||ep.chapter_status||''
