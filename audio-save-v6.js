@@ -3,16 +3,21 @@
 // load episodes, read episode_details, then create the episode from the
 // generated TTS media without depending on visible rows in the CMS page.
 (function(){
-  if(window.__ASV_PANEL){
+  const VERSION='2026-06-04.1-api-list-fix';
+  if(window.__ASV_PANEL&&window.__ASV_VERSION===VERSION){
     window.__ASV_PANEL.style.display='block';
     return;
+  }
+  if(window.__ASV_PANEL){
+    try{ window.__ASV_PANEL.remove(); }catch{}
+    window.__ASV_PANEL=null;
   }
 
   const STORE_KEY='patchstudio_audio_save_settings';
   const CMS='https://api.cms.pocketfm.com/v2/content_api';
   const CMS_SHOW_BASE='https://cms.pocketfm.com/shows/audiobooks';
-  const VERSION='2026-06-04.1-api-list-fix';
   const EPISODE_LIST_WAIT_MS=30000;
+  window.__ASV_VERSION=VERSION;
 
   function readStored(){
     try{ return JSON.parse(localStorage.getItem(STORE_KEY)||'{}')||{}; }
