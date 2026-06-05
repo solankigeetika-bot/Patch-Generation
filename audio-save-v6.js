@@ -3,7 +3,7 @@
 // load episodes, read episode_details, then create the episode from the
 // generated TTS media without depending on visible rows in the CMS page.
 (function(){
-  const VERSION='2026-06-04.1-api-list-fix';
+  const VERSION='2026-06-05.1-api-dom-fallback';
   if(window.__ASV_PANEL&&window.__ASV_VERSION===VERSION){
     window.__ASV_PANEL.style.display='block';
     return;
@@ -917,6 +917,12 @@
     await createEpisodeFromCurrentAudio(ep,showId);
     log(`Ep ${seq} saved from current AI audio`,'ok');
   }
+  async function saveEpisodeByVisibleRow(seq){
+    log(`Opening Ep ${seq} from visible CMS rows`);
+    const episodeWin=await openEpisode(seq,window);
+    await saveCurrentEpisode(episodeWin||window);
+    log(`Ep ${seq} saved through CMS row fallback`,'ok');
+  }
   async function waitForWorkWindow(w){
     const ok=await waitFor(()=>{
       try{ return w&&!w.closed&&w.document&&w.document.body; }
@@ -962,23 +968,46 @@
     log(`Loading episodes from CMS API for ${target.showId}`);
     let ok=0,fail=0;
     try{
-      state.eps=await fetchEps(target.showId);
-      const bySeq=new Map(state.eps.map(ep=>[Number(ep.seq),ep]));
-      const selected=eps.map(seq=>bySeq.get(Number(seq))).filter(Boolean);
-      const missing=eps.filter(seq=>!bySeq.has(Number(seq)));
-      log(`CMS API loaded ${state.eps.length} episodes; selected ${selected.length} for ${state.from}-${state.to}`);
-      if(missing.length) log(`Range not found in API: ${missing.join(', ')}`,'warn');
-      if(!selected.length) throw new Error('No matching episodes found in CMS API for this range.');
-      for(const ep of selected){
-        if(state.stop){ log('Stopped by user','warn'); break; }
-        try{
-          await saveEpisodeNumber(ep,target.showId);
-          ok++;
-        }catch(e){
-          fail++;
-          log(`Ep ${ep.seq} failed: ${e.message}`,'err');
+      let selected=[];
+      let useDomFallback=false;
+      try{
+        state.eps=await fetchEps(target.showId);
+        const bySeq=new Map(state.eps.map(ep=>[Number(ep.seq),ep]));
+        selected=eps.map(seq=>bySeq.get(Number(seq))).filter(Boolean);
+        const missing=eps.filter(seq=>!bySeq.has(Number(seq)));
+        log(`CMS API loaded ${state.eps.length} episodes; selected ${selected.length} for ${state.from}-${state.to}`);
+        if(missing.length) log(`Range not found in API: ${missing.join(', ')}`,'warn');
+        if(!selected.length) useDomFallback=true;
+      }catch(apiErr){
+        useDomFallback=true;
+        log(`CMS API list returned no usable rows: ${apiErr.message}`,'warn');
+      }
+
+      if(useDomFallback){
+        log('Switching to visible-row fallback: open each CMS row, then Use Current Audio -> Save Audio','warn');
+        for(const seq of eps){
+          if(state.stop){ log('Stopped by user','warn'); break; }
+          try{
+            await saveEpisodeByVisibleRow(seq);
+            ok++;
+          }catch(e){
+            fail++;
+            log(`Ep ${seq} failed: ${e.message}`,'err');
+          }
+          if(!state.stop) await sleep(state.delayMs);
         }
-        if(!state.stop) await sleep(state.delayMs);
+      }else{
+        for(const ep of selected){
+          if(state.stop){ log('Stopped by user','warn'); break; }
+          try{
+            await saveEpisodeNumber(ep,target.showId);
+            ok++;
+          }catch(e){
+            fail++;
+            log(`Ep ${ep.seq} failed: ${e.message}`,'err');
+          }
+          if(!state.stop) await sleep(state.delayMs);
+        }
       }
       log(`Done - ${ok} succeeded, ${fail} failed`, fail?'warn':'ok');
     }catch(e){
@@ -1005,7 +1034,7 @@
     </div>
     <div style="padding:13px 14px">
       <div style="background:#f0fdf4;border:1px solid #86efac;border-radius:9px;padding:10px 12px;margin-bottom:10px;color:#14532d;font-size:12px;line-height:1.45">
-        Paste the CMS show ID or full CMS show URL, enter the episode range, then start. It loads episodes through the CMS API and saves the generated AI audio with the same create-episode payload used by CMS.
+        Paste the CMS show ID or full CMS show URL, enter the episode range, then start. It uses the CMS API first; if CMS returns an empty list, it opens the visible episode rows and clicks Use Current Audio -> Save Audio.
       </div>
 
       <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:9px;padding:10px 12px;margin-bottom:10px">
@@ -1024,7 +1053,7 @@
       </div>
 
       <div style="font-size:11px;color:#64748b;line-height:1.45;margin-bottom:10px">
-        No row clicking and no blank helper page: this version reads each episode's TTS job details and posts the CMS current-audio create call directly.
+        Keep the CMS episode list visible if fallback mode starts, so the tool can scroll and open the rows.
       </div>
 
       <div style="font-size:11px;font-weight:800;margin-bottom:5px">Execution log</div>
