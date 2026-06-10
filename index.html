@@ -918,7 +918,7 @@ let errSumDateFrom='';
 let errSumDateTo='';
 // Cache the two biggest Firebase fetches so switching back to the dashboard
 // is instant. Manual refresh button forces a reload.
-let _errSumCache=null;     // { allRemarks, allEps, ts }
+let _errSumCache=null;     // { allRemarks, allEps, allHistory, ts }
 const ERR_SUM_TTL_MS=5*60*1000; // 5 min
 function updateErrSumDate(which,val){
   if(which==='from') errSumDateFrom=val;
@@ -957,20 +957,23 @@ async function loadErrorSummary(){
 
   try{
     // Use cache if fresh; otherwise pull from Firebase.
-    let allRemarks, allEps;
+    let allRemarks, allEps, allHistory;
     const cacheFresh = _errSumCache && (Date.now()-_errSumCache.ts < ERR_SUM_TTL_MS);
     if(cacheFresh){
       allRemarks = _errSumCache.allRemarks;
       allEps = _errSumCache.allEps;
+      allHistory = _errSumCache.allHistory||{};
     } else {
       el.innerHTML='<div style="font-size:12px;color:var(--muted);padding:12px">Loading error summary...</div>';
-      const [remarksSnap, epsSnap] = await Promise.all([
+      const [remarksSnap, epsSnap, histSnap] = await Promise.all([
         dbRef('episodeRemarks').once('value'),
-        dbRef('showEpisodes').once('value')
+        dbRef('showEpisodes').once('value'),
+        dbRef('qcHistory').once('value')
       ]);
       allRemarks = remarksSnap.val()||{};
       allEps = epsSnap.val()||{};
-      _errSumCache = { allRemarks, allEps, ts: Date.now() };
+      allHistory = histSnap.val()||{};
+      _errSumCache = { allRemarks, allEps, allHistory, ts: Date.now() };
     }
 
     // Date filter bounds
@@ -999,7 +1002,7 @@ async function loadErrorSummary(){
         name:s.name, showInput:sid,
         voiceName:s.voiceName||'', voiceGender:s.voiceGender||'',
         episodes:0, totalErrors:0, errorTypes:{}, qcTillEp:0, epWithQC:0,
-        _matchKeys: matchKeys
+        _matchKeys: matchKeys, _episodeSeen:new Set()
       };
     }
     function findShowFor(remarkShowId){
@@ -1023,14 +1026,29 @@ async function loadErrorSummary(){
       const match=findShowFor(showId);
       if(match){
         const validEps=epArr.filter(e=>e);
-        match.episodes=validEps.length;
         for(const ep of validEps){
+          if(ep.chapter_id&&!match._episodeSeen.has(ep.chapter_id)){
+            match._episodeSeen.add(ep.chapter_id);
+            match.episodes++;
+          }
           if(ep.chapter_id) chapSeqMap[ep.chapter_id]=ep.natural_sequence_number||ep.seq_number||0;
           const seq=ep.natural_sequence_number||ep.seq_number||0;
           // QC'd = episode has QC remarks (qcCount > 0)
           if(ep.qcCount>0&&seq>match.qcTillEp) match.qcTillEp=seq;
         }
       }
+    }
+    for(const [chapId, hist] of Object.entries(allHistory||{})){
+      if(!hist) continue;
+      const match=findShowFor(hist.showId||hist.showInput||'');
+      if(!match) continue;
+      if(!match._episodeSeen.has(chapId)){
+        match._episodeSeen.add(chapId);
+        match.episodes++;
+      }
+      const seq=_historySeq(hist);
+      if(seq) chapSeqMap[chapId]=chapSeqMap[chapId]||seq;
+      if((hist.hasQC||hist.qcCompleted||hist.qcCount>0)&&seq>match.qcTillEp) match.qcTillEp=seq;
     }
 
     // Aggregate error types from episodeRemarks and find QC'd Till Ep
@@ -1060,7 +1078,7 @@ async function loadErrorSummary(){
       if(match){
         match.epWithQC++;
         // Find episode sequence number from cached episodes
-        const seq=chapSeqMap[chapId]||0;
+        const seq=chapSeqMap[chapId]||_historySeq(allHistory?.[chapId])||0;
         if(seq>match.qcTillEp) match.qcTillEp=seq;
       }
 
@@ -1547,23 +1565,40 @@ async function renderAgentReport(){
   el.innerHTML='<div style="font-size:12px;color:var(--muted);padding:12px">Loading agent report...</div>';
 
   try{
-    const remarksSnap=await dbRef('episodeRemarks').once('value');
+    const [remarksSnap, epsSnap, histSnap]=await Promise.all([
+      dbRef('episodeRemarks').once('value'),
+      dbRef('showEpisodes').once('value'),
+      dbRef('qcHistory').once('value')
+    ]);
     const allRemarks=remarksSnap.val()||{};
-    const epsSnap=await dbRef('showEpisodes').once('value');
     const allEps=epsSnap.val()||{};
+    const allHistory=histSnap.val()||{};
 
     // Build chapId→{showName, duration, seq} mapping
     const epMeta={};
+    for(const [chapId, hist] of Object.entries(allHistory)){
+      if(!hist) continue;
+      epMeta[chapId]=_historyMeta(hist, hist.showName||hist.showId||'Unknown');
+    }
     for(const [showId, eps] of Object.entries(allEps)){
       const epArr=Array.isArray(eps)?eps:Object.values(eps||{});
       const showConfig=shows.find(s=>{
-        const sid=s.showInput?.match(/show_id=([a-f0-9]+)/i)?.[1]||s.showInput||'';
+        const sid=_showIdFromConfig(s);
         return sid===showId;
       });
       const showName=showConfig?.name||showId;
       for(const ep of epArr){
         if(!ep||!ep.chapter_id) continue;
-        epMeta[ep.chapter_id]={showName, showId, duration:ep.audio_duration||0, seq:ep.natural_sequence_number||0, title:ep.chapter_title||''};
+        const existing=epMeta[ep.chapter_id]||{};
+        const dur=_durationSeconds(ep.audio_duration);
+        epMeta[ep.chapter_id]={
+          showName:existing.showName||showName,
+          showId:existing.showId||showId,
+          duration:existing.duration||dur,
+          seq:existing.seq||ep.natural_sequence_number||ep.seq_number||0,
+          title:existing.title||ep.chapter_title||'',
+          regenerationCount:existing.regenerationCount||0
+        };
       }
     }
 
@@ -1572,7 +1607,7 @@ async function renderAgentReport(){
     for(const [chapId, epData] of Object.entries(allRemarks)){
       if(!epData?.remarks) continue;
       const remarks=Array.isArray(epData.remarks)?epData.remarks:Object.values(epData.remarks||{});
-      const meta=epMeta[chapId]||{showName:epData.showId||'Unknown', duration:0};
+      const meta=epMeta[chapId]||{showName:epData.showName||epData.showId||'Unknown', duration:_durationSeconds(epData.duration), seq:epData.seq||0};
 
       for(const r of remarks){
         if(!r) continue;
@@ -2045,12 +2080,14 @@ async function renderErrorAnalytics(){
   const el=document.getElementById('analyticsReport');
   el.innerHTML='<div style="font-size:12px;color:var(--muted);padding:12px">Loading error analytics...</div>';
   try{
-    const [remSnap, epsSnap]=await Promise.all([
+    const [remSnap, epsSnap, histSnap]=await Promise.all([
       dbRef('episodeRemarks').once('value'),
-      dbRef('showEpisodes').once('value')
+      dbRef('showEpisodes').once('value'),
+      dbRef('qcHistory').once('value')
     ]);
     const allRem=remSnap.val()||{};
     const allEps=epsSnap.val()||{};
+    const allHistory=histSnap.val()||{};
 
     // Active-show set: only chapters whose show is in the current dashboard
     // are counted. Untracked shows (orphaned remarks) are silently skipped.
@@ -2070,6 +2107,14 @@ async function renderErrorAnalytics(){
 
     // chapId → metadata (only for active shows)
     const epMeta={};
+    for(const [chapId, hist] of Object.entries(allHistory)){
+      if(!hist||!activeShowIds.has(hist.showId)) continue;
+      const meta=showLookup[hist.showId];
+      epMeta[chapId]={
+        ...meta, showId:hist.showId,
+        seq:_historySeq(hist)
+      };
+    }
     for(const [showId, eps] of Object.entries(allEps)){
       if(!activeShowIds.has(showId)) continue;
       const epArr=Array.isArray(eps)?eps:Object.values(eps||{});
@@ -2077,8 +2122,9 @@ async function renderErrorAnalytics(){
       for(const ep of epArr){
         if(!ep||!ep.chapter_id) continue;
         epMeta[ep.chapter_id]={
+          ...(epMeta[ep.chapter_id]||{}),
           ...meta, showId,
-          seq:ep.natural_sequence_number||ep.seq||0
+          seq:epMeta[ep.chapter_id]?.seq||ep.natural_sequence_number||ep.seq||0
         };
       }
     }
@@ -3287,22 +3333,190 @@ function toggleQuickAuditIgnoreDates(on){
 // version (raw / ready-to-master / final-mix) has the longest available
 // length so episodes that only have a ready-to-master version still count.
 // Walks one level into common nested containers in case CMS nests durations.
+function _durationSeconds(v){
+  if(v==null||v==='') return 0;
+  if(typeof v==='string'){
+    const s=v.trim();
+    const hms=s.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+    if(hms){
+      const a=parseInt(hms[1],10), b=parseInt(hms[2],10), c=hms[3]==null?0:parseInt(hms[3],10);
+      return hms[3]==null ? (a*60+b) : (a*3600+b*60+c);
+    }
+    v=s.replace(/,/g,'');
+  }
+  let n=Number(v);
+  if(!Number.isFinite(n)||n<=0) return 0;
+  // CMS sometimes returns milliseconds in nested media metadata. Anything
+  // over 24h is not a normal episode duration, so treat it as ms.
+  if(n>86400) n=n/1000;
+  return n>0?n:0;
+}
+
 function _maxDuration(){
-  const keys=['audio_duration','raw_audio_duration','rm_audio_duration','rm_duration','fm_audio_duration','fm_duration','ready_to_master_duration','latest_duration','duration','length','audio_length','track_duration','chapter_duration'];
-  const nestKeys=['raw_media_assets','media_details','audio_details','rm_media','fm_media','raw_media','ready_to_master','assets','audio'];
+  const keys=['audio_duration','audioDuration','raw_audio_duration','rawAudioDuration','rm_audio_duration','rm_duration','fm_audio_duration','fm_duration','ready_to_master_duration','readyToMasterDuration','latest_duration','duration','duration_sec','duration_secs','duration_seconds','durationInSec','duration_in_sec','length','audio_length','audioLength','track_duration','trackDuration','chapter_duration','chapterDuration','media_duration','play_duration','generated_audio_duration'];
+  const nestKeys=['raw_media_assets','media_details','audio_details','rm_media','fm_media','raw_media','ready_to_master','assets','audio','media','tts_job_details','current_audio','currentAudio','audio_file','audioFile','generated_audio'];
   let best=0;
-  function scan(obj){
+  function scan(obj, depth=0){
     if(!obj||typeof obj!=='object') return;
+    if(depth>4) return;
+    if(Array.isArray(obj)){
+      for(const item of obj.slice(0,50)) scan(item, depth+1);
+      return;
+    }
     for(const k of keys){
-      const v=Number(obj[k]||0);
+      const v=_durationSeconds(obj[k]);
       if(v>best) best=v;
     }
     for(const nk of nestKeys){
-      if(obj[nk]&&typeof obj[nk]==='object') scan(obj[nk]);
+      if(obj[nk]&&typeof obj[nk]==='object') scan(obj[nk], depth+1);
     }
   }
   for(const obj of arguments) scan(obj);
   return best;
+}
+
+function _qcReportedAt(qc={}){
+  return qc.reportedAt||qc.timestamp||qc.created_at||qc.createdAt||qc.updated_at||qc.updatedAt||qc.qc_time||qc.time_stamp||qc.ts||'';
+}
+
+function _latestKnownTs(values){
+  let best=0;
+  for(const v of values||[]){
+    const ms=parseRemarkTs(v);
+    if(!isNaN(ms)&&ms>best) best=ms;
+  }
+  return best||0;
+}
+
+function _statusText(){
+  return Array.from(arguments).filter(Boolean).join(' ').replace(/[_-]/g,' ').toLowerCase();
+}
+
+function _isBeyondRawUnderQC(){
+  const text=_statusText(...arguments);
+  if(!text) return false;
+  if(/raw\s+under\s+qc/.test(text) && !/approve|approved|ready|master|complete|completed|done|live|publish|published|upload|uploaded|final|generated/.test(text)) return false;
+  return /approve|approved|ready|master|complete|completed|done|live|publish|published|upload|uploaded|final|generated|qc\s+pass|passed/.test(text);
+}
+
+function _countRegenerationEvents(){
+  let count=0;
+  const seen=new Set();
+  function scan(obj, depth=0){
+    if(!obj||typeof obj!=='object'||depth>4) return;
+    if(Array.isArray(obj)){ for(const x of obj.slice(0,80)) scan(x, depth+1); return; }
+    const txt=Object.entries(obj).map(([k,v])=>{
+      if(v&&typeof v==='object') return k;
+      return `${k}:${v}`;
+    }).join(' ').toLowerCase();
+    if(/regen|regenerat|re-generate/.test(txt)){
+      const key=(obj.id||obj._id||obj.created_at||obj.updated_at||obj.time||txt.slice(0,120));
+      if(!seen.has(key)){ seen.add(key); count++; }
+    }
+    for(const v of Object.values(obj)) if(v&&typeof v==='object') scan(v, depth+1);
+  }
+  for(const obj of arguments) scan(obj);
+  return count;
+}
+
+function _showIdFromConfig(s){
+  const input=s?.showInput||'';
+  return input.match(/show_id=([a-f0-9]+)/i)?.[1] || input.match(/[a-f0-9]{20,}/i)?.[0] || input || String(s?.id||'');
+}
+
+function _historyDuration(h={}){
+  return _durationSeconds(h.duration)||_durationSeconds(h.maxDuration)||_durationSeconds(h.latestDuration)||_durationSeconds(h.audioDuration)||0;
+}
+
+function _historySeq(h={}){
+  return Number(h.seq||h.natural_sequence_number||h.seq_number||0)||0;
+}
+
+function _buildQCHistory(showId, showName, ep={}, ch={}, qcDetails=[]){
+  const cd=ep.chapter_details||ep||{};
+  const statusWorkers=_extractCMSStatusWorkers(ch, cd);
+  const duration=_maxDuration(ch, cd, ep);
+  const seq=Number(ch.natural_sequence_number||cd.natural_sequence_number||ep.natural_sequence_number||ch.seq_number||cd.seq_number||0)||0;
+  const statuses=[
+    ch.audio_status, ch.chapter_status, ch.status, ch.audio_available,
+    cd.audio_status, cd.chapter_status, cd.status, ep.audio_status, ep.audio_available,
+    ...statusWorkers.map(w=>[w.label,w.status,w.fromStatus,w.toStatus].filter(Boolean).join(' '))
+  ];
+  const qcTimes=(qcDetails||[]).map(_qcReportedAt).filter(Boolean);
+  const workerTimes=statusWorkers.map(w=>w.changedAt).filter(Boolean);
+  const qcedAt=_latestKnownTs([...qcTimes, ...workerTimes]) || 0;
+  const hasStatusBeyondRaw=_isBeyondRawUnderQC(...statuses);
+  const qcCompleted=!!((qcDetails||[]).length || hasStatusBeyondRaw);
+  return {
+    chapterId:cd.chapter_id||ch.chapter_id||ep.chapter_id||'',
+    showId,
+    showName:showName||showId,
+    title:ch.chapter_title||cd.chapter_title||ep.chapter_title||'Episode',
+    seq,
+    duration,
+    latestDuration:duration,
+    audioDuration:_durationSeconds(ch.audio_duration)||_durationSeconds(cd.audio_duration)||_durationSeconds(ep.audio_duration)||0,
+    audioStatus:ch.audio_status||cd.audio_status||ep.audio_status||ep.audio_available||'',
+    chapterStatus:ch.chapter_status||cd.chapter_status||ch.status||cd.status||'',
+    qcCount:(qcDetails||[]).length,
+    hasQC:(qcDetails||[]).length>0,
+    qcCompleted,
+    qcedAt:qcCompleted?(qcedAt||Date.now()):0,
+    statusWorkers,
+    regenerationCount:_countRegenerationEvents(ch, cd, ep),
+    qc:(qcDetails||[]).map((qc,i)=>({
+      idx:i,
+      time:qc.time||'',
+      issueType:qc.issue_type||'',
+      userEmail:qc.user_email||'',
+      reportedAt:_qcReportedAt(qc),
+      rawRemarks:qc.remarks||''
+    })),
+    firstSeenAt:Date.now(),
+    lastCmsSyncAt:Date.now(),
+    source:'cms_refresh'
+  };
+}
+
+function _mergeQCHistory(prev={}, next={}){
+  const bestDuration=Math.max(_historyDuration(prev), _historyDuration(next));
+  const latestDuration=_durationSeconds(next.latestDuration)||_durationSeconds(prev.latestDuration)||bestDuration;
+  const qcCount=Math.max(Number(prev.qcCount||0), Number(next.qcCount||0));
+  const existingQc=Array.isArray(prev.qc)?prev.qc:[];
+  const nextQc=Array.isArray(next.qc)?next.qc:[];
+  const qcKey=q=>[q.idx,q.time,q.userEmail,q.issueType,String(q.rawRemarks||'').slice(0,160)].join('|').toLowerCase();
+  const seen=new Set(existingQc.map(qcKey));
+  const mergedQc=[...existingQc];
+  for(const q of nextQc){ const k=qcKey(q); if(!seen.has(k)){ seen.add(k); mergedQc.push(q); } }
+  return {
+    ...prev,
+    ...next,
+    firstSeenAt:prev.firstSeenAt||next.firstSeenAt||Date.now(),
+    duration:bestDuration,
+    maxDuration:bestDuration,
+    latestDuration,
+    audioDuration:_durationSeconds(next.audioDuration)||_durationSeconds(prev.audioDuration)||0,
+    seq:_historySeq(next)||_historySeq(prev),
+    qcCount,
+    hasQC:!!(prev.hasQC||next.hasQC||qcCount>0),
+    qcCompleted:!!(prev.qcCompleted||next.qcCompleted||qcCount>0),
+    qcedAt:prev.qcedAt||next.qcedAt||(prev.qcCompleted||next.qcCompleted||qcCount>0?Date.now():0),
+    regenerationCount:Math.max(Number(prev.regenerationCount||0), Number(next.regenerationCount||0)),
+    statusWorkers:Array.isArray(next.statusWorkers)&&next.statusWorkers.length?next.statusWorkers:(prev.statusWorkers||[]),
+    qc:mergedQc,
+    lastCmsSyncAt:Date.now()
+  };
+}
+
+function _historyMeta(h={}, fallbackShowName='Unknown'){
+  return {
+    showName:h.showName||fallbackShowName||h.showId||'Unknown',
+    showId:h.showId||'',
+    duration:_historyDuration(h),
+    seq:_historySeq(h),
+    title:h.title||'',
+    regenerationCount:Number(h.regenerationCount||0)||0
+  };
 }
 
 function _fmtHMS(secs){
@@ -3459,9 +3673,10 @@ async function renderPaymentReport(){
   const {fromTs,toTs,from,to}=_payPeriod;
 
   try{
-    const [epRemSnap, showEpsSnap, dictSnap, manualSnap, payShowSnap, deStatusSnap]=await Promise.all([
+    const [epRemSnap, showEpsSnap, histSnap, dictSnap, manualSnap, payShowSnap, deStatusSnap]=await Promise.all([
       dbRef('episodeRemarks').once('value'),
       dbRef('showEpisodes').once('value'),
+      dbRef('qcHistory').once('value'),
       dbRef('dictionary').once('value'),
       dbRef('paymentManualRows').once('value'),
       dbRef('paymentOnlyShows').once('value'),
@@ -3469,6 +3684,7 @@ async function renderPaymentReport(){
     ]);
     const allRem=epRemSnap.val()||{};
     const allEps=showEpsSnap.val()||{};
+    const allHistory=histSnap.val()||{};
     const allDict=dictSnap.val()||{};
     const manualRows=manualSnap.val()||{};
     const paymentOnlyShows=payShowSnap.val()||{};
@@ -3477,16 +3693,29 @@ async function renderPaymentReport(){
 
     // Build chapId → {showName, duration}
     const epMeta={};
+    for(const [chapId, hist] of Object.entries(allHistory)){
+      if(!hist) continue;
+      epMeta[chapId]=_historyMeta(hist, hist.showName||hist.showId||'Unknown');
+    }
     for(const [showId, eps] of Object.entries(allEps)){
       const epArr=Array.isArray(eps)?eps:Object.values(eps||{});
       const showConfig=shows.find(s=>{
-        const sid=s.showInput?.match(/show_id=([a-f0-9]+)/i)?.[1]||s.showInput||'';
+        const sid=_showIdFromConfig(s);
         return sid===showId;
       });
       const showName=showConfig?.name||showId;
       for(const ep of epArr){
         if(!ep||!ep.chapter_id) continue;
-        epMeta[ep.chapter_id]={showName, duration:ep.audio_duration||0, seq:ep.natural_sequence_number||0};
+        const existing=epMeta[ep.chapter_id]||{};
+        const dur=_durationSeconds(ep.audio_duration);
+        epMeta[ep.chapter_id]={
+          showName:existing.showName||showName,
+          showId:existing.showId||showId,
+          duration:existing.duration||dur,
+          seq:existing.seq||ep.natural_sequence_number||ep.seq_number||0,
+          title:existing.title||ep.chapter_title||'',
+          regenerationCount:existing.regenerationCount||0
+        };
       }
     }
 
@@ -3495,13 +3724,13 @@ async function renderPaymentReport(){
     function getU(email){
       if(!users[email]) users[email]={
         email, hours:0, errors:0, words:0,
-        shows:{}, // { showName: { hours, errors, words } }
+        shows:{}, // { showName: { hours, errors, words, regens } }
         episodes:{} // { chapId: showName } — for hour computation later
       };
       return users[email];
     }
     function getShow(u, sn){
-      if(!u.shows[sn]) u.shows[sn]={hours:0, errors:0, words:0};
+      if(!u.shows[sn]) u.shows[sn]={hours:0, errors:0, words:0, regens:0};
       return u.shows[sn];
     }
 
@@ -3521,7 +3750,7 @@ async function renderPaymentReport(){
       const dispositions=epData.dispositions||{};
       const dispositionMeta=epData.dispositionMeta||{};
       const reviews=epData.reviews||{};
-      const meta=epMeta[chapId]||{showName:'Unknown', duration:0};
+      const meta=epMeta[chapId]||{showName:epData.showName||epData.showId||'Unknown', duration:_durationSeconds(epData.duration), seq:epData.seq||0, regenerationCount:Number(epData.regenerationCount||0)||0};
 
       // Per-show episode-range filter (if active). Skip the whole chapter
       // when the user is scoping to a specific show + ep window and this
@@ -3570,14 +3799,17 @@ async function renderPaymentReport(){
     // Hours: sum audio_duration over episodes a user had any verified remark on
     for(const u of Object.values(users)){
       const perShowSec={};
+      const perShowRegens={};
       for(const [chapId, sn] of Object.entries(u.episodes)){
         const m=epMeta[chapId]; if(!m) continue;
         u.hours+=m.duration;
         perShowSec[sn]=(perShowSec[sn]||0)+m.duration;
+        perShowRegens[sn]=(perShowRegens[sn]||0)+(m.regenerationCount||0);
       }
       u.hours=u.hours/3600;
       for(const [sn, sec] of Object.entries(perShowSec)){
         getShow(u, sn).hours=sec/3600;
+        getShow(u, sn).regens=perShowRegens[sn]||0;
       }
     }
 
@@ -3920,6 +4152,7 @@ async function renderPaymentReport(){
                 <th style="padding:4px 8px;text-align:right">Hours</th>
                 <th style="padding:4px 8px;text-align:right">Errors</th>
                 <th style="padding:4px 8px;text-align:right">Words</th>
+                <th style="padding:4px 8px;text-align:right">Regens</th>
                 <th style="padding:4px 8px;text-align:right">Subtotal</th>
               </tr></thead><tbody>`;
           for(const [sn, s] of showEntries){
@@ -3929,6 +4162,7 @@ async function renderPaymentReport(){
               <td style="padding:3px 8px;text-align:right">${s.hours.toFixed(2)}</td>
               <td style="padding:3px 8px;text-align:right">${s.errors}</td>
               <td style="padding:3px 8px;text-align:right">${s.words}</td>
+              <td style="padding:3px 8px;text-align:right">${s.regens||0}</td>
               <td style="padding:3px 8px;text-align:right;font-weight:700">€${sub.toFixed(2)}</td>
             </tr>`;
           }
@@ -4042,10 +4276,11 @@ async function renderPaymentReport(){
     html+=`</div>`;
 
     html+=`<div style="margin-top:12px;font-size:10px;color:var(--muted);font-family:var(--mono);line-height:1.6">
-      <div>· Hours = sum of CMS audio_duration for episodes where the listener had payable work in the period.</div>
+      <div>· Hours = sum of the strongest saved CMS duration from QC history, falling back to current CMS audio_duration when needed.</div>
       <div>· ${currentCountry==='de'?'Germany verified error = any QC remark that was not marked "Wrong Error".':'Verified error = QC remark where SE accepted a patch OR marked "No Patch Required" (not "Wrong Error").'}</div>
       ${currentCountry==='de'?'<div>· Germany status worker dropdown credits the selected person for payment-only show episodes where CMS raw/QC status or approval fields show their work.</div>':''}
       <div>· Words = dictionary entries added by the listener (agent = CMS user email, addedAt in period).</div>
+      <div>· Regens = regeneration-like CMS events stored against payable episodes; this is shown for audit and does not change payout.</div>
     </div>`;
 
     el.innerHTML=html;
@@ -4193,7 +4428,7 @@ function exportPaymentCSV(){
   const rows=[];
   rows.push(['Billing Period', _fmtPayDate(from)+' → '+_fmtPayDate(to)]);
   rows.push([]);
-  rows.push(['Proof Listener','Show','Hours','Hour Pay (€)','Errors','Error Pay (€)','Words','Word Pay (€)','Subtotal (€)']);
+  rows.push(['Proof Listener','Show','Hours','Hour Pay (€)','Errors','Error Pay (€)','Words','Word Pay (€)','Regens','Subtotal (€)']);
   let grand=0;
   for(const u of users){
     const showEntries=Object.entries(u.shows);
@@ -4201,14 +4436,15 @@ function exportPaymentCSV(){
       for(const [sn, s] of showEntries){
         const hp=s.hours*PAY_RATE_HOUR, ep=s.errors*PAY_RATE_ERROR, wp=s.words*PAY_RATE_WORD;
         const sub=hp+ep+wp;
-        rows.push([u.email, sn, s.hours.toFixed(2), hp.toFixed(2), s.errors, ep.toFixed(2), s.words, wp.toFixed(2), sub.toFixed(2)]);
+        rows.push([u.email, sn, s.hours.toFixed(2), hp.toFixed(2), s.errors, ep.toFixed(2), s.words, wp.toFixed(2), s.regens||0, sub.toFixed(2)]);
       }
     }
-    rows.push([u.email,'TOTAL', u.hours.toFixed(2), u.hourPay.toFixed(2), u.errors, u.errorPay.toFixed(2), u.words, u.wordPay.toFixed(2), u.total.toFixed(2)]);
+    const totalRegens=Object.values(u.shows||{}).reduce((s,x)=>s+(Number(x.regens||0)||0),0);
+    rows.push([u.email,'TOTAL', u.hours.toFixed(2), u.hourPay.toFixed(2), u.errors, u.errorPay.toFixed(2), u.words, u.wordPay.toFixed(2), totalRegens, u.total.toFixed(2)]);
     rows.push([]);
     grand+=u.total;
   }
-  rows.push(['GRAND TOTAL','','','','','','','', grand.toFixed(2)]);
+  rows.push(['GRAND TOTAL','','','','','','','','', grand.toFixed(2)]);
   const csv=rows.map(r=>r.map(v=>'"'+String(v==null?'':v).replace(/"/g,'""')+'"').join(',')).join('\n');
   const blob=new Blob(['﻿'+csv],{type:'text/csv;charset=utf-8'});
   const a=document.createElement('a');
@@ -5184,6 +5420,10 @@ async function loadShow(directInput, forceRefresh){
     // 100 or as soon as a page had <5 results. Now we trust empty-list as
     // the only end signal, plus a generous safety ceiling.
     let page = 2, keepGoing = true;
+    let lastPageSig = (eps||[]).map(ep=>{
+      const cd=ep.chapter_details||ep;
+      return cd.chapter_id||ep.chapter_id||'';
+    }).join('|');
     while(keepGoing && page <= 2000){
       try{
         const rp = await cmsFetch(`${CMS_BASE}/book.show_episodes?show_id=${activeShowId}&view=cms&is_novel=0&paginate_chapters=true&page_no=${page}`, {headers:hdrs()},`Load show episodes page ${page}`,2);
@@ -5191,11 +5431,26 @@ async function loadShow(directInput, forceRefresh){
         const dp = await rp.json();
         const pageEps = dp.result?.episodes || [];
         if(!pageEps.length){ keepGoing=false; break; }
+        const sig=pageEps.map(ep=>{
+          const cd=ep.chapter_details||ep;
+          return cd.chapter_id||ep.chapter_id||'';
+        }).join('|');
+        if(sig&&sig===lastPageSig){ console.warn('Stopping pagination: repeated page', page); keepGoing=false; break; }
+        lastPageSig=sig;
         eps = [...eps, ...pageEps];
         page++;
         if(page%10===0) await sleep(400);
       } catch(e){ console.warn('Stopping pagination:',e.message); break; }
     }
+
+    const seenChapIds=new Set();
+    eps=eps.filter(ep=>{
+      const cd=ep.chapter_details||ep;
+      const cid=cd.chapter_id||ep.chapter_id||'';
+      if(!cid||seenChapIds.has(cid)) return false;
+      seenChapIds.add(cid);
+      return true;
+    });
 
     episodes = eps;
 
@@ -5217,11 +5472,20 @@ async function loadShow(directInput, forceRefresh){
           const ch=dd.result?.chapter_details;
           if(!ch) return;
           const qcDetails=ch.qc_details||[];
+          const hist=_buildQCHistory(activeShowId, showTitle, ep, ch, qcDetails);
           // Enrich the episode object with QC info
           if(!ep.chapter_details) ep.chapter_details=cd;
           ep.chapter_details.qcCount=qcDetails.length;
           ep.chapter_details.hasQC=qcDetails.length>0;
           ep.chapter_details.audio_status=ch.audio_status||cd.audio_status||'';
+          ep.chapter_details.chapter_status=ch.chapter_status||ch.status||cd.chapter_status||'';
+          ep.chapter_details.audio_duration=hist.duration||ch.audio_duration||cd.audio_duration||ep.audio_duration||0;
+          ep.chapter_details.natural_sequence_number=hist.seq||ep.natural_sequence_number||cd.natural_sequence_number||cd.seq_number||0;
+          ep.chapter_details.statusWorkers=hist.statusWorkers||[];
+          ep.chapter_details.regenerationCount=hist.regenerationCount||0;
+          const histRef=dbRef('qcHistory/'+chapId);
+          const prevHist=(await histRef.once('value')).val()||{};
+          await histRef.set(_mergeQCHistory(prevHist, hist));
           if(qcDetails.length>0){
             qcCount++;
             // Save QC remarks to Firebase for error summary and dictionary
@@ -5230,9 +5494,21 @@ async function loadShow(directInput, forceRefresh){
               userEmail:qc.user_email||'', scriptLine:extractLine(qc.remarks),
               note:extractNote(qc.remarks), rawRemarks:qc.remarks,
               needsPatch:!!extractLine(qc.remarks),
+              timestamp:_qcReportedAt(qc)||Date.now(),
+              reportedAt:_qcReportedAt(qc)||''
             }));
-            dbRef('episodeRemarks/'+chapId).set({
-              title:ch.chapter_title||'Episode', showId:activeShowId,
+            await dbRef('episodeRemarks/'+chapId).set({
+              title:ch.chapter_title||'Episode',
+              showId:activeShowId,
+              showName:showTitle,
+              seq:hist.seq||0,
+              duration:hist.duration||0,
+              audioStatus:hist.audioStatus||'',
+              chapterStatus:hist.chapterStatus||'',
+              qcCompleted:hist.qcCompleted,
+              qcedAt:hist.qcedAt||Date.now(),
+              statusWorkers:hist.statusWorkers||[],
+              regenerationCount:hist.regenerationCount||0,
               remarks:remarkData, updatedAt:Date.now()
             });
           }
@@ -5254,10 +5530,13 @@ async function loadShow(directInput, forceRefresh){
           chapter_id: cd.chapter_id||ep.chapter_id||'',
           chapter_title: cd.chapter_title||ep.chapter_title||'',
           audio_status: cd.audio_status||ep.audio_available||'',
-          audio_duration: ep.audio_duration||cd.audio_duration||0,
-          natural_sequence_number: ep.natural_sequence_number||cd.seq_number||0,
+          chapter_status: cd.chapter_status||'',
+          audio_duration: cd.audio_duration||ep.audio_duration||0,
+          natural_sequence_number: cd.natural_sequence_number||ep.natural_sequence_number||cd.seq_number||0,
           qcCount: cd.qcCount||0,
           hasQC: cd.hasQC||false,
+          statusWorkers: cd.statusWorkers||[],
+          regenerationCount: cd.regenerationCount||0,
         };
       });
       await dbRef('showEpisodes/'+activeShowId).set(epData);
