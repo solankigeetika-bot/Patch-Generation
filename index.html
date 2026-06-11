@@ -2977,6 +2977,24 @@ let _payData=null;   // last computed result, for CSV export
 let _payShowFilter='', _payEpFrom='', _payEpTo='';
 let _dePayStatusWorkers={}; // Germany-only: paymentOnlyShowId -> selected status worker
 
+function _paymentPersonMatches(input, candidate){
+  const a=String(input||'').trim().toLowerCase();
+  const b=String(candidate||'').trim().toLowerCase();
+  if(!a||!b) return false;
+  if(a===b) return true;
+  const al=a.split('@')[0], bl=b.split('@')[0];
+  if(al===bl) return true;
+  return al.length>=4 && (bl.includes(al)||al.includes(bl));
+}
+
+function _paymentShowMatches(query, meta={}){
+  const q=String(query||'').trim().toLowerCase();
+  if(!q) return false;
+  const name=String(meta.showName||'').toLowerCase();
+  const id=String(meta.showId||'').toLowerCase();
+  return name.includes(q)||(!!id&&(id.includes(q)||q.includes(id)));
+}
+
 // Quick Audit (in-memory only, NEVER written to Firebase). User pastes
 // multiple show IDs, we fetch live from CMS, surface the proof listeners
 // who reported on those shows, let user select which to include, then show
@@ -3679,12 +3697,13 @@ async function renderPaymentReport(){
   const {fromTs,toTs,from,to}=_payPeriod;
 
   try{
-    const [epRemSnap, showEpsSnap, histSnap, dictSnap, manualSnap, payShowSnap, deStatusSnap]=await Promise.all([
+    const [epRemSnap, showEpsSnap, histSnap, dictSnap, manualSnap, rangeSnap, payShowSnap, deStatusSnap]=await Promise.all([
       dbRef('episodeRemarks').once('value'),
       dbRef('showEpisodes').once('value'),
       dbRef('qcHistory').once('value'),
       dbRef('dictionary').once('value'),
       dbRef('paymentManualRows').once('value'),
+      dbRef('paymentEpisodeCredits').once('value'),
       dbRef('paymentOnlyShows').once('value'),
       currentCountry==='de' ? dbRef('paymentStatusWorkers').once('value') : Promise.resolve({val:()=>({})})
     ]);
@@ -3693,6 +3712,7 @@ async function renderPaymentReport(){
     const allHistory=histSnap.val()||{};
     const allDict=dictSnap.val()||{};
     const manualRows=manualSnap.val()||{};
+    const episodeCreditRows=rangeSnap.val()||{};
     const paymentOnlyShows=payShowSnap.val()||{};
     const paymentStatusWorkers=currentCountry==='de'?(deStatusSnap.val()||{}):{};
     _dePayStatusWorkers=paymentStatusWorkers;
@@ -3731,13 +3751,34 @@ async function renderPaymentReport(){
       if(!users[email]) users[email]={
         email, hours:0, errors:0, words:0,
         shows:{}, // { showName: { hours, errors, words, regens } }
-        episodes:{} // { chapId: showName } — for hour computation later
+        episodes:{}, // { chapId: showName } — for hour computation later
+        _creditedErrorKeys:new Set(),
+        _creditedEpisodeKeys:new Set()
       };
       return users[email];
     }
     function getShow(u, sn){
       if(!u.shows[sn]) u.shows[sn]={hours:0, errors:0, words:0, regens:0};
       return u.shows[sn];
+    }
+    function creditError(u, sn, key){
+      if(key&&u._creditedErrorKeys.has(key)) return false;
+      if(key) u._creditedErrorKeys.add(key);
+      u.errors++;
+      getShow(u, sn).errors++;
+      return true;
+    }
+    function creditEpisodeDuration(u, sn, chapId, meta){
+      const sec=Number(meta?.duration||0)||0;
+      if(!sec) return false;
+      const key=(meta?.showId||sn||'')+':'+chapId;
+      if(chapId&&u._creditedEpisodeKeys.has(key)) return false;
+      if(chapId) u._creditedEpisodeKeys.add(key);
+      u.hours+=sec/3600;
+      const s=getShow(u, sn);
+      s.hours+=sec/3600;
+      s.regens+=(Number(meta?.regenerationCount||0)||0);
+      return true;
     }
 
     // Verified errors (per spec: accepted patch OR no_patch, not wrong_error).
@@ -3795,9 +3836,7 @@ async function renderPaymentReport(){
         if(qcTs&&(qcTs<fromTs||qcTs>toTs)) continue;
 
         const u=getU(r.userEmail);
-        u.errors++;
-        const s=getShow(u, meta.showName);
-        s.errors++;
+        creditError(u, meta.showName, chapId+':'+ri);
         u.episodes[chapId]=meta.showName;
       }
     }
@@ -3808,6 +3847,9 @@ async function renderPaymentReport(){
       const perShowRegens={};
       for(const [chapId, sn] of Object.entries(u.episodes)){
         const m=epMeta[chapId]; if(!m) continue;
+        const key=(m.showId||sn||'')+':'+chapId;
+        if(u._creditedEpisodeKeys.has(key)) continue;
+        u._creditedEpisodeKeys.add(key);
         u.hours+=m.duration;
         perShowSec[sn]=(perShowSec[sn]||0)+m.duration;
         perShowRegens[sn]=(perShowRegens[sn]||0)+(m.regenerationCount||0);
@@ -3883,8 +3925,7 @@ async function renderPaymentReport(){
           if(remarkTs) pl.dates.add(_isoDate(new Date(remarkTs)));
           // Roll error into main totals
           const u=getU(email);
-          u.errors++;
-          getShow(u, sn).errors++;
+          creditError(u, sn, ps.showId+':'+ep.chapId+':'+qi);
         }
         // Hours: each listener who had ≥1 in-period remark on this episode
         // gets the full duration counted.
@@ -3901,6 +3942,7 @@ async function renderPaymentReport(){
             u._payOnlyEps.add(epKey);
             u.hours+=((ep.duration||0)/3600);
             getShow(u, sn).hours+=((ep.duration||0)/3600);
+            u._creditedEpisodeKeys.add(epKey);
           }
         }
         // Germany-only fixed worker credit: a selected person gets the full
@@ -3914,6 +3956,7 @@ async function renderPaymentReport(){
             u._payOnlyEps.add(epKey);
             u.hours+=((ep.duration||0)/3600);
             getShow(u, sn).hours+=((ep.duration||0)/3600);
+            u._creditedEpisodeKeys.add(epKey);
             deStatusCreditedEpisodes++;
             deStatusCreditedSec+=(ep.duration||0);
           }
@@ -3931,6 +3974,65 @@ async function renderPaymentReport(){
           creditedSec:deStatusCreditedSec
         }
       });
+    }
+
+    // Episode range credits: manually assign a person to a show episode span,
+    // then calculate duration/errors from saved CMS history regardless of
+    // whether the episodes are currently TBR or Live.
+    const rangeArr=Object.entries(episodeCreditRows).map(([id, r])=>({id, ...(r||{})}));
+    const rangeComputed=[];
+    for(const row of rangeArr){
+      const periodStart=Number(row.periodStart||0)||0;
+      if(periodStart&&(periodStart<fromTs||periodStart>toTs)) continue;
+      const listener=String(row.listener||'').trim();
+      const showQuery=String(row.show||row.showQuery||'').trim();
+      const epFrom=Number(row.epFrom||row.from||0)||0;
+      const epTo=Number(row.epTo||row.to||0)||0;
+      const selected=Object.entries(epMeta).filter(([chapId, meta])=>{
+        const seq=Number(meta?.seq||0)||0;
+        if(!seq) return false;
+        if(!_paymentShowMatches(showQuery, meta)) return false;
+        if(epFrom&&seq<epFrom) return false;
+        if(epTo&&seq>epTo) return false;
+        return true;
+      }).sort((a,b)=>(a[1].seq||0)-(b[1].seq||0));
+      const rowInfo={
+        ...row,
+        listener,
+        show:showQuery,
+        epFrom,
+        epTo,
+        episodeCount:selected.length,
+        durationSec:0,
+        errorsFound:0,
+        errorsCredited:0,
+        showNames:[...new Set(selected.map(([,m])=>m.showName||showQuery).filter(Boolean))],
+        missingEpisodes:[]
+      };
+      if(epFrom&&epTo){
+        const foundSeq=new Set(selected.map(([,m])=>Number(m.seq||0)));
+        for(let n=epFrom;n<=epTo;n++) if(!foundSeq.has(n)) rowInfo.missingEpisodes.push(n);
+      }
+      if(listener&&selected.length){
+        const u=getU(listener);
+        for(const [chapId, meta] of selected){
+          const sn=meta.showName||showQuery||'Unknown';
+          rowInfo.durationSec+=Number(meta.duration||0)||0;
+          creditEpisodeDuration(u, sn, chapId, meta);
+          const epData=allRem[chapId];
+          if(!epData?.remarks) continue;
+          const remarks=Array.isArray(epData.remarks)?epData.remarks:Object.values(epData.remarks||{});
+          const dispositions=epData.dispositions||{};
+          for(let ri=0; ri<remarks.length; ri++){
+            const r=remarks[ri];
+            if(!r||!_paymentPersonMatches(listener, r.userEmail||r.user_email||'')) continue;
+            if(dispositions[ri]==='wrong_error') continue;
+            rowInfo.errorsFound++;
+            if(creditError(u, sn, chapId+':'+ri)) rowInfo.errorsCredited++;
+          }
+        }
+      }
+      rangeComputed.push(rowInfo);
     }
 
     // Manual rows (kept for true off-platform work that isn't in CMS)
@@ -3953,7 +4055,7 @@ async function renderPaymentReport(){
       return u;
     }).sort((a,b)=>b.total-a.total);
 
-    _payData={users:arr, manualArr, from, to};
+    _payData={users:arr, manualArr, rangeComputed, from, to};
 
     // ── Render ──
     let html=`<div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:12px;gap:12px;flex-wrap:wrap">
@@ -4243,6 +4345,57 @@ async function renderPaymentReport(){
     }
     html+=`</div>`;
 
+    // Episode range credits panel — manually assign a listener to a saved CMS
+    // show range and calculate the duration/errors from qcHistory.
+    html+=`<div style="margin-top:14px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:12px 16px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:8px">
+        <div>
+          <div style="font-size:13px;font-weight:800">Episode Range Credits</div>
+          <div style="font-size:10px;color:var(--muted)">Add a person + show + episode range. Duration comes from saved CMS history, so Live/TBR status does not matter.</div>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <button class="btn btn-p btn-sm" onclick="addEpisodeRangeCredit()">+ Add Person Range</button>
+          <button class="btn btn-g btn-sm" onclick="exportEpisodeRangeCreditsCSV()">⬇ Range CSV</button>
+        </div>
+      </div>`;
+    if(rangeComputed.length){
+      html+=`<table style="border-collapse:collapse;width:100%;font-size:11px;font-family:var(--mono);margin-top:6px">
+        <thead><tr style="background:var(--surface2)">
+          <th style="padding:5px 10px;text-align:left">Person</th>
+          <th style="padding:5px 10px;text-align:left">Show</th>
+          <th style="padding:5px 10px;text-align:right">Ep Range</th>
+          <th style="padding:5px 10px;text-align:right">Episodes</th>
+          <th style="padding:5px 10px;text-align:right">Duration</th>
+          <th style="padding:5px 10px;text-align:right">Errors Found</th>
+          <th style="padding:5px 10px;text-align:right">Errors Added</th>
+          <th style="padding:5px 10px;text-align:left">Missing</th>
+          <th style="padding:5px 10px;text-align:left">Period</th>
+          <th style="padding:5px 6px;text-align:center;width:30px"></th>
+        </tr></thead><tbody>`;
+      for(const r of rangeComputed){
+        const ps=r.periodStart?_isoDate(new Date(r.periodStart)):'—';
+        const showLabel=r.showNames?.length?r.showNames.join(' | '):(r.show||'');
+        const missing=(r.missingEpisodes||[]).length?(r.missingEpisodes||[]).join(', '):'—';
+        html+=`<tr style="border-bottom:1px solid var(--border)">
+          <td style="padding:4px 10px;font-weight:700">${esc(r.listener||'')}</td>
+          <td style="padding:4px 10px">${esc(showLabel)}</td>
+          <td style="padding:4px 10px;text-align:right">${r.epFrom||'1'}–${r.epTo||'∞'}</td>
+          <td style="padding:4px 10px;text-align:right">${r.episodeCount||0}</td>
+          <td style="padding:4px 10px;text-align:right" title="${((r.durationSec||0)/3600).toFixed(3)} h">${_fmtHMS(r.durationSec||0)}</td>
+          <td style="padding:4px 10px;text-align:right">${r.errorsFound||0}</td>
+          <td style="padding:4px 10px;text-align:right">${r.errorsCredited||0}</td>
+          <td style="padding:4px 10px;font-size:10px;color:${missing==='—'?'var(--muted)':'var(--orange)'}">${esc(missing)}</td>
+          <td style="padding:4px 10px">${ps}</td>
+          <td style="padding:4px 6px;text-align:center"><button onclick="deleteEpisodeRangeCredit('${r.id}')" title="Delete range credit" style="background:transparent;border:none;cursor:pointer;color:var(--muted);font-size:14px;padding:2px 6px;border-radius:4px" onmouseover="this.style.background='var(--red-light)';this.style.color='var(--red)'" onmouseout="this.style.background='transparent';this.style.color='var(--muted)'">×</button></td>
+        </tr>`;
+      }
+      html+=`</tbody></table>
+        <div style="font-size:10px;color:var(--muted);font-family:var(--mono);margin-top:6px">Errors Found = non-wrong errors reported by that person in the range. Errors Added avoids double-counting errors already included elsewhere in this payment report.</div>`;
+    } else {
+      html+=`<div style="padding:10px;text-align:center;color:var(--muted);font-size:11px">No episode range credits in this billing period.</div>`;
+    }
+    html+=`</div>`;
+
     // Manual rows panel (kept for true off-platform work)
     html+=`<div style="margin-top:14px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:12px 16px">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:8px">
@@ -4287,6 +4440,7 @@ async function renderPaymentReport(){
       ${currentCountry==='de'?'<div>· Germany status worker dropdown credits the selected person for payment-only show episodes where CMS raw/QC status or approval fields show their work.</div>':''}
       <div>· Words = dictionary entries added by the listener (agent = CMS user email, addedAt in period).</div>
       <div>· Regens = regeneration-like CMS events stored against payable episodes; this is shown for audit and does not change payout.</div>
+      <div>· Episode range credits add the full saved duration for the selected episode numbers, even if CMS has since moved those episodes to Live.</div>
     </div>`;
 
     el.innerHTML=html;
@@ -4428,11 +4582,95 @@ async function deleteManualPaymentRow(id){
   renderPaymentReport();
 }
 
-function exportPaymentCSV(){
-  if(!_payData||!_payData.users){toast('Nothing to export','warn');return;}
-  const {users, from, to}=_payData;
+async function addEpisodeRangeCredit(){
+  const listener=(prompt('Person name or CMS email (e.g. Bertille):')||'').trim();
+  if(!listener) return;
+  const show=(prompt('Show name or CMS show ID:')||'').trim();
+  if(!show) return;
+  const fromRaw=(prompt('From episode number:')||'').trim();
+  const toRaw=(prompt('To episode number:')||'').trim();
+  const epFrom=parseInt(fromRaw,10);
+  const epTo=parseInt(toRaw,10);
+  if(!epFrom||!epTo||epFrom<1||epTo<epFrom){
+    toast('Enter a valid episode range','warn');
+    return;
+  }
+  const periodStart=_payPeriod?_payPeriod.fromTs:Date.now();
+  const slug=listener.toLowerCase().replace(/[^a-z0-9]/gi,'_').substring(0,15);
+  const id='er_'+Date.now()+'_'+slug;
+  await dbRef('paymentEpisodeCredits/'+id).set({
+    listener, show, epFrom, epTo,
+    periodStart, addedAt:Date.now()
+  });
+  toast(`Episode range added: ${listener} / ${show} Ep ${epFrom}-${epTo}`,'ok');
+  renderPaymentReport();
+}
+
+async function deleteEpisodeRangeCredit(id){
+  if(!confirm('Delete this episode range credit?')) return;
+  await dbRef('paymentEpisodeCredits/'+id).remove();
+  toast('Episode range deleted','ok');
+  renderPaymentReport();
+}
+
+function exportEpisodeRangeCreditsCSV(){
+  const rowsData=_payData?.rangeComputed||[];
+  if(!rowsData.length){ toast('No episode range credits to export','warn'); return; }
+  const {from, to}=_payData;
   const rows=[];
   rows.push(['Billing Period', _fmtPayDate(from)+' → '+_fmtPayDate(to)]);
+  rows.push([]);
+  rows.push(['Person','Show Query','Matched Show(s)','Ep From','Ep To','Episodes Found','Duration (h:mm:ss)','Hours Decimal','Errors Found','Errors Added To Total','Missing Episodes','Period Start']);
+  for(const r of rowsData){
+    rows.push([
+      r.listener||'',
+      r.show||'',
+      (r.showNames||[]).join(' | '),
+      r.epFrom||'',
+      r.epTo||'',
+      r.episodeCount||0,
+      _fmtHMS(r.durationSec||0),
+      ((r.durationSec||0)/3600).toFixed(3),
+      r.errorsFound||0,
+      r.errorsCredited||0,
+      (r.missingEpisodes||[]).join(', '),
+      r.periodStart?_isoDate(new Date(r.periodStart)):''
+    ]);
+  }
+  const csv=rows.map(r=>r.map(v=>'"'+String(v==null?'':v).replace(/"/g,'""')+'"').join(',')).join('\n');
+  const blob=new Blob(['﻿'+csv],{type:'text/csv;charset=utf-8'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download=`episode_range_credits_${_isoDate(from)}_to_${_isoDate(to)}.csv`;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  toast('Episode range CSV downloaded','ok');
+}
+
+function exportPaymentCSV(){
+  if(!_payData||!_payData.users){toast('Nothing to export','warn');return;}
+  const {users, from, to, rangeComputed=[]}=_payData;
+  const rows=[];
+  rows.push(['Billing Period', _fmtPayDate(from)+' → '+_fmtPayDate(to)]);
+  if(rangeComputed.length){
+    rows.push([]);
+    rows.push(['Episode Range Credits']);
+    rows.push(['Person','Show Query','Matched Show(s)','Ep From','Ep To','Episodes Found','Duration (h:mm:ss)','Hours Decimal','Errors Found','Errors Added To Total','Missing Episodes']);
+    for(const r of rangeComputed){
+      rows.push([
+        r.listener||'',
+        r.show||'',
+        (r.showNames||[]).join(' | '),
+        r.epFrom||'',
+        r.epTo||'',
+        r.episodeCount||0,
+        _fmtHMS(r.durationSec||0),
+        ((r.durationSec||0)/3600).toFixed(3),
+        r.errorsFound||0,
+        r.errorsCredited||0,
+        (r.missingEpisodes||[]).join(', ')
+      ]);
+    }
+  }
   rows.push([]);
   rows.push(['Proof Listener','Show','Hours','Hour Pay (€)','Errors','Error Pay (€)','Words','Word Pay (€)','Regens','Subtotal (€)']);
   let grand=0;
