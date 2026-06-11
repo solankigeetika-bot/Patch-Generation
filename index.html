@@ -2976,23 +2976,46 @@ let _payData=null;   // last computed result, for CSV export
 // the listener did, just with this show's contribution narrowed.
 let _payShowFilter='', _payEpFrom='', _payEpTo='';
 let _dePayStatusWorkers={}; // Germany-only: paymentOnlyShowId -> selected status worker
+let _rangeBatchCalc={
+  listener:'',
+  raw:'',
+  loading:false,
+  results:null
+};
 
-function _paymentPersonMatches(input, candidate){
-  const a=String(input||'').trim().toLowerCase();
-  const b=String(candidate||'').trim().toLowerCase();
-  if(!a||!b) return false;
-  if(a===b) return true;
-  const al=a.split('@')[0], bl=b.split('@')[0];
-  if(al===bl) return true;
-  return al.length>=4 && (bl.includes(al)||al.includes(bl));
+function _extractAnyShowId(input){
+  if(!input) return '';
+  const s=String(input).trim();
+  return s.match(/show_id=([a-f0-9]{20,})/i)?.[1] ||
+         s.match(/[?&]id=([a-f0-9]{20,})/i)?.[1] ||
+         s.match(/[a-f0-9]{20,}/i)?.[0] ||
+         '';
 }
 
-function _paymentShowMatches(query, meta={}){
-  const q=String(query||'').trim().toLowerCase();
-  if(!q) return false;
-  const name=String(meta.showName||'').toLowerCase();
-  const id=String(meta.showId||'').toLowerCase();
-  return name.includes(q)||(!!id&&(id.includes(q)||q.includes(id)));
+function _parseRangeBatchInput(raw){
+  const byShow={};
+  const errors=[];
+  const lines=String(raw||'').split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
+  for(const line of lines){
+    const showId=_extractAnyShowId(line);
+    if(!showId){ errors.push(`Could not find show id in: ${line}`); continue; }
+    const rest=line.replace(showId,' ').replace(/show_id=/i,' ');
+    const ranges=[];
+    const re=/(\d+)\s*(?:-|–|—|to)\s*(\d+)/gi;
+    let m;
+    while((m=re.exec(rest))){
+      const from=parseInt(m[1],10), to=parseInt(m[2],10);
+      if(from&&to&&to>=from) ranges.push({from,to});
+    }
+    if(!ranges.length){
+      const nums=rest.match(/\d+/g)?.map(n=>parseInt(n,10)).filter(Boolean)||[];
+      if(nums.length>=2 && nums[1]>=nums[0]) ranges.push({from:nums[0],to:nums[1]});
+    }
+    if(!ranges.length){ errors.push(`Add episode range for: ${showId}`); continue; }
+    if(!byShow[showId]) byShow[showId]={showId,ranges:[]};
+    byShow[showId].ranges.push(...ranges);
+  }
+  return {jobs:Object.values(byShow), errors};
 }
 
 // Quick Audit (in-memory only, NEVER written to Firebase). User pastes
@@ -3697,13 +3720,12 @@ async function renderPaymentReport(){
   const {fromTs,toTs,from,to}=_payPeriod;
 
   try{
-    const [epRemSnap, showEpsSnap, histSnap, dictSnap, manualSnap, rangeSnap, payShowSnap, deStatusSnap]=await Promise.all([
+    const [epRemSnap, showEpsSnap, histSnap, dictSnap, manualSnap, payShowSnap, deStatusSnap]=await Promise.all([
       dbRef('episodeRemarks').once('value'),
       dbRef('showEpisodes').once('value'),
       dbRef('qcHistory').once('value'),
       dbRef('dictionary').once('value'),
       dbRef('paymentManualRows').once('value'),
-      dbRef('paymentEpisodeCredits').once('value'),
       dbRef('paymentOnlyShows').once('value'),
       currentCountry==='de' ? dbRef('paymentStatusWorkers').once('value') : Promise.resolve({val:()=>({})})
     ]);
@@ -3712,7 +3734,6 @@ async function renderPaymentReport(){
     const allHistory=histSnap.val()||{};
     const allDict=dictSnap.val()||{};
     const manualRows=manualSnap.val()||{};
-    const episodeCreditRows=rangeSnap.val()||{};
     const paymentOnlyShows=payShowSnap.val()||{};
     const paymentStatusWorkers=currentCountry==='de'?(deStatusSnap.val()||{}):{};
     _dePayStatusWorkers=paymentStatusWorkers;
@@ -3976,106 +3997,6 @@ async function renderPaymentReport(){
       });
     }
 
-    // Episode range credits: manually assign a person to a show episode span,
-    // then calculate duration/errors from saved CMS history regardless of
-    // whether the episodes are currently TBR or Live.
-    const rangeArr=Object.entries(episodeCreditRows).map(([id, r])=>({id, ...(r||{})}));
-    const rangeComputed=[];
-    for(const row of rangeArr){
-      const periodStart=Number(row.periodStart||0)||0;
-      if(periodStart&&(periodStart<fromTs||periodStart>toTs)) continue;
-      const listener=String(row.listener||'').trim();
-      const showQuery=String(row.show||row.showQuery||'').trim();
-      const epFrom=Number(row.epFrom||row.from||0)||0;
-      const epTo=Number(row.epTo||row.to||0)||0;
-      const selected=Object.entries(epMeta).filter(([chapId, meta])=>{
-        const seq=Number(meta?.seq||0)||0;
-        if(!seq) return false;
-        if(!_paymentShowMatches(showQuery, meta)) return false;
-        if(epFrom&&seq<epFrom) return false;
-        if(epTo&&seq>epTo) return false;
-        return true;
-      }).sort((a,b)=>(a[1].seq||0)-(b[1].seq||0));
-      const rowInfo={
-        ...row,
-        listener,
-        show:showQuery,
-        epFrom,
-        epTo,
-        episodeCount:selected.length,
-        durationSec:0,
-        errorsFound:0,
-        errorsCredited:0,
-        showNames:[...new Set(selected.map(([,m])=>m.showName||showQuery).filter(Boolean))],
-        missingEpisodes:[],
-        episodeRows:[]
-      };
-      if(epFrom&&epTo){
-        const foundSeq=new Set(selected.map(([,m])=>Number(m.seq||0)));
-        for(let n=epFrom;n<=epTo;n++) if(!foundSeq.has(n)) rowInfo.missingEpisodes.push(n);
-      }
-      if(listener&&selected.length){
-        const u=getU(listener);
-        for(const [chapId, meta] of selected){
-          const sn=meta.showName||showQuery||'Unknown';
-          const epDuration=Number(meta.duration||0)||0;
-          let epErrors=0, epErrorsCredited=0;
-          rowInfo.durationSec+=epDuration;
-          creditEpisodeDuration(u, sn, chapId, meta);
-          const epData=allRem[chapId];
-          if(epData?.remarks){
-            const remarks=Array.isArray(epData.remarks)?epData.remarks:Object.values(epData.remarks||{});
-            const dispositions=epData.dispositions||{};
-            for(let ri=0; ri<remarks.length; ri++){
-              const r=remarks[ri];
-              if(!r) continue;
-              if(dispositions[ri]==='wrong_error') continue;
-              epErrors++;
-              rowInfo.errorsFound++;
-              if(creditError(u, sn, chapId+':'+ri)){
-                epErrorsCredited++;
-                rowInfo.errorsCredited++;
-              }
-            }
-          }
-          rowInfo.episodeRows.push({
-            chapId,
-            showName:sn,
-            seq:meta.seq||0,
-            title:meta.title||epData?.title||'',
-            durationSec:epDuration,
-            errors:epErrors,
-            errorsCredited:epErrorsCredited
-          });
-        }
-      }
-      rowInfo.timePay=(rowInfo.durationSec/3600)*PAY_RATE_HOUR;
-      rowInfo.errorPay=(rowInfo.errorsFound||0)*PAY_RATE_ERROR;
-      rowInfo.totalPay=rowInfo.timePay+rowInfo.errorPay;
-      rangeComputed.push(rowInfo);
-    }
-
-    const rangeShowMap={};
-    for(const s of shows){
-      const value=_showIdFromConfig(s);
-      if(!value) continue;
-      if(!rangeShowMap[value]) rangeShowMap[value]={value, label:s.name||value, count:0, minSeq:Infinity, maxSeq:0};
-    }
-    for(const meta of Object.values(epMeta)){
-      if(!meta) continue;
-      const value=meta.showId||meta.showName||'';
-      if(!value) continue;
-      if(!rangeShowMap[value]) rangeShowMap[value]={value, label:meta.showName||value, count:0, minSeq:Infinity, maxSeq:0};
-      const rec=rangeShowMap[value];
-      rec.count++;
-      const seq=Number(meta.seq||0)||0;
-      if(seq){
-        rec.minSeq=Math.min(rec.minSeq, seq);
-        rec.maxSeq=Math.max(rec.maxSeq, seq);
-      }
-    }
-    const rangeShowOptions=Object.values(rangeShowMap).sort((a,b)=>a.label.localeCompare(b.label));
-
     // Manual rows (kept for true off-platform work that isn't in CMS)
     const manualArr=Object.entries(manualRows).map(([id, r])=>({id, ...(r||{})}));
     for(const m of manualArr){
@@ -4096,7 +4017,7 @@ async function renderPaymentReport(){
       return u;
     }).sort((a,b)=>b.total-a.total);
 
-    _payData={users:arr, manualArr, rangeComputed, from, to};
+    _payData={users:arr, manualArr, from, to};
 
     // ── Render ──
     let html=`<div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:12px;gap:12px;flex-wrap:wrap">
@@ -4236,17 +4157,66 @@ async function renderPaymentReport(){
     }
     html+=`</div>
 
-    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 12px;margin-bottom:14px;font-family:var(--mono);font-size:11px">
-      <span style="font-weight:700;color:var(--text2)">Scope to show + ep range:</span>
-      <input type="text" id="payShowFilterInp" placeholder="Show name (partial match)" value="${esc(_payShowFilter)}" style="width:220px;font-size:11px;padding:4px 8px;border:1px solid var(--border);border-radius:5px"/>
-      <span style="color:var(--muted)">Ep</span>
-      <input type="number" min="1" id="payEpFromInp" placeholder="from" value="${_payEpFrom}" style="width:64px;font-size:11px;padding:4px 8px;border:1px solid var(--border);border-radius:5px"/>
-      <span style="color:var(--muted)">to</span>
-      <input type="number" min="1" id="payEpToInp" placeholder="to" value="${_payEpTo}" style="width:64px;font-size:11px;padding:4px 8px;border:1px solid var(--border);border-radius:5px"/>
-      <button class="btn btn-p btn-sm" style="font-size:10px" onclick="applyPayShowFilter()">Apply</button>
-      <button class="btn btn-g btn-sm" style="font-size:10px" onclick="clearPayShowFilter()">Clear</button>
-      <span style="color:var(--muted);margin-left:auto">${_payShowFilter?`Filtering: ${esc(_payShowFilter)} Ep ${_payEpFrom||'1'}–${_payEpTo||'∞'}`:'Showing all shows'}</span>
-    </div>`;
+    <div style="background:#f8fafc;border:1.5px solid #cbd5e1;border-radius:var(--r);padding:14px 16px;margin-bottom:14px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap;margin-bottom:8px">
+        <div>
+          <div style="font-size:14px;font-weight:800;color:#334155">Show ID Range Calculator (not saved)</div>
+          <div style="font-size:10px;color:var(--muted)">Paste show IDs with episode ranges, run live from CMS, then download detailed duration/error/payment CSV. This does not add shows to Dashboard and does not save rows.</div>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <button class="btn btn-g btn-sm" onclick="clearRangeBatchCalc()" style="font-size:10px">Clear</button>
+          <button class="btn btn-g btn-sm" onclick="exportRangeBatchCSV()" style="font-size:10px" ${_rangeBatchCalc.results?'':'disabled'}>⬇ Detailed CSV</button>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:minmax(170px,.6fr) minmax(320px,1.4fr) auto;gap:8px;align-items:end">
+        <div>
+          <div style="font-size:9px;color:var(--muted);font-family:var(--mono);margin-bottom:3px">Proof Listener Name</div>
+          <input id="rangeBatchPersonInp" value="${esc(_rangeBatchCalc.listener||'')}" placeholder="e.g. Bertille" style="width:100%;font-size:11px;padding:7px 9px;border:1px solid var(--border);border-radius:6px"/>
+        </div>
+        <div>
+          <div style="font-size:9px;color:var(--muted);font-family:var(--mono);margin-bottom:3px">Show IDs + Ranges</div>
+          <textarea id="rangeBatchInput" rows="3" placeholder="One line per show/range. Examples:&#10;738d04a17dffbdd0756baf8c758004f7d07b8b5f 5-10, 20-25&#10;https://cms.pocketfm.com/shows/audiobooks?id=SHOW_ID 1-50" style="width:100%;font-family:var(--mono);font-size:11px;padding:7px 9px;border:1px solid var(--border);border-radius:6px;resize:vertical">${esc(_rangeBatchCalc.raw||'')}</textarea>
+        </div>
+        <button class="btn btn-p btn-sm" onclick="runRangeBatchCalc()" ${_rangeBatchCalc.loading?'disabled':''} style="height:34px;justify-content:center">${_rangeBatchCalc.loading?'⏳ Running...':'▶ Run'}</button>
+      </div>`;
+    if(_rangeBatchCalc.results){
+      const rb=_rangeBatchCalc.results;
+      html+=`<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
+        <div style="background:#fff;border:1px solid var(--border);border-radius:7px;padding:8px 12px;min-width:120px"><div style="font-size:9px;color:var(--muted);font-family:var(--mono)">Episodes</div><div style="font-size:17px;font-weight:800">${rb.totals.episodes}</div></div>
+        <div style="background:#fff;border:1px solid var(--border);border-radius:7px;padding:8px 12px;min-width:140px"><div style="font-size:9px;color:var(--muted);font-family:var(--mono)">Duration</div><div style="font-size:17px;font-weight:800">${_fmtHMS(rb.totals.durationSec)}</div></div>
+        <div style="background:#fff;border:1px solid var(--border);border-radius:7px;padding:8px 12px;min-width:120px"><div style="font-size:9px;color:var(--muted);font-family:var(--mono)">Errors</div><div style="font-size:17px;font-weight:800">${rb.totals.errors}</div></div>
+        <div style="background:#FFFFCC;border:1px solid #fef08a;border-radius:7px;padding:8px 12px;min-width:140px"><div style="font-size:9px;color:#854d0e;font-family:var(--mono)">Total Pay</div><div style="font-size:17px;font-weight:800">€${rb.totals.totalPay.toFixed(2)}</div></div>
+      </div>
+      <div style="overflow-x:auto;margin-top:10px">
+        <table style="border-collapse:collapse;width:100%;font-size:11px;font-family:var(--mono);background:#fff">
+          <thead><tr style="background:var(--surface2)">
+            <th style="padding:5px 8px;text-align:left">Show ID</th>
+            <th style="padding:5px 8px;text-align:left">Show</th>
+            <th style="padding:5px 8px;text-align:right">Range</th>
+            <th style="padding:5px 8px;text-align:right">Episodes</th>
+            <th style="padding:5px 8px;text-align:right">Duration</th>
+            <th style="padding:5px 8px;text-align:right">Time Pay</th>
+            <th style="padding:5px 8px;text-align:right">Errors</th>
+            <th style="padding:5px 8px;text-align:right">Error Pay</th>
+            <th style="padding:5px 8px;text-align:right">Total</th>
+            <th style="padding:5px 8px;text-align:left">Missing</th>
+          </tr></thead><tbody>
+          ${rb.jobs.map(j=>`<tr style="border-bottom:1px solid var(--border)">
+            <td style="padding:4px 8px">${esc(j.showId.substring(0,10))}...</td>
+            <td style="padding:4px 8px">${esc(j.showName||'')}</td>
+            <td style="padding:4px 8px;text-align:right">${j.from}-${j.to}</td>
+            <td style="padding:4px 8px;text-align:right">${j.episodeCount}</td>
+            <td style="padding:4px 8px;text-align:right">${_fmtHMS(j.durationSec)}</td>
+            <td style="padding:4px 8px;text-align:right">€${j.timePay.toFixed(2)}</td>
+            <td style="padding:4px 8px;text-align:right">${j.errors}</td>
+            <td style="padding:4px 8px;text-align:right">€${j.errorPay.toFixed(2)}</td>
+            <td style="padding:4px 8px;text-align:right;font-weight:700;background:#FFFFCC">€${j.totalPay.toFixed(2)}</td>
+            <td style="padding:4px 8px;color:${j.missingEpisodes.length?'var(--orange)':'var(--muted)'}">${esc(j.missingEpisodes.length?j.missingEpisodes.join(', '):'—')}</td>
+          </tr>`).join('')}
+          </tbody></table>
+      </div>`;
+    }
+    html+=`</div>`;
 
     if(!arr.length&&!manualArr.length){
       html+=`<div style="padding:24px;text-align:center;color:var(--muted);background:var(--surface);border:1px solid var(--border);border-radius:var(--r);margin-bottom:18px">
@@ -4386,82 +4356,6 @@ async function renderPaymentReport(){
     }
     html+=`</div>`;
 
-    // Episode range credits panel — manually assign a listener to a saved CMS
-    // show range and calculate the duration/errors from qcHistory.
-    html+=`<div style="margin-top:14px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:12px 16px">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:8px">
-        <div>
-          <div style="font-size:13px;font-weight:800">Episode Range Credits</div>
-          <div style="font-size:10px;color:var(--muted)">Assign full episode duration and all non-wrong errors in a show range to any proof listener name. Live/TBR status does not matter once episodes are saved in history.</div>
-        </div>
-        <div style="display:flex;gap:6px;flex-wrap:wrap">
-          <button class="btn btn-g btn-sm" onclick="exportEpisodeRangeCreditsCSV()">⬇ Range CSV</button>
-        </div>
-      </div>
-      <div style="display:grid;grid-template-columns:minmax(160px,1fr) minmax(220px,1.4fr) 80px 80px auto;gap:8px;align-items:end;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:10px">
-        <div>
-          <div style="font-size:9px;color:var(--muted);font-family:var(--mono);margin-bottom:3px">Proof Listener Name</div>
-          <input id="rangeCreditPersonInp" placeholder="e.g. Bertille" style="width:100%;font-size:11px;padding:6px 8px;border:1px solid var(--border);border-radius:6px"/>
-        </div>
-        <div>
-          <div style="font-size:9px;color:var(--muted);font-family:var(--mono);margin-bottom:3px">Show</div>
-          <select id="rangeCreditShowSel" style="width:100%;font-size:11px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:#fff">
-            <option value="">Select show...</option>
-            ${rangeShowOptions.map(o=>`<option value="${esc(o.value)}">${esc(o.label)}${o.minSeq<Infinity?` · Ep ${o.minSeq}-${o.maxSeq}`:''} · ${o.count} saved</option>`).join('')}
-          </select>
-        </div>
-        <div>
-          <div style="font-size:9px;color:var(--muted);font-family:var(--mono);margin-bottom:3px">From Ep</div>
-          <input id="rangeCreditFromInp" type="number" min="1" placeholder="5" style="width:100%;font-size:11px;padding:6px 8px;border:1px solid var(--border);border-radius:6px"/>
-        </div>
-        <div>
-          <div style="font-size:9px;color:var(--muted);font-family:var(--mono);margin-bottom:3px">To Ep</div>
-          <input id="rangeCreditToInp" type="number" min="1" placeholder="10" style="width:100%;font-size:11px;padding:6px 8px;border:1px solid var(--border);border-radius:6px"/>
-        </div>
-        <button class="btn btn-p btn-sm" onclick="addEpisodeRangeCredit()" style="height:32px;justify-content:center">Add</button>
-      </div>`;
-    if(rangeComputed.length){
-      html+=`<table style="border-collapse:collapse;width:100%;font-size:11px;font-family:var(--mono);margin-top:6px">
-        <thead><tr style="background:var(--surface2)">
-          <th style="padding:5px 10px;text-align:left">Person</th>
-          <th style="padding:5px 10px;text-align:left">Show</th>
-          <th style="padding:5px 10px;text-align:right">Ep Range</th>
-          <th style="padding:5px 10px;text-align:right">Episodes</th>
-          <th style="padding:5px 10px;text-align:right">Duration</th>
-          <th style="padding:5px 10px;text-align:right">Time Pay</th>
-          <th style="padding:5px 10px;text-align:right">Errors</th>
-          <th style="padding:5px 10px;text-align:right">Error Pay</th>
-          <th style="padding:5px 10px;text-align:right">Total</th>
-          <th style="padding:5px 10px;text-align:left">Missing</th>
-          <th style="padding:5px 10px;text-align:left">Period</th>
-          <th style="padding:5px 6px;text-align:center;width:30px"></th>
-        </tr></thead><tbody>`;
-      for(const r of rangeComputed){
-        const ps=r.periodStart?_isoDate(new Date(r.periodStart)):'—';
-        const showLabel=r.showNames?.length?r.showNames.join(' | '):(r.show||'');
-        const missing=(r.missingEpisodes||[]).length?(r.missingEpisodes||[]).join(', '):'—';
-        html+=`<tr style="border-bottom:1px solid var(--border)">
-          <td style="padding:4px 10px;font-weight:700">${esc(r.listener||'')}</td>
-          <td style="padding:4px 10px">${esc(showLabel)}</td>
-          <td style="padding:4px 10px;text-align:right">${r.epFrom||'1'}–${r.epTo||'∞'}</td>
-          <td style="padding:4px 10px;text-align:right">${r.episodeCount||0}</td>
-          <td style="padding:4px 10px;text-align:right" title="${((r.durationSec||0)/3600).toFixed(3)} h">${_fmtHMS(r.durationSec||0)}</td>
-          <td style="padding:4px 10px;text-align:right">€${(r.timePay||0).toFixed(2)}</td>
-          <td style="padding:4px 10px;text-align:right">${r.errorsFound||0}</td>
-          <td style="padding:4px 10px;text-align:right">€${(r.errorPay||0).toFixed(2)}</td>
-          <td style="padding:4px 10px;text-align:right;font-weight:700;background:#FFFFCC">€${(r.totalPay||0).toFixed(2)}</td>
-          <td style="padding:4px 10px;font-size:10px;color:${missing==='—'?'var(--muted)':'var(--orange)'}">${esc(missing)}</td>
-          <td style="padding:4px 10px">${ps}</td>
-          <td style="padding:4px 6px;text-align:center"><button onclick="deleteEpisodeRangeCredit('${r.id}')" title="Delete range credit" style="background:transparent;border:none;cursor:pointer;color:var(--muted);font-size:14px;padding:2px 6px;border-radius:4px" onmouseover="this.style.background='var(--red-light)';this.style.color='var(--red)'" onmouseout="this.style.background='transparent';this.style.color='var(--muted)'">×</button></td>
-        </tr>`;
-      }
-      html+=`</tbody></table>
-        <div style="font-size:10px;color:var(--muted);font-family:var(--mono);margin-top:6px">Errors = all non-wrong QC errors saved on those episodes, credited to the selected proof listener name. Duration pays at €20/hour; errors pay at €0.40/error.</div>`;
-    } else {
-      html+=`<div style="padding:10px;text-align:center;color:var(--muted);font-size:11px">No episode range credits in this billing period.</div>`;
-    }
-    html+=`</div>`;
-
     // Manual rows panel (kept for true off-platform work)
     html+=`<div style="margin-top:14px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:12px 16px">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:8px">
@@ -4506,7 +4400,7 @@ async function renderPaymentReport(){
       ${currentCountry==='de'?'<div>· Germany status worker dropdown credits the selected person for payment-only show episodes where CMS raw/QC status or approval fields show their work.</div>':''}
       <div>· Words = dictionary entries added by the listener (agent = CMS user email, addedAt in period).</div>
       <div>· Regens = regeneration-like CMS events stored against payable episodes; this is shown for audit and does not change payout.</div>
-      <div>· Episode range credits add the full saved duration for the selected episode numbers, even if CMS has since moved those episodes to Live.</div>
+      <div>· Show ID Range Calculator is in-memory only: it fetches CMS live, calculates duration/errors, and exports a detailed CSV without saving anything.</div>
     </div>`;
 
     el.innerHTML=html;
@@ -4529,18 +4423,44 @@ function _extractShowId(input){
 
 async function _fetchPaymentShowFromCMS(showId){
   if(!authToken||!uid) throw new Error('CMS not connected — set your auth token in the sidebar first.');
-  // 1) Episodes list (paginated)
-  let eps=[]; let page=1;
-  while(page<=2000){
-    const r=await fetch(`${CMS_BASE}/book.show_episodes?show_id=${showId}&view=cms&is_novel=0&paginate_chapters=true&page_no=${page}`, {headers:hdrs()});
-    if(!r.ok){ if(page===1) throw new Error(`CMS HTTP ${r.status} — check token`); break; }
-    const d=await r.json();
-    const list=d.result?.episodes||[];
-    eps=eps.concat(list);
-    if(list.length<5) break;
-    page++;
+  // 1) Episodes list (paginated). CMS is inconsistent across shows, so try
+  // both list flavours and merge them.
+  let showTitleFromCms='';
+  async function paged(chapPag){
+    let out=[]; let page=1; let lastSig='';
+    while(page<=2000){
+      const params=[`show_id=${encodeURIComponent(showId)}`,'view=cms','is_novel=0',`page_no=${page}`];
+      if(chapPag) params.push('paginate_chapters=true');
+      const r=await fetch(`${CMS_BASE}/book.show_episodes?${params.join('&')}`, {headers:hdrs()});
+      if(!r.ok){ console.warn(`CMS show list ${showId} page ${page} HTTP ${r.status}`); break; }
+      const d=await r.json();
+      const list=d.result?.episodes||[];
+      if(!list.length) break;
+      showTitleFromCms=showTitleFromCms||d.result?.show_title||list[0]?.chapter_details?.show_title||'';
+      const sig=list.map(ep=>{
+        const cd=ep.chapter_details||ep;
+        return cd.chapter_id||ep.chapter_id||'';
+      }).join('|');
+      if(sig&&sig===lastSig) break;
+      lastSig=sig;
+      out=out.concat(list);
+      if(!d.result?.next_url && list.length<10) break;
+      page++;
+    }
+    return out;
   }
-  const showTitleFromCms=eps[0]?.chapter_details?.show_title||'';
+  const [epsA, epsB]=await Promise.all([paged(false), paged(true)]);
+  const eps=[];
+  const seenChap=new Set();
+  for(const ep of [...epsA, ...epsB]){
+    const cd=ep.chapter_details||ep;
+    const cid=cd.chapter_id||ep.chapter_id||'';
+    if(!cid||seenChap.has(cid)) continue;
+    seenChap.add(cid);
+    eps.push(ep);
+  }
+  if(!eps.length) throw new Error(`No episodes returned for show ${showId}. Check show ID and CMS login.`);
+  showTitleFromCms=showTitleFromCms||eps[0]?.chapter_details?.show_title||'';
   // 2) Per-episode details (batched)
   const out=[];
   const BATCH=5;
@@ -4648,88 +4568,147 @@ async function deleteManualPaymentRow(id){
   renderPaymentReport();
 }
 
-async function addEpisodeRangeCredit(){
-  const listener=(document.getElementById('rangeCreditPersonInp')?.value||'').trim();
+async function runRangeBatchCalc(){
+  const listener=(document.getElementById('rangeBatchPersonInp')?.value||'').trim();
+  const raw=(document.getElementById('rangeBatchInput')?.value||'').trim();
+  _rangeBatchCalc.listener=listener;
+  _rangeBatchCalc.raw=raw;
+  _rangeBatchCalc.results=null;
   if(!listener){ toast('Enter proof listener name','warn'); return; }
-  const show=(document.getElementById('rangeCreditShowSel')?.value||'').trim();
-  if(!show){ toast('Select a show','warn'); return; }
-  const fromRaw=(document.getElementById('rangeCreditFromInp')?.value||'').trim();
-  const toRaw=(document.getElementById('rangeCreditToInp')?.value||'').trim();
-  const epFrom=parseInt(fromRaw,10);
-  const epTo=parseInt(toRaw,10);
-  if(!epFrom||!epTo||epFrom<1||epTo<epFrom){
-    toast('Enter a valid episode range','warn');
-    return;
+  if(!raw){ toast('Paste show IDs and ranges','warn'); return; }
+  if(!authToken||!uid){ toast('Connect to CMS first via the Connect PatchStudio bookmarklet','warn'); return; }
+  const parsed=_parseRangeBatchInput(raw);
+  if(parsed.errors.length){ toast(parsed.errors[0],'warn'); return; }
+  if(!parsed.jobs.length){ toast('No valid show/range rows found','warn'); return; }
+
+  _rangeBatchCalc.loading=true;
+  renderPaymentReport();
+  const outJobs=[];
+  const totals={episodes:0,durationSec:0,errors:0,timePay:0,errorPay:0,totalPay:0};
+  try{
+    for(const job of parsed.jobs){
+      toast(`Fetching ${job.showId.substring(0,8)}...`,'ok');
+      const fetched=await _fetchPaymentShowFromCMS(job.showId);
+      const episodes=(fetched.episodes||[]).sort((a,b)=>(a.seq||0)-(b.seq||0));
+      const showName=fetched.cmsShowTitle||episodes[0]?.showName||job.showId;
+      for(const range of job.ranges){
+        const selected=episodes.filter(ep=>{
+          const seq=Number(ep.seq||0)||0;
+          return seq>=range.from && seq<=range.to;
+        });
+        const foundSeq=new Set(selected.map(ep=>Number(ep.seq||0)));
+        const missingEpisodes=[];
+        for(let n=range.from;n<=range.to;n++) if(!foundSeq.has(n)) missingEpisodes.push(n);
+        const episodeRows=selected.map(ep=>{
+          const durationSec=Number(ep.duration||0)||0;
+          const errors=(ep.qc||[]).length;
+          const hours=durationSec/3600;
+          const timePay=hours*PAY_RATE_HOUR;
+          const errorPay=errors*PAY_RATE_ERROR;
+          return {
+            showId:job.showId,
+            showName,
+            chapId:ep.chapId,
+            seq:ep.seq||0,
+            title:ep.title||'',
+            durationSec,
+            hours,
+            errors,
+            timePay,
+            errorPay,
+            totalPay:timePay+errorPay
+          };
+        });
+        const durationSec=episodeRows.reduce((s,e)=>s+e.durationSec,0);
+        const errors=episodeRows.reduce((s,e)=>s+e.errors,0);
+        const timePay=(durationSec/3600)*PAY_RATE_HOUR;
+        const errorPay=errors*PAY_RATE_ERROR;
+        const row={
+          listener,
+          showId:job.showId,
+          showName,
+          from:range.from,
+          to:range.to,
+          episodeCount:episodeRows.length,
+          durationSec,
+          errors,
+          timePay,
+          errorPay,
+          totalPay:timePay+errorPay,
+          missingEpisodes,
+          episodeRows
+        };
+        outJobs.push(row);
+        totals.episodes+=row.episodeCount;
+        totals.durationSec+=durationSec;
+        totals.errors+=errors;
+        totals.timePay+=timePay;
+        totals.errorPay+=errorPay;
+        totals.totalPay+=row.totalPay;
+      }
+    }
+    _rangeBatchCalc.results={listener, raw, jobs:outJobs, totals, computedAt:Date.now()};
+    toast(`Calculated ${totals.episodes} episode(s)`,'ok');
+  }catch(e){
+    console.error('Range batch failed:',e);
+    toast('Range calculation failed: '+e.message,'err');
+  }finally{
+    _rangeBatchCalc.loading=false;
+    renderPaymentReport();
   }
-  const periodStart=_payPeriod?_payPeriod.fromTs:Date.now();
-  const slug=listener.toLowerCase().replace(/[^a-z0-9]/gi,'_').substring(0,15);
-  const id='er_'+Date.now()+'_'+slug;
-  await dbRef('paymentEpisodeCredits/'+id).set({
-    listener, show, epFrom, epTo,
-    periodStart, addedAt:Date.now()
-  });
-  toast(`Episode range added: ${listener} / ${show} Ep ${epFrom}-${epTo}`,'ok');
-  const p=document.getElementById('rangeCreditPersonInp'), f=document.getElementById('rangeCreditFromInp'), t=document.getElementById('rangeCreditToInp');
-  if(p) p.value='';
-  if(f) f.value='';
-  if(t) t.value='';
+}
+
+function clearRangeBatchCalc(){
+  _rangeBatchCalc={listener:'',raw:'',loading:false,results:null};
   renderPaymentReport();
 }
 
-async function deleteEpisodeRangeCredit(id){
-  if(!confirm('Delete this episode range credit?')) return;
-  await dbRef('paymentEpisodeCredits/'+id).remove();
-  toast('Episode range deleted','ok');
-  renderPaymentReport();
-}
-
-function exportEpisodeRangeCreditsCSV(){
-  const rowsData=_payData?.rangeComputed||[];
-  if(!rowsData.length){ toast('No episode range credits to export','warn'); return; }
-  const {from, to}=_payData;
+function exportRangeBatchCSV(){
+  const res=_rangeBatchCalc.results;
+  if(!res||!res.jobs?.length){ toast('Run the range calculator first','warn'); return; }
   const rows=[];
-  rows.push(['Billing Period', _fmtPayDate(from)+' → '+_fmtPayDate(to)]);
+  rows.push(['Proof Listener', res.listener]);
+  rows.push(['Computed At', new Date(res.computedAt||Date.now()).toLocaleString()]);
   rows.push(['Rates', `€${PAY_RATE_HOUR.toFixed(2)}/hour`, `€${PAY_RATE_ERROR.toFixed(2)}/error`]);
   rows.push([]);
   rows.push(['Summary']);
-  rows.push(['Person','Show Query','Matched Show(s)','Ep From','Ep To','Episodes Found','Duration (h:mm:ss)','Hours Decimal','Time Pay (€)','Errors','Error Pay (€)','Total Pay (€)','Missing Episodes','Period Start']);
-  for(const r of rowsData){
+  rows.push(['Show ID','Show','Range From','Range To','Episodes','Duration (h:mm:ss)','Hours Decimal','Time Pay (€)','Errors','Error Pay (€)','Total Pay (€)','Missing Episodes']);
+  for(const j of res.jobs){
     rows.push([
-      r.listener||'',
-      r.show||'',
-      (r.showNames||[]).join(' | '),
-      r.epFrom||'',
-      r.epTo||'',
-      r.episodeCount||0,
-      _fmtHMS(r.durationSec||0),
-      ((r.durationSec||0)/3600).toFixed(3),
-      (r.timePay||0).toFixed(2),
-      r.errorsFound||0,
-      (r.errorPay||0).toFixed(2),
-      (r.totalPay||0).toFixed(2),
-      (r.missingEpisodes||[]).join(', '),
-      r.periodStart?_isoDate(new Date(r.periodStart)):''
+      j.showId,
+      j.showName,
+      j.from,
+      j.to,
+      j.episodeCount,
+      _fmtHMS(j.durationSec),
+      (j.durationSec/3600).toFixed(3),
+      j.timePay.toFixed(2),
+      j.errors,
+      j.errorPay.toFixed(2),
+      j.totalPay.toFixed(2),
+      j.missingEpisodes.join(', ')
     ]);
   }
+  rows.push(['TOTAL','','','',res.totals.episodes,_fmtHMS(res.totals.durationSec),(res.totals.durationSec/3600).toFixed(3),res.totals.timePay.toFixed(2),res.totals.errors,res.totals.errorPay.toFixed(2),res.totals.totalPay.toFixed(2),'']);
   rows.push([]);
   rows.push(['Episode Wise Breakup']);
-  rows.push(['Person','Show','Episode #','Episode Title','Duration (h:mm:ss)','Hours Decimal','Time Pay (€)','Errors','Error Pay (€)','Total Pay (€)']);
-  for(const r of rowsData){
-    for(const ep of (r.episodeRows||[])){
-      const h=(ep.durationSec||0)/3600;
-      const timePay=h*PAY_RATE_HOUR;
-      const errorPay=(ep.errors||0)*PAY_RATE_ERROR;
+  rows.push(['Proof Listener','Show ID','Show','Range','Episode #','Episode Title','Chapter ID','Duration (h:mm:ss)','Hours Decimal','Time Pay (€)','Errors','Error Pay (€)','Total Pay (€)']);
+  for(const j of res.jobs){
+    for(const ep of j.episodeRows){
       rows.push([
-        r.listener||'',
-        ep.showName||r.show||'',
-        ep.seq||'',
-        ep.title||'',
-        _fmtHMS(ep.durationSec||0),
-        h.toFixed(3),
-        timePay.toFixed(2),
-        ep.errors||0,
-        errorPay.toFixed(2),
-        (timePay+errorPay).toFixed(2)
+        res.listener,
+        j.showId,
+        j.showName,
+        `${j.from}-${j.to}`,
+        ep.seq,
+        ep.title,
+        ep.chapId,
+        _fmtHMS(ep.durationSec),
+        ep.hours.toFixed(3),
+        ep.timePay.toFixed(2),
+        ep.errors,
+        ep.errorPay.toFixed(2),
+        ep.totalPay.toFixed(2)
       ]);
     }
   }
@@ -4737,60 +4716,17 @@ function exportEpisodeRangeCreditsCSV(){
   const blob=new Blob(['﻿'+csv],{type:'text/csv;charset=utf-8'});
   const a=document.createElement('a');
   a.href=URL.createObjectURL(blob);
-  a.download=`episode_range_credits_${_isoDate(from)}_to_${_isoDate(to)}.csv`;
+  const safeName=(res.listener||'range').replace(/[^a-z0-9]+/gi,'_').replace(/^_+|_+$/g,'').toLowerCase()||'range';
+  a.download=`show_id_range_calc_${safeName}_${new Date().toISOString().slice(0,10)}.csv`;
   document.body.appendChild(a); a.click(); document.body.removeChild(a);
-  toast('Episode range CSV downloaded','ok');
+  toast('Detailed range CSV downloaded','ok');
 }
 
 function exportPaymentCSV(){
   if(!_payData||!_payData.users){toast('Nothing to export','warn');return;}
-  const {users, from, to, rangeComputed=[]}=_payData;
+  const {users, from, to}=_payData;
   const rows=[];
   rows.push(['Billing Period', _fmtPayDate(from)+' → '+_fmtPayDate(to)]);
-  if(rangeComputed.length){
-    rows.push([]);
-    rows.push(['Episode Range Credits']);
-    rows.push(['Person','Show Query','Matched Show(s)','Ep From','Ep To','Episodes Found','Duration (h:mm:ss)','Hours Decimal','Time Pay (€)','Errors','Error Pay (€)','Total Pay (€)','Missing Episodes']);
-    for(const r of rangeComputed){
-      rows.push([
-        r.listener||'',
-        r.show||'',
-        (r.showNames||[]).join(' | '),
-        r.epFrom||'',
-        r.epTo||'',
-        r.episodeCount||0,
-        _fmtHMS(r.durationSec||0),
-        ((r.durationSec||0)/3600).toFixed(3),
-        (r.timePay||0).toFixed(2),
-        r.errorsFound||0,
-        (r.errorPay||0).toFixed(2),
-        (r.totalPay||0).toFixed(2),
-        (r.missingEpisodes||[]).join(', ')
-      ]);
-    }
-    rows.push([]);
-    rows.push(['Episode Range Credit Episode Breakup']);
-    rows.push(['Person','Show','Episode #','Episode Title','Duration (h:mm:ss)','Hours Decimal','Time Pay (€)','Errors','Error Pay (€)','Total Pay (€)']);
-    for(const r of rangeComputed){
-      for(const epRow of (r.episodeRows||[])){
-        const h=(epRow.durationSec||0)/3600;
-        const timePay=h*PAY_RATE_HOUR;
-        const errorPay=(epRow.errors||0)*PAY_RATE_ERROR;
-        rows.push([
-          r.listener||'',
-          epRow.showName||r.show||'',
-          epRow.seq||'',
-          epRow.title||'',
-          _fmtHMS(epRow.durationSec||0),
-          h.toFixed(3),
-          timePay.toFixed(2),
-          epRow.errors||0,
-          errorPay.toFixed(2),
-          (timePay+errorPay).toFixed(2)
-        ]);
-      }
-    }
-  }
   rows.push([]);
   rows.push(['Proof Listener','Show','Hours','Hour Pay (€)','Errors','Error Pay (€)','Words','Word Pay (€)','Regens','Subtotal (€)']);
   let grand=0;
