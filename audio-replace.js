@@ -2,7 +2,7 @@
 // API calls share the same origin/session as CMS UI itself. Loaded via the
 // PatchStudio "Audio Replace" bookmarklet.
 (function(){
-  const VERSION='2026-06-15.4-session-first-api';
+  const VERSION='2026-06-16.1-story-shaped-episodes';
   if(window.__AR_PANEL&&window.__AR_VERSION===VERSION){ window.__AR_PANEL.style.display='block'; return; }
   if(window.__AR_PANEL){
     try{ window.__AR_PANEL.remove(); }catch{}
@@ -83,15 +83,50 @@
     const raw=s.match(/([a-f0-9]{20,})/i);
     return raw?raw[1]:'';
   }
+  function firstObj(...vals){
+    for(const v of vals) if(v&&typeof v==='object'&&!Array.isArray(v)) return v;
+    return {};
+  }
+  function pick(...vals){
+    for(const v of vals) if(v!==undefined&&v!==null&&v!=='') return v;
+    return '';
+  }
+  function chapterObj(ep){
+    return firstObj(
+      ep?.chapter_details,
+      ep?.chapterDetails,
+      ep?.chapter,
+      ep?.episode_details,
+      ep?.episodeDetails,
+      ep?.details?.chapter_details,
+      ep?.chapterAndStory?.chapter_details,
+      ep?.chapter_and_story?.chapter_details,
+      ep?.story_show_info?.chapter_details
+    );
+  }
+  function storyObj(ep){
+    return firstObj(
+      ep?.story_details,
+      ep?.storyDetails,
+      ep?.story,
+      ep?.details?.story_details,
+      ep?.chapterAndStory?.story_details,
+      ep?.chapter_and_story?.story_details,
+      ep?.story_show_info?.story_details,
+      ep?.show_info?.story_details
+    );
+  }
   function looksLikeEpisode(v){
     if(!v||typeof v!=='object') return false;
-    const cd=v.chapter_details||v;
-    return !!(cd&&typeof cd==='object'&&(
-      cd.chapter_id||v.chapter_id||
+    const cd=chapterObj(v);
+    const sd=storyObj(v);
+    return !!(
+      cd.chapter_id||v.chapter_id||sd.chapter_id||
+      sd.story_id||v.story_id||v.storyId||
       cd.natural_sequence_number||v.natural_sequence_number||
-      cd.seq_number||v.seq_number||
-      cd.chapter_title||v.chapter_title
-    ));
+      cd.seq_number||v.seq_number||sd.seq_number||
+      cd.chapter_title||v.chapter_title||sd.story_title||v.story_title||v.title
+    );
   }
   function episodeListFromPayload(data){
     const roots=[data?.result,data?.results,data?.data,data].filter(Boolean);
@@ -122,6 +157,17 @@
     }
     return walk(data)||[];
   }
+  function payloadShape(data){
+    const roots=[['result',data?.result],['results',data?.results],['data',data?.data],['root',data]].filter(([,v])=>v&&typeof v==='object');
+    const parts=[];
+    for(const [name,obj] of roots.slice(0,3)){
+      if(Array.isArray(obj)){ parts.push(`${name}[${obj.length}]`); continue; }
+      const keys=Object.keys(obj).slice(0,8);
+      const arrs=keys.filter(k=>Array.isArray(obj[k])).map(k=>`${k}[${obj[k].length}]`);
+      parts.push(`${name}{${keys.join('|')}}${arrs.length?':'+arrs.join('|'):''}`);
+    }
+    return parts.join(';')||typeof data;
+  }
   function nextListUrl(data, base){
     const raw=data?.result?.next_url||data?.results?.next_url||data?.data?.next_url||data?.next_url||'';
     if(!raw) return '';
@@ -149,29 +195,29 @@
 
   async function fetchEps(inputId){
     async function getList(url, base){
-      let best={status:0, eps:[], nextUrl:'', authLabel:''};
+      let best={status:0, eps:[], nextUrl:'', authLabel:'', shape:''};
       for(const hc of headerCandidates(base)){
         const r=await fetch(url,{headers:hc.headers,credentials:'include'});
         if(!r.ok){
-          if(!best.status) best={status:r.status, eps:[], nextUrl:'', authLabel:hc.label};
+          if(!best.status) best={status:r.status, eps:[], nextUrl:'', authLabel:hc.label, shape:''};
           continue;
         }
         let d;
         try{ d=await r.json(); }
         catch(e){
-          if(!best.status) best={status:r.status, eps:[], nextUrl:'', authLabel:hc.label};
+          if(!best.status) best={status:r.status, eps:[], nextUrl:'', authLabel:hc.label, shape:'non-json'};
           continue;
         }
         const eps=episodeListFromPayload(d);
         const nextUrl=nextListUrl(d,base);
-        const res={status:r.status, eps, nextUrl, authLabel:hc.label};
+        const res={status:r.status, eps, nextUrl, authLabel:hc.label, shape:payloadShape(d)};
         if(eps.length||nextUrl) return res;
         if(!best.status||best.status!==200) best=res;
       }
       return best;
     }
     async function paged(base, label, idKey, view, chapPag){
-      let eps=[], firstStatus=200;
+      let eps=[], firstStatus=200, firstShape='';
       const seenUrls=new Set();
       const addPage=async url=>{
         if(seenUrls.has(url)) return '';
@@ -180,6 +226,7 @@
         try{ res=await getList(url,base); }
         catch(e){ return ''; }
         if(seenUrls.size===1) firstStatus=res.status;
+        if(seenUrls.size===1) firstShape=res.shape||'';
         if(res.eps.length) eps=eps.concat(res.eps.map(ep=>Object.assign({}, ep, {
           __pf_lookup_key:idKey,
           __pf_lookup_id:inputId,
@@ -205,14 +252,15 @@
         if(eps.length===before) break;
         if(page%10===0) await new Promise(res=>setTimeout(res,300));
       }
-      return {label:`${base.key}:${label}`, eps, firstStatus};
+      return {label:`${base.key}:${label}`, eps, firstStatus, shape:firstShape};
     }
     async function sequenced(base, label, idKey, endpoint){
-      let firstStatus=200;
+      let firstStatus=200, firstShape='';
       let res;
       try{ res=await getList(buildSequencedUrl(base,endpoint,idKey,inputId),base); }
-      catch(e){ return {label:`${base.key}:${label}`, eps:[], firstStatus}; }
+      catch(e){ return {label:`${base.key}:${label}`, eps:[], firstStatus, shape:firstShape}; }
       firstStatus=res.status;
+      firstShape=res.shape||'';
       return {label:`${base.key}:${label}`, eps:res.eps.map(ep=>Object.assign({}, ep, {
         __pf_lookup_key:idKey,
         __pf_lookup_id:inputId,
@@ -220,10 +268,10 @@
         __pf_base_key:base.key,
         __pf_base_url:base.url,
         __pf_auth_label:res.authLabel
-      })), firstStatus};
+      })), firstStatus, shape:firstShape};
     }
     async function bookDetails(base, label){
-      let eps=[], firstStatus=200;
+      let eps=[], firstStatus=200, firstShape='';
       const seenUrls=new Set();
       const addPage=async url=>{
         if(seenUrls.has(url)) return '';
@@ -232,6 +280,7 @@
         try{ res=await getList(url,base); }
         catch(e){ return ''; }
         if(seenUrls.size===1) firstStatus=res.status;
+        if(seenUrls.size===1) firstShape=res.shape||'';
         if(res.eps.length) eps=eps.concat(res.eps.map(ep=>Object.assign({}, ep, {
           __pf_lookup_key:'book_id',
           __pf_lookup_id:inputId,
@@ -249,7 +298,7 @@
         next=await addPage(next);
         if(guard%10===0) await new Promise(res=>setTimeout(res,300));
       }
-      return {label:`${base.key}:${label}`, eps, firstStatus};
+      return {label:`${base.key}:${label}`, eps, firstStatus, shape:firstShape};
     }
     const attempts=[
       ['show:cms+chapPag','show_id','cms',true],
@@ -282,14 +331,18 @@
     if(!combined.length){
       const allAuth=results.every(r=>r.firstStatus===401||r.firstStatus===403);
       if(allAuth) throw new Error('CMS auth — make sure you are logged into cms.pocketfm.com');
-      throw new Error('No episodes returned — '+results.map(r=>`${r.label}=${r.firstStatus}`).join(', '));
+      const details=results.map(r=>`${r.label}=${r.firstStatus}${r.shape?' '+r.shape:''}`).join(', ');
+      throw new Error('No episodes returned — '+details);
     }
     const seen=new Set(); const merged=[];
     for(const ep of combined){
-      const cd=ep.chapter_details||ep;
-      const cid=cd.chapter_id||ep.chapter_id||'';
-      if(!cid||seen.has(cid)) continue;
-      seen.add(cid);
+      const cd=chapterObj(ep);
+      const sd=storyObj(ep);
+      const cid=pick(cd.chapter_id,ep.chapter_id,sd.chapter_id);
+      const sid=pick(sd.story_id,ep.story_id,ep.storyId,sd.storyId);
+      const dedupe=cid||sid;
+      if(!dedupe||seen.has(dedupe)) continue;
+      seen.add(dedupe);
       const lookupKey=ep.__pf_lookup_key||'';
       const lookupId=ep.__pf_lookup_id||'';
       const lookupBaseKey=ep.__pf_base_key||'';
@@ -297,18 +350,19 @@
       const lookupAuthLabel=ep.__pf_auth_label||'';
       merged.push({
         chapter_id:cid,
-        book_id:cd.book_id||ep.book_id||(lookupKey==='book_id'?lookupId:''),
-        show_id:cd.show_id||ep.show_id||ep.entity_id||(lookupKey==='show_id'?lookupId:''),
+        story_id:sid,
+        book_id:pick(cd.book_id,sd.book_id,ep.book_id,lookupKey==='book_id'?lookupId:''),
+        show_id:pick(cd.show_id,sd.show_id,ep.show_id,ep.entity_id,lookupKey==='show_id'?lookupId:''),
         lookup_key:lookupKey,
         lookup_id:lookupId,
         lookup_base_key:lookupBaseKey,
         lookup_base_url:lookupBaseUrl,
         lookup_auth_label:lookupAuthLabel,
-        chapter_title:cd.chapter_title||ep.chapter_title||'',
-        seq:cd.natural_sequence_number||ep.natural_sequence_number||cd.seq_number||ep.seq_number||cd.sequence_number||ep.sequence_number||cd.episode_number||ep.episode_number||cd.sn||ep.sn||0,
-        audio_duration:cd.audio_duration||ep.audio_duration||0,
-        audio_status:cd.audio_status||ep.audio_status||'',
-        chapter_status:cd.chapter_Status||cd.chapter_status||ep.chapter_status||''
+        chapter_title:pick(cd.chapter_title,ep.chapter_title,sd.story_title,ep.story_title,ep.title),
+        seq:pick(cd.natural_sequence_number,ep.natural_sequence_number,sd.natural_sequence_number,cd.seq_number,ep.seq_number,sd.seq_number,cd.sequence_number,ep.sequence_number,sd.sequence_number,cd.episode_number,ep.episode_number,sd.episode_number,cd.sn,ep.sn,sd.sn,ep.seq,sd.seq,0),
+        audio_duration:pick(cd.audio_duration,ep.audio_duration,sd.duration,ep.duration,0),
+        audio_status:pick(cd.audio_status,ep.audio_status,sd.audio_status),
+        chapter_status:pick(cd.chapter_Status,cd.chapter_status,ep.chapter_status,sd.status)
       });
     }
     return merged.sort((a,b)=>(a.seq||0)-(b.seq||0));
@@ -413,7 +467,9 @@
       for(const base of contentBaseCandidates(srcEp)){
         for(const id of ids){
           for(const hc of orderedHeaderCandidates(base, srcEp)){
-            const params={type:'episode',media_type:'audio',event:ev,chapter_id:srcEp.chapter_id};
+            const params={type:'episode',media_type:'audio',event:ev};
+            if(srcEp.chapter_id) params.chapter_id=srcEp.chapter_id;
+            if(srcEp.story_id) params.story_id=srcEp.story_id;
             if(id.key) params[id.key]=id.value;
             const r=await rlFetch(contentUrl('get_media_url',params,base),{headers:hc.headers,credentials:'include'});
             const label=`${base.key}:${hc.label}:${id.label}`;
@@ -464,7 +520,9 @@
       for(const base of contentBaseCandidates(tgtEp)){
         for(const attempt of attempts){
           for(const hc of orderedHeaderCandidates(base, tgtEp)){
-            const params={chapter_id:tgtEp.chapter_id,is_novel:'0'};
+            const params={is_novel:'0'};
+            if(tgtEp.chapter_id) params.chapter_id=tgtEp.chapter_id;
+            if(tgtEp.story_id) params.story_id=tgtEp.story_id;
             if(attempt.view) params.view=attempt.view;
             if(attempt.id.key) params[attempt.id.key]=attempt.id.value;
             const url=contentUrl('book.episode_details',params,base);
@@ -493,7 +551,9 @@
     // 3. Presigned URL
     const ext=(blob.type||'').includes('wav')?'wav':'mp3';
     const title=encodeURIComponent(tgtChapter.chapter_title||tgtEp.chapter_title||'audio');
-    const presignUrl=`${UPLOAD_BASE}/get_presigned_url?tags=media&image_extension=${ext}&title=${title}&chapter_id=${tgtEp.chapter_id}`;
+    const resolvedTargetChapterId=tgtChapter.chapter_id||tgtEp.chapter_id;
+    if(!resolvedTargetChapterId) throw new Error('target chapter_id missing after episode_details');
+    const presignUrl=`${UPLOAD_BASE}/get_presigned_url?tags=media&image_extension=${ext}&title=${title}&chapter_id=${resolvedTargetChapterId}`;
     const up=await rlFetch(presignUrl,{headers:hdrs(),credentials:'include'});
     if(!up.ok) throw new Error('presigned URL HTTP '+up.status);
     const upData=await up.json();
