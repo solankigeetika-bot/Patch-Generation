@@ -2,7 +2,7 @@
 // API calls share the same origin/session as CMS UI itself. Loaded via the
 // PatchStudio "Audio Replace" bookmarklet.
 (function(){
-  const VERSION='2026-06-15.2-api-id-fallbacks';
+  const VERSION='2026-06-15.3-cms-origin-api';
   if(window.__AR_PANEL&&window.__AR_VERSION===VERSION){ window.__AR_PANEL.style.display='block'; return; }
   if(window.__AR_PANEL){
     try{ window.__AR_PANEL.remove(); }catch{}
@@ -11,6 +11,11 @@
 
   const CMS='https://api.cms.pocketfm.com/v2/content_api';
   const UPLOAD_BASE='https://api.cms.pocketfm.com/v2/upload';
+  const CMS_ORIGIN_BASE=(location.hostname||'').endsWith('cms.pocketfm.com') ? `${location.origin}/content_api` : 'https://cms.pocketfm.com/content_api';
+  const CONTENT_BASES=[
+    {key:'cms-origin', url:CMS_ORIGIN_BASE},
+    {key:'api-v2', url:CMS}
+  ];
   window.__AR_VERSION=VERSION;
 
   // ---- auth ----
@@ -107,57 +112,59 @@
     }
     return walk(data)||[];
   }
-  function nextListUrl(data){
+  function nextListUrl(data, base){
     const raw=data?.result?.next_url||data?.results?.next_url||data?.data?.next_url||data?.next_url||'';
     if(!raw) return '';
     if(/^https?:\/\//i.test(raw)) return raw;
     if(raw.startsWith('/v2/content_api/')) return `https://api.cms.pocketfm.com${raw}`;
-    if(raw.startsWith('/content_api/')) return `${CMS}${raw.replace(/^\/content_api/,'')}`;
-    if(raw.startsWith('/')) return `${CMS}${raw}`;
-    return `${CMS}/${raw}`;
+    if(raw.startsWith('/content_api/')) return base?.key==='cms-origin' ? `${location.origin}${raw}` : `${CMS}${raw.replace(/^\/content_api/,'')}`;
+    if(raw.startsWith('/')) return base?.key==='cms-origin' ? `${location.origin}${raw}` : `${base?.url||CMS}${raw}`;
+    return `${base?.url||CMS}/${raw}`;
   }
-  function buildEpisodeListUrl(idKey,id,view,chapPag,page){
+  function buildEpisodeListUrl(base,idKey,id,view,chapPag,page){
     const params=new URLSearchParams({[idKey]:id,is_novel:'0'});
     if(view) params.set('view',view);
     if(chapPag) params.set('paginate_chapters','true');
     if(page) params.set('page_no',String(page));
-    return `${CMS}/book.show_episodes?${params.toString()}`;
+    return `${base.url}/book.show_episodes?${params.toString()}`;
   }
-  function buildSequencedUrl(endpoint,idKey,id){
+  function buildSequencedUrl(base,endpoint,idKey,id){
     const params=new URLSearchParams({[idKey]:id,seq_start:'1',seq_end:'5000',is_novel:'0'});
-    return `${CMS}/${endpoint}?${params.toString()}`;
+    return `${base.url}/${endpoint}?${params.toString()}`;
   }
-  function buildBookDetailsUrl(bookId){
+  function buildBookDetailsUrl(base,bookId){
     const params=new URLSearchParams({book_id:bookId,view:'cms',info_level:'max',is_novel:'0'});
-    return `${CMS}/book.book_details?${params.toString()}`;
+    return `${base.url}/book.book_details?${params.toString()}`;
   }
 
   async function fetchEps(inputId){
-    async function getList(url){
+    async function getList(url, base){
       const r=await fetch(url,{headers:hdrs(),credentials:'include'});
       if(!r.ok) return {status:r.status, eps:[], nextUrl:''};
       const d=await r.json();
-      return {status:r.status, eps:episodeListFromPayload(d), nextUrl:nextListUrl(d)};
+      return {status:r.status, eps:episodeListFromPayload(d), nextUrl:nextListUrl(d,base)};
     }
-    async function paged(label, idKey, view, chapPag){
+    async function paged(base, label, idKey, view, chapPag){
       let eps=[], firstStatus=200;
       const seenUrls=new Set();
       const addPage=async url=>{
         if(seenUrls.has(url)) return '';
         seenUrls.add(url);
         let res;
-        try{ res=await getList(url); }
+        try{ res=await getList(url,base); }
         catch(e){ return ''; }
         if(seenUrls.size===1) firstStatus=res.status;
         if(res.eps.length) eps=eps.concat(res.eps.map(ep=>Object.assign({}, ep, {
           __pf_lookup_key:idKey,
           __pf_lookup_id:inputId,
-          __pf_lookup_label:label
+          __pf_lookup_label:label,
+          __pf_base_key:base.key,
+          __pf_base_url:base.url
         })));
         return res.nextUrl||'';
       };
 
-      let next=await addPage(buildEpisodeListUrl(idKey,inputId,view,chapPag,0));
+      let next=await addPage(buildEpisodeListUrl(base,idKey,inputId,view,chapPag,0));
       let guard=0;
       while(next&&guard<2000){
         guard++;
@@ -167,49 +174,53 @@
 
       for(let page=1;page<=2000;page++){
         const before=eps.length;
-        await addPage(buildEpisodeListUrl(idKey,inputId,view,chapPag,page));
+        await addPage(buildEpisodeListUrl(base,idKey,inputId,view,chapPag,page));
         if(eps.length===before) break;
         if(page%10===0) await new Promise(res=>setTimeout(res,300));
       }
-      return {label, eps, firstStatus};
+      return {label:`${base.key}:${label}`, eps, firstStatus};
     }
-    async function sequenced(label, idKey, endpoint){
+    async function sequenced(base, label, idKey, endpoint){
       let firstStatus=200;
       let res;
-      try{ res=await getList(buildSequencedUrl(endpoint,idKey,inputId)); }
-      catch(e){ return {label, eps:[], firstStatus}; }
+      try{ res=await getList(buildSequencedUrl(base,endpoint,idKey,inputId),base); }
+      catch(e){ return {label:`${base.key}:${label}`, eps:[], firstStatus}; }
       firstStatus=res.status;
-      return {label, eps:res.eps.map(ep=>Object.assign({}, ep, {
+      return {label:`${base.key}:${label}`, eps:res.eps.map(ep=>Object.assign({}, ep, {
         __pf_lookup_key:idKey,
         __pf_lookup_id:inputId,
-        __pf_lookup_label:label
+        __pf_lookup_label:label,
+        __pf_base_key:base.key,
+        __pf_base_url:base.url
       })), firstStatus};
     }
-    async function bookDetails(label){
+    async function bookDetails(base, label){
       let eps=[], firstStatus=200;
       const seenUrls=new Set();
       const addPage=async url=>{
         if(seenUrls.has(url)) return '';
         seenUrls.add(url);
         let res;
-        try{ res=await getList(url); }
+        try{ res=await getList(url,base); }
         catch(e){ return ''; }
         if(seenUrls.size===1) firstStatus=res.status;
         if(res.eps.length) eps=eps.concat(res.eps.map(ep=>Object.assign({}, ep, {
           __pf_lookup_key:'book_id',
           __pf_lookup_id:inputId,
-          __pf_lookup_label:label
+          __pf_lookup_label:label,
+          __pf_base_key:base.key,
+          __pf_base_url:base.url
         })));
         return res.nextUrl||'';
       };
-      let next=await addPage(buildBookDetailsUrl(inputId));
+      let next=await addPage(buildBookDetailsUrl(base,inputId));
       let guard=0;
       while(next&&guard<2000){
         guard++;
         next=await addPage(next);
         if(guard%10===0) await new Promise(res=>setTimeout(res,300));
       }
-      return {label, eps, firstStatus};
+      return {label:`${base.key}:${label}`, eps, firstStatus};
     }
     const attempts=[
       ['show:cms+chapPag','show_id','cms',true],
@@ -228,11 +239,16 @@
       ['book:sequenced_chapters','book_id','book.get_sequenced_chapters'],
       ['book:chapter_name','book_id','book.chapter_name']
     ];
-    const results=[
-      ...(await Promise.all(attempts.map(([label,key,v,c])=>paged(label,key,v,c)))),
-      await bookDetails('book:book_details'),
-      ...(await Promise.all(sequencedAttempts.map(([label,key,endpoint])=>sequenced(label,key,endpoint))))
-    ];
+    const results=[];
+    for(const base of CONTENT_BASES){
+      const baseResults=[
+        ...(await Promise.all(attempts.map(([label,key,v,c])=>paged(base,label,key,v,c)))),
+        await bookDetails(base,'book:book_details'),
+        ...(await Promise.all(sequencedAttempts.map(([label,key,endpoint])=>sequenced(base,label,key,endpoint))))
+      ];
+      results.push(...baseResults);
+      if(baseResults.some(r=>r.eps.length)) break;
+    }
     const combined=results.flatMap(r=>r.eps);
     if(!combined.length){
       const allAuth=results.every(r=>r.firstStatus===401||r.firstStatus===403);
@@ -247,12 +263,16 @@
       seen.add(cid);
       const lookupKey=ep.__pf_lookup_key||'';
       const lookupId=ep.__pf_lookup_id||'';
+      const lookupBaseKey=ep.__pf_base_key||'';
+      const lookupBaseUrl=ep.__pf_base_url||'';
       merged.push({
         chapter_id:cid,
         book_id:cd.book_id||ep.book_id||(lookupKey==='book_id'?lookupId:''),
         show_id:cd.show_id||ep.show_id||ep.entity_id||(lookupKey==='show_id'?lookupId:''),
         lookup_key:lookupKey,
         lookup_id:lookupId,
+        lookup_base_key:lookupBaseKey,
+        lookup_base_url:lookupBaseUrl,
         chapter_title:cd.chapter_title||ep.chapter_title||'',
         seq:cd.natural_sequence_number||ep.natural_sequence_number||cd.seq_number||ep.seq_number||cd.sequence_number||ep.sequence_number||cd.episode_number||ep.episode_number||cd.sn||ep.sn||0,
         audio_duration:cd.audio_duration||ep.audio_duration||0,
@@ -310,12 +330,24 @@
     throw err;
   }
 
-  function contentUrl(path, params){
+  function contentUrl(path, params, base){
     const q=new URLSearchParams();
     for(const [k,v] of Object.entries(params||{})){
       if(v!==undefined&&v!==null&&v!=='') q.set(k,String(v));
     }
-    return `${CMS}/${path}?${q.toString()}`;
+    return `${(base&&base.url)||CMS}/${path}?${q.toString()}`;
+  }
+
+  function contentBaseCandidates(ep){
+    const out=[]; const seen=new Set();
+    const add=base=>{
+      if(!base||!base.url||seen.has(base.url)) return;
+      seen.add(base.url);
+      out.push(base);
+    };
+    if(ep.lookup_base_url) add({key:ep.lookup_base_key||'episode-base', url:ep.lookup_base_url});
+    for(const base of CONTENT_BASES) add(base);
+    return out;
   }
 
   function episodeIdCandidates(ep, inputId){
@@ -341,15 +373,18 @@
     async function getSourceUrl(ev){
       const errors=[];
       const ids=episodeIdCandidates(srcEp, state.srcShowId).concat([{key:'',value:'',label:'chapter only'}]);
-      for(const id of ids){
-        const params={type:'episode',media_type:'audio',event:ev,chapter_id:srcEp.chapter_id};
-        if(id.key) params[id.key]=id.value;
-        const r=await rlFetch(contentUrl('get_media_url',params),{headers:hdrs(),credentials:'include'});
-        if(!r.ok){ errors.push(`${id.label}=HTTP ${r.status}`); continue; }
-        const d=await r.json();
-        const url=d.result?.media_url||d.media_url||d.result?.url||'';
-        if(url) return {url, err:'', via:id.label};
-        errors.push(`${id.label}=empty`);
+      for(const base of contentBaseCandidates(srcEp)){
+        for(const id of ids){
+          const params={type:'episode',media_type:'audio',event:ev,chapter_id:srcEp.chapter_id};
+          if(id.key) params[id.key]=id.value;
+          const r=await rlFetch(contentUrl('get_media_url',params,base),{headers:hdrs(),credentials:'include'});
+          const label=`${base.key}:${id.label}`;
+          if(!r.ok){ errors.push(`${label}=HTTP ${r.status}`); continue; }
+          const d=await r.json();
+          const url=d.result?.media_url||d.media_url||d.result?.url||'';
+          if(url) return {url, err:'', via:label};
+          errors.push(`${label}=empty`);
+        }
       }
       return {url:'', err:errors.join(', ')};
     }
@@ -387,19 +422,21 @@
       for(const id of ids) attempts.push({id, view:'cms'});
       for(const id of ids) attempts.push({id, view:''});
       attempts.push({id:{key:'',value:'',label:'chapter only'}, view:''});
-      for(const attempt of attempts){
-        const params={chapter_id:tgtEp.chapter_id,is_novel:'0'};
-        if(attempt.view) params.view=attempt.view;
-        if(attempt.id.key) params[attempt.id.key]=attempt.id.value;
-        const url=contentUrl('book.episode_details',params);
-        const r=await rlFetch(url,{headers:hdrs(),credentials:'include'});
-        const label=`${attempt.id.label}${attempt.view?'+cms':''}`;
-        if(!r.ok){ errors.push(`${label}=HTTP ${r.status}`); continue; }
-        const d=await r.json();
-        const chapter=d.result?.chapter_details;
-        const story=d.result?.story_details;
-        if(chapter&&story) return {url, chapter, story, label};
-        errors.push(`${label}=missing`);
+      for(const base of contentBaseCandidates(tgtEp)){
+        for(const attempt of attempts){
+          const params={chapter_id:tgtEp.chapter_id,is_novel:'0'};
+          if(attempt.view) params.view=attempt.view;
+          if(attempt.id.key) params[attempt.id.key]=attempt.id.value;
+          const url=contentUrl('book.episode_details',params,base);
+          const r=await rlFetch(url,{headers:hdrs(),credentials:'include'});
+          const label=`${base.key}:${attempt.id.label}${attempt.view?'+cms':''}`;
+          if(!r.ok){ errors.push(`${label}=HTTP ${r.status}`); continue; }
+          const d=await r.json();
+          const chapter=d.result?.chapter_details;
+          const story=d.result?.story_details;
+          if(chapter&&story) return {url, chapter, story, label, base};
+          errors.push(`${label}=missing`);
+        }
       }
       throw new Error('target details missing — '+errors.join(', '));
     }
@@ -460,7 +497,7 @@
     };
     if(resolvedBookId) body.book_id=resolvedBookId;
     if(resolvedShowId) body.show_id=resolvedShowId;
-    const notify=await rlFetch(`${CMS}/book.update_episode?is_novel=0`,{
+    const notify=await rlFetch(contentUrl('book.update_episode',{is_novel:'0'},targetDetails.base),{
       method:'POST',
       headers:hdrs(),
       credentials:'include',
