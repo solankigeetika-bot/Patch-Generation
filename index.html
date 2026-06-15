@@ -2820,11 +2820,11 @@ function renderAudioReplaceTool(){
 function renderAudioSaveTool(){
   const el=document.getElementById('audioSaveReport');
   if(!el) return;
-  const bmkHref='javascript:(function(){var v=\'2026-06-15.1-published-fallback\';if(window.__ASV_PANEL&&window.__ASV_VERSION===v){window.__ASV_PANEL.style.display=\'block\';return;}if(window.__ASV_PANEL){try{window.__ASV_PANEL.remove();}catch(e){}window.__ASV_PANEL=null;}var s=document.createElement(\'script\');s.src=\'https://solankigeetika-bot.github.io/Patch-Generation/audio-save-v6.js?v=20260615.1&t=\'+Date.now();s.onerror=function(){alert(\'Failed to load Audio Save — check internet\');};document.body.appendChild(s);})();';
+  const bmkHref='javascript:(function(){var v=\'2026-06-15.2-api-auth-only\';if(window.__ASV_PANEL&&window.__ASV_VERSION===v){window.__ASV_PANEL.style.display=\'block\';return;}if(window.__ASV_PANEL){try{window.__ASV_PANEL.remove();}catch(e){}window.__ASV_PANEL=null;}var s=document.createElement(\'script\');s.src=\'https://solankigeetika-bot.github.io/Patch-Generation/audio-save-v6.js?v=20260615.2&t=\'+Date.now();s.onerror=function(){alert(\'Failed to load Audio Save — check internet\');};document.body.appendChild(s);})();';
 
   const html=`<div style="margin-bottom:14px">
     <div style="font-size:16px;font-weight:800">💾 Audio Save</div>
-    <div style="font-size:11px;color:var(--muted)">Automates the CMS flow you showed: enter a CMS show ID and episode range, then it saves the generated AI audio. It uses the CMS API first and falls back to opening visible CMS episode rows if the API returns an empty list.</div>
+    <div style="font-size:11px;color:var(--muted)">Automates the CMS flow you showed: enter a CMS show ID and episode range, then it saves the generated AI audio through CMS API/auth only.</div>
   </div>
 
   <div style="background:#f0fdf4;border:1.5px solid #86efac;border-radius:var(--r);padding:14px 18px;margin-bottom:16px">
@@ -2841,7 +2841,7 @@ function renderAudioSaveTool(){
       <li>Open any logged-in <strong>cms.pocketfm.com</strong> tab.</li>
       <li>Click the <strong>💾 Audio Save</strong> bookmarklet from your bookmarks bar.</li>
       <li>Paste the CMS show ID or full CMS show URL, enter From and To episode numbers, then click <strong>Start Auto Save</strong>.</li>
-      <li>The bookmarklet tries the CMS API first. If an episode cannot be saved through the API, it opens the visible CMS episode row and clicks <strong>Use Current Audio → Save Audio</strong>.</li>
+      <li>The bookmarklet is API/auth-only: it uses the logged-in CMS session and reports any API failures in the log without opening CMS rows.</li>
       <li>Watch the log. Failed episodes are skipped and listed so you can retry them manually.</li>
     </ol>
   </div>
@@ -2849,7 +2849,7 @@ function renderAudioSaveTool(){
   <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:14px 18px">
     <div style="font-size:13px;font-weight:800;margin-bottom:6px">Important</div>
     <div style="font-size:11px;color:var(--muted);line-height:1.6">
-      This runs inside <code>cms.pocketfm.com</code> and uses your logged-in CMS session. If the CMS API list is blank, leave the CMS episode list visible so the fallback can scroll and open the rows.
+      This runs inside <code>cms.pocketfm.com</code> and uses your logged-in CMS session. It does not open CMS rows or click buttons; any API/auth failure is reported in the log.
     </div>
   </div>`;
   el.innerHTML=html;
