@@ -2468,12 +2468,20 @@ function _replaceNextListUrl(data){
   if(raw.startsWith('/')) return `${CMS_BASE}${raw}`;
   return `${CMS_BASE}/${raw}`;
 }
-function _replaceEpisodeListUrl(showId,view,chapPag,page){
-  const params=new URLSearchParams({show_id:showId,is_novel:'0'});
+function _replaceEpisodeListUrl(idKey,id,view,chapPag,page){
+  const params=new URLSearchParams({[idKey]:id,is_novel:'0'});
   if(view) params.set('view',view);
   if(chapPag) params.set('paginate_chapters','true');
   if(page) params.set('page_no',String(page));
   return `${CMS_BASE}/book.show_episodes?${params.toString()}`;
+}
+function _replaceSequencedUrl(endpoint,idKey,id){
+  const params=new URLSearchParams({[idKey]:id,seq_start:'1',seq_end:'5000',is_novel:'0'});
+  return `${CMS_BASE}/${endpoint}?${params.toString()}`;
+}
+function _replaceBookDetailsUrl(bookId){
+  const params=new URLSearchParams({book_id:bookId,view:'cms',info_level:'max',is_novel:'0'});
+  return `${CMS_BASE}/book.book_details?${params.toString()}`;
 }
 
 async function _fetchEpisodesFor(showId){
@@ -2483,7 +2491,7 @@ async function _fetchEpisodesFor(showId){
     const d=await r.json();
     return {status:r.status, eps:_replaceEpisodeListFromPayload(d), nextUrl:_replaceNextListUrl(d)};
   }
-  async function fetchPaginated(label, viewParam, useChapterPaginate){
+  async function fetchPaginated(label, idKey, viewParam, useChapterPaginate){
     let eps=[]; let firstStatus=200;
     const seenUrls=new Set();
     const addPage=async url=>{
@@ -2492,11 +2500,15 @@ async function _fetchEpisodesFor(showId){
       let res;
       try{ res=await getList(url); }catch(e){ return ''; }
       if(seenUrls.size===1) firstStatus=res.status;
-      if(res.eps.length) eps=eps.concat(res.eps);
+      if(res.eps.length) eps=eps.concat(res.eps.map(ep=>Object.assign({}, ep, {
+        __pf_lookup_key:idKey,
+        __pf_lookup_id:showId,
+        __pf_lookup_label:label
+      })));
       return res.nextUrl||'';
     };
 
-    let next=await addPage(_replaceEpisodeListUrl(showId,viewParam,useChapterPaginate,0));
+    let next=await addPage(_replaceEpisodeListUrl(idKey,showId,viewParam,useChapterPaginate,0));
     let guard=0;
     while(next&&guard<2000){
       guard++;
@@ -2506,19 +2518,71 @@ async function _fetchEpisodesFor(showId){
 
     for(let page=1;page<=2000;page++){
       const before=eps.length;
-      await addPage(_replaceEpisodeListUrl(showId,viewParam,useChapterPaginate,page));
+      await addPage(_replaceEpisodeListUrl(idKey,showId,viewParam,useChapterPaginate,page));
       if(eps.length===before) break;
       if(page%10===0) await sleep(300);
     }
     return {label, eps, firstStatus};
   }
+  async function fetchSequenced(label, idKey, endpoint){
+    let firstStatus=200;
+    let res;
+    try{ res=await getList(_replaceSequencedUrl(endpoint,idKey,showId)); }
+    catch(e){ return {label, eps:[], firstStatus}; }
+    firstStatus=res.status;
+    return {label, eps:res.eps.map(ep=>Object.assign({}, ep, {
+      __pf_lookup_key:idKey,
+      __pf_lookup_id:showId,
+      __pf_lookup_label:label
+    })), firstStatus};
+  }
+  async function fetchBookDetails(label){
+    let eps=[]; let firstStatus=200;
+    const seenUrls=new Set();
+    const addPage=async url=>{
+      if(seenUrls.has(url)) return '';
+      seenUrls.add(url);
+      let res;
+      try{ res=await getList(url); }catch(e){ return ''; }
+      if(seenUrls.size===1) firstStatus=res.status;
+      if(res.eps.length) eps=eps.concat(res.eps.map(ep=>Object.assign({}, ep, {
+        __pf_lookup_key:'book_id',
+        __pf_lookup_id:showId,
+        __pf_lookup_label:label
+      })));
+      return res.nextUrl||'';
+    };
+    let next=await addPage(_replaceBookDetailsUrl(showId));
+    let guard=0;
+    while(next&&guard<2000){
+      guard++;
+      next=await addPage(next);
+      if(guard%10===0) await sleep(300);
+    }
+    return {label, eps, firstStatus};
+  }
   const attempts=[
-    ['cms+chapPag','cms',true],
-    ['cms','cms',false],
-    ['plain+chapPag','',true],
-    ['plain','',false]
+    ['show:cms+chapPag','show_id','cms',true],
+    ['show:cms','show_id','cms',false],
+    ['show:plain+chapPag','show_id','',true],
+    ['show:plain','show_id','',false],
+    ['book:cms+chapPag','book_id','cms',true],
+    ['book:cms','book_id','cms',false],
+    ['book:plain+chapPag','book_id','',true],
+    ['book:plain','book_id','',false]
   ];
-  const results=await Promise.all(attempts.map(([label,v,c])=>fetchPaginated(label,v,c)));
+  const sequencedAttempts=[
+    ['show:sequenced_episodes','show_id','book.get_sequenced_episodes'],
+    ['book:sequenced_episodes','book_id','book.get_sequenced_episodes'],
+    ['show:sequenced_chapters','show_id','book.get_sequenced_chapters'],
+    ['book:sequenced_chapters','book_id','book.get_sequenced_chapters'],
+    ['book:chapter_name','book_id','book.chapter_name']
+  ];
+  const results=[
+    ...(await Promise.all(attempts.map(([label,key,v,c])=>fetchPaginated(label,key,v,c)))),
+    await fetchBookDetails('book:book_details'),
+    ...(await Promise.all(sequencedAttempts.map(([label,key,endpoint])=>fetchSequenced(label,key,endpoint))))
+  ];
   const combined=results.flatMap(r=>r.eps);
   if(!combined.length){
     // Surface auth failures clearly — every attempt 401 means token expired,
@@ -2538,9 +2602,14 @@ async function _fetchEpisodesFor(showId){
     const cid=cd.chapter_id||ep.chapter_id||'';
     if(!cid||seen.has(cid)) continue;
     seen.add(cid);
+    const lookupKey=ep.__pf_lookup_key||'';
+    const lookupId=ep.__pf_lookup_id||'';
     merged.push({
       chapter_id: cid,
-      book_id: cd.book_id || ep.book_id || '',
+      book_id: cd.book_id || ep.book_id || (lookupKey==='book_id'?lookupId:''),
+      show_id: cd.show_id || ep.show_id || ep.entity_id || (lookupKey==='show_id'?lookupId:''),
+      lookup_key: lookupKey,
+      lookup_id: lookupId,
       chapter_title: cd.chapter_title || ep.chapter_title || '',
       seq: cd.natural_sequence_number || ep.natural_sequence_number || cd.seq_number || ep.seq_number || cd.sequence_number || ep.sequence_number || cd.episode_number || ep.episode_number || cd.sn || ep.sn || 0,
       audio_duration: cd.audio_duration || ep.audio_duration || 0,
@@ -2691,14 +2760,90 @@ async function _audioBlobDuration(blob){
   });
 }
 
+function _replaceContentUrl(path, params){
+  const q=new URLSearchParams();
+  for(const [k,v] of Object.entries(params||{})){
+    if(v!==undefined&&v!==null&&v!=='') q.set(k,String(v));
+  }
+  return `${CMS_BASE}/${path}?${q.toString()}`;
+}
+
+function _replaceEpisodeIdCandidates(ep, inputId){
+  const out=[]; const seen=new Set();
+  const add=(key,value,label)=>{
+    if(!key||!value) return;
+    const sig=`${key}:${value}`;
+    if(seen.has(sig)) return;
+    seen.add(sig);
+    out.push({key,value,label});
+  };
+  add('show_id', ep.show_id, 'episode show_id');
+  add('book_id', ep.book_id, 'episode book_id');
+  if(ep.lookup_key&&ep.lookup_id) add(ep.lookup_key, ep.lookup_id, 'list '+ep.lookup_key);
+  add('show_id', inputId, 'input show_id');
+  add('book_id', inputId, 'input book_id');
+  return out;
+}
+
+async function _replaceGetSourceUrl(srcEp, ev){
+  const errors=[];
+  const ids=_replaceEpisodeIdCandidates(srcEp, _replaceState.srcShowId).concat([{key:'',value:'',label:'chapter only'}]);
+  for(const id of ids){
+    const params={type:'episode',media_type:'audio',event:ev,chapter_id:srcEp.chapter_id};
+    if(id.key) params[id.key]=id.value;
+    const r=await fetch(_replaceContentUrl('get_media_url',params), {headers:hdrs()});
+    if(!r.ok){ errors.push(`${id.label}=HTTP ${r.status}`); continue; }
+    const d=await r.json();
+    const url=d.result?.media_url||d.media_url||d.result?.url||'';
+    if(url) return {url, via:id.label, err:''};
+    errors.push(`${id.label}=empty`);
+  }
+  return {url:'', via:'', err:errors.join(', ')};
+}
+
+async function _replaceTargetDetails(tgtEp){
+  const errors=[];
+  const ids=_replaceEpisodeIdCandidates(tgtEp, _replaceState.tgtShowId);
+  const attempts=[];
+  for(const id of ids) attempts.push({id, view:'cms'});
+  for(const id of ids) attempts.push({id, view:''});
+  attempts.push({id:{key:'',value:'',label:'chapter only'}, view:''});
+  for(const attempt of attempts){
+    const params={chapter_id:tgtEp.chapter_id,is_novel:'0'};
+    if(attempt.view) params.view=attempt.view;
+    if(attempt.id.key) params[attempt.id.key]=attempt.id.value;
+    const url=_replaceContentUrl('book.episode_details',params);
+    const r=await fetch(url, {headers:hdrs()});
+    const label=`${attempt.id.label}${attempt.view?'+cms':''}`;
+    if(!r.ok){ errors.push(`${label}=HTTP ${r.status}`); continue; }
+    const d=await r.json();
+    const chapter=d.result?.chapter_details;
+    const story=d.result?.story_details;
+    if(chapter&&story) return {url, chapter, story, label};
+    errors.push(`${label}=missing`);
+  }
+  throw new Error('target episode_details missing chapter/story info — '+errors.join(', '));
+}
+
 async function _copyOneAudio(srcEp, tgtEp){
   // 1. Source media URL → download audio blob
-  const muResp=await fetch(`${CMS_BASE}/get_media_url?type=episode&media_type=audio&event=play&chapter_id=${srcEp.chapter_id}&show_id=${_replaceState.srcShowId}`, {headers:hdrs()});
-  if(!muResp.ok) throw new Error('source media URL HTTP '+muResp.status);
-  const muData=await muResp.json();
-  const playUrl=muData.result?.media_url||muData.media_url||muData.result?.url;
-  if(!playUrl) throw new Error('no media URL on source response');
-  const dl=await fetch(playUrl);
+  let playUrl='';
+  let sourceErr='';
+  for(const ev of ['download','play']){
+    const got=await _replaceGetSourceUrl(srcEp, ev);
+    if(got.url){ playUrl=got.url; _replaceLog(`  · source URL via event=${ev} (${got.via})`); break; }
+    sourceErr=got.err;
+  }
+  if(!playUrl) throw new Error('no media URL on source response — '+sourceErr);
+  let dl=await fetch(playUrl);
+  if(dl.status===403){
+    _replaceLog(`  · audio HTTP 403 — retrying with event=play`);
+    const alt=await _replaceGetSourceUrl(srcEp, 'play');
+    if(alt.url&&alt.url!==playUrl){
+      playUrl=alt.url;
+      dl=await fetch(playUrl);
+    }
+  }
   if(!dl.ok) throw new Error('audio download HTTP '+dl.status);
   const blob=await dl.blob();
   if(!blob||blob.size<1024) throw new Error(`source blob is empty/tiny (${blob?blob.size:'0'} bytes) — source chapter may have no playable audio`);
@@ -2713,13 +2858,11 @@ async function _copyOneAudio(srcEp, tgtEp){
 
   // 3. Fetch target's current episode details — pass the same params CMS UI
   //    does so we get back the canonical state including story_id.
-  const detUrl=`${CMS_BASE}/book.episode_details?chapter_id=${tgtEp.chapter_id}&view=cms&show_id=${_replaceState.tgtShowId}&is_novel=0`;
-  const detailsResp=await fetch(detUrl, {headers:hdrs()});
-  if(!detailsResp.ok) throw new Error('target episode_details HTTP '+detailsResp.status);
-  const detailsData=await detailsResp.json();
-  const tgtChapter=detailsData.result?.chapter_details;
-  const tgtStory=detailsData.result?.story_details;
-  if(!tgtChapter||!tgtStory) throw new Error('target episode_details missing chapter/story info');
+  const details=await _replaceTargetDetails(tgtEp);
+  const detUrl=details.url;
+  const tgtChapter=details.chapter;
+  const tgtStory=details.story;
+  _replaceLog(`  · target details via ${details.label}`);
   _replaceLog(`  · target story_id=${tgtStory.story_id||'?'} current s3=${tgtStory.s3_unique_key||'(empty)'}`);
 
   // 4. Presigned S3 POST policy
@@ -2763,15 +2906,18 @@ async function _copyOneAudio(srcEp, tgtEp){
     s3_unique_key: policy.s3_unique_key,
     duration: measuredDuration
   };
+  const resolvedBookId=tgtChapter.book_id||tgtEp.book_id||(tgtEp.lookup_key==='book_id'?tgtEp.lookup_id:'');
+  const resolvedShowId=tgtChapter.show_id||tgtEp.show_id||(tgtEp.lookup_key==='show_id'?tgtEp.lookup_id:'');
+  const body={
+    chapter_details: updatedChapter,
+    story_details: updatedStory,
+    view: 'cms'
+  };
+  if(resolvedBookId) body.book_id=resolvedBookId;
+  if(resolvedShowId) body.show_id=resolvedShowId;
   const notify=await fetch(`${CMS_BASE}/book.update_episode?is_novel=0`, {
     method:'POST', headers:hdrs(),
-    body:JSON.stringify({
-      chapter_details: updatedChapter,
-      story_details: updatedStory,
-      book_id: tgtChapter.book_id||tgtEp.book_id,
-      show_id: _replaceState.tgtShowId,
-      view: 'cms'
-    })
+    body:JSON.stringify(body)
   });
   if(!notify.ok){
     const errText=await notify.text().catch(()=>'');
@@ -2793,7 +2939,7 @@ async function _copyOneAudio(srcEp, tgtEp){
   // 7. Verify by re-fetching the target chapter. If story_details.s3_unique_key
   //    on the server doesn't match what we uploaded, CMS dropped our value.
   try{
-    const verify=await fetch(`${CMS_BASE}/book.episode_details?chapter_id=${tgtEp.chapter_id}&is_novel=0`, {headers:hdrs()});
+    const verify=await fetch(detUrl, {headers:hdrs()});
     if(verify.ok){
       const vd=await verify.json();
       const persistedKey=vd.result?.story_details?.s3_unique_key||'';
@@ -2845,7 +2991,7 @@ function renderAudioReplaceTool(){
 
   // Build the bookmarklet href. We point to a hosted script on the same
   // GitHub Pages site so CMS pulls fresh code on each click.
-  const bmkHref='javascript:(function(){var v=\'2026-06-15.1-api-list-parser\';if(window.__AR_PANEL&&window.__AR_VERSION===v){window.__AR_PANEL.style.display=\'block\';return;}if(window.__AR_PANEL){try{window.__AR_PANEL.remove();}catch(e){}window.__AR_PANEL=null;}var s=document.createElement(\'script\');s.src=\'https://solankigeetika-bot.github.io/Patch-Generation/audio-replace.js?v=20260615.1&t=\'+Date.now();s.onerror=function(){alert(\'Failed to load Audio Replace — check internet\');};document.body.appendChild(s);})();';
+  const bmkHref='javascript:(function(){var v=\'2026-06-15.2-api-id-fallbacks\';if(window.__AR_PANEL&&window.__AR_VERSION===v){window.__AR_PANEL.style.display=\'block\';return;}if(window.__AR_PANEL){try{window.__AR_PANEL.remove();}catch(e){}window.__AR_PANEL=null;}var s=document.createElement(\'script\');s.src=\'https://solankigeetika-bot.github.io/Patch-Generation/audio-replace.js?v=20260615.2&t=\'+Date.now();s.onerror=function(){alert(\'Failed to load Audio Replace — check internet\');};document.body.appendChild(s);})();';
 
   let html=`<div style="margin-bottom:14px">
     <div style="font-size:16px;font-weight:800">🔀 Audio Replace</div>

@@ -2,7 +2,7 @@
 // API calls share the same origin/session as CMS UI itself. Loaded via the
 // PatchStudio "Audio Replace" bookmarklet.
 (function(){
-  const VERSION='2026-06-15.1-api-list-parser';
+  const VERSION='2026-06-15.2-api-id-fallbacks';
   if(window.__AR_PANEL&&window.__AR_VERSION===VERSION){ window.__AR_PANEL.style.display='block'; return; }
   if(window.__AR_PANEL){
     try{ window.__AR_PANEL.remove(); }catch{}
@@ -116,22 +116,30 @@
     if(raw.startsWith('/')) return `${CMS}${raw}`;
     return `${CMS}/${raw}`;
   }
-  function buildEpisodeListUrl(showId,view,chapPag,page){
-    const params=new URLSearchParams({show_id:showId,is_novel:'0'});
+  function buildEpisodeListUrl(idKey,id,view,chapPag,page){
+    const params=new URLSearchParams({[idKey]:id,is_novel:'0'});
     if(view) params.set('view',view);
     if(chapPag) params.set('paginate_chapters','true');
     if(page) params.set('page_no',String(page));
     return `${CMS}/book.show_episodes?${params.toString()}`;
   }
+  function buildSequencedUrl(endpoint,idKey,id){
+    const params=new URLSearchParams({[idKey]:id,seq_start:'1',seq_end:'5000',is_novel:'0'});
+    return `${CMS}/${endpoint}?${params.toString()}`;
+  }
+  function buildBookDetailsUrl(bookId){
+    const params=new URLSearchParams({book_id:bookId,view:'cms',info_level:'max',is_novel:'0'});
+    return `${CMS}/book.book_details?${params.toString()}`;
+  }
 
-  async function fetchEps(showId){
+  async function fetchEps(inputId){
     async function getList(url){
       const r=await fetch(url,{headers:hdrs(),credentials:'include'});
       if(!r.ok) return {status:r.status, eps:[], nextUrl:''};
       const d=await r.json();
       return {status:r.status, eps:episodeListFromPayload(d), nextUrl:nextListUrl(d)};
     }
-    async function paged(label, view, chapPag){
+    async function paged(label, idKey, view, chapPag){
       let eps=[], firstStatus=200;
       const seenUrls=new Set();
       const addPage=async url=>{
@@ -141,11 +149,15 @@
         try{ res=await getList(url); }
         catch(e){ return ''; }
         if(seenUrls.size===1) firstStatus=res.status;
-        if(res.eps.length) eps=eps.concat(res.eps);
+        if(res.eps.length) eps=eps.concat(res.eps.map(ep=>Object.assign({}, ep, {
+          __pf_lookup_key:idKey,
+          __pf_lookup_id:inputId,
+          __pf_lookup_label:label
+        })));
         return res.nextUrl||'';
       };
 
-      let next=await addPage(buildEpisodeListUrl(showId,view,chapPag,0));
+      let next=await addPage(buildEpisodeListUrl(idKey,inputId,view,chapPag,0));
       let guard=0;
       while(next&&guard<2000){
         guard++;
@@ -155,19 +167,72 @@
 
       for(let page=1;page<=2000;page++){
         const before=eps.length;
-        await addPage(buildEpisodeListUrl(showId,view,chapPag,page));
+        await addPage(buildEpisodeListUrl(idKey,inputId,view,chapPag,page));
         if(eps.length===before) break;
         if(page%10===0) await new Promise(res=>setTimeout(res,300));
       }
       return {label, eps, firstStatus};
     }
+    async function sequenced(label, idKey, endpoint){
+      let firstStatus=200;
+      let res;
+      try{ res=await getList(buildSequencedUrl(endpoint,idKey,inputId)); }
+      catch(e){ return {label, eps:[], firstStatus}; }
+      firstStatus=res.status;
+      return {label, eps:res.eps.map(ep=>Object.assign({}, ep, {
+        __pf_lookup_key:idKey,
+        __pf_lookup_id:inputId,
+        __pf_lookup_label:label
+      })), firstStatus};
+    }
+    async function bookDetails(label){
+      let eps=[], firstStatus=200;
+      const seenUrls=new Set();
+      const addPage=async url=>{
+        if(seenUrls.has(url)) return '';
+        seenUrls.add(url);
+        let res;
+        try{ res=await getList(url); }
+        catch(e){ return ''; }
+        if(seenUrls.size===1) firstStatus=res.status;
+        if(res.eps.length) eps=eps.concat(res.eps.map(ep=>Object.assign({}, ep, {
+          __pf_lookup_key:'book_id',
+          __pf_lookup_id:inputId,
+          __pf_lookup_label:label
+        })));
+        return res.nextUrl||'';
+      };
+      let next=await addPage(buildBookDetailsUrl(inputId));
+      let guard=0;
+      while(next&&guard<2000){
+        guard++;
+        next=await addPage(next);
+        if(guard%10===0) await new Promise(res=>setTimeout(res,300));
+      }
+      return {label, eps, firstStatus};
+    }
     const attempts=[
-      ['cms+chapPag','cms',true],
-      ['cms','cms',false],
-      ['plain+chapPag','',true],
-      ['plain','',false]
+      ['show:cms+chapPag','show_id','cms',true],
+      ['show:cms','show_id','cms',false],
+      ['show:plain+chapPag','show_id','',true],
+      ['show:plain','show_id','',false],
+      ['book:cms+chapPag','book_id','cms',true],
+      ['book:cms','book_id','cms',false],
+      ['book:plain+chapPag','book_id','',true],
+      ['book:plain','book_id','',false]
     ];
-    const results=await Promise.all(attempts.map(([label,v,c])=>paged(label,v,c)));
+    const sequencedAttempts=[
+      ['show:sequenced_episodes','show_id','book.get_sequenced_episodes'],
+      ['book:sequenced_episodes','book_id','book.get_sequenced_episodes'],
+      ['show:sequenced_chapters','show_id','book.get_sequenced_chapters'],
+      ['book:sequenced_chapters','book_id','book.get_sequenced_chapters'],
+      ['book:chapter_name','book_id','book.chapter_name']
+    ];
+    const results=[
+      ...(await Promise.all(attempts.map(([label,key,v,c])=>paged(label,key,v,c)))),
+      await bookDetails('book:book_details'),
+      ...(await Promise.all(sequencedAttempts.map(([label,key,endpoint])=>sequenced(label,key,endpoint))))
+    ];
     const combined=results.flatMap(r=>r.eps);
     if(!combined.length){
       const allAuth=results.every(r=>r.firstStatus===401||r.firstStatus===403);
@@ -180,9 +245,14 @@
       const cid=cd.chapter_id||ep.chapter_id||'';
       if(!cid||seen.has(cid)) continue;
       seen.add(cid);
+      const lookupKey=ep.__pf_lookup_key||'';
+      const lookupId=ep.__pf_lookup_id||'';
       merged.push({
         chapter_id:cid,
-        book_id:cd.book_id||ep.book_id||'',
+        book_id:cd.book_id||ep.book_id||(lookupKey==='book_id'?lookupId:''),
+        show_id:cd.show_id||ep.show_id||ep.entity_id||(lookupKey==='show_id'?lookupId:''),
+        lookup_key:lookupKey,
+        lookup_id:lookupId,
         chapter_title:cd.chapter_title||ep.chapter_title||'',
         seq:cd.natural_sequence_number||ep.natural_sequence_number||cd.seq_number||ep.seq_number||cd.sequence_number||ep.sequence_number||cd.episode_number||ep.episode_number||cd.sn||ep.sn||0,
         audio_duration:cd.audio_duration||ep.audio_duration||0,
@@ -240,19 +310,53 @@
     throw err;
   }
 
+  function contentUrl(path, params){
+    const q=new URLSearchParams();
+    for(const [k,v] of Object.entries(params||{})){
+      if(v!==undefined&&v!==null&&v!=='') q.set(k,String(v));
+    }
+    return `${CMS}/${path}?${q.toString()}`;
+  }
+
+  function episodeIdCandidates(ep, inputId){
+    const out=[]; const seen=new Set();
+    const add=(key,value,label)=>{
+      if(!key||!value) return;
+      const sig=`${key}:${value}`;
+      if(seen.has(sig)) return;
+      seen.add(sig);
+      out.push({key,value,label});
+    };
+    add('show_id', ep.show_id, 'episode show_id');
+    add('book_id', ep.book_id, 'episode book_id');
+    if(ep.lookup_key&&ep.lookup_id) add(ep.lookup_key, ep.lookup_id, 'list '+ep.lookup_key);
+    add('show_id', inputId, 'input show_id');
+    add('book_id', inputId, 'input book_id');
+    return out;
+  }
+
   async function copyOne(srcEp, tgtEp){
     // 1. Source audio download — try event=download first (raw file), fall back
     //    to event=play (which may be DRM-streamed and 403 on direct fetch).
     async function getSourceUrl(ev){
-      const r=await rlFetch(`${CMS}/get_media_url?type=episode&media_type=audio&event=${ev}&chapter_id=${srcEp.chapter_id}&show_id=${state.srcShowId}`,{headers:hdrs(),credentials:'include'});
-      if(!r.ok) return {url:'', err:'media URL HTTP '+r.status};
-      const d=await r.json();
-      return {url: d.result?.media_url||d.media_url||d.result?.url||'', err:''};
+      const errors=[];
+      const ids=episodeIdCandidates(srcEp, state.srcShowId).concat([{key:'',value:'',label:'chapter only'}]);
+      for(const id of ids){
+        const params={type:'episode',media_type:'audio',event:ev,chapter_id:srcEp.chapter_id};
+        if(id.key) params[id.key]=id.value;
+        const r=await rlFetch(contentUrl('get_media_url',params),{headers:hdrs(),credentials:'include'});
+        if(!r.ok){ errors.push(`${id.label}=HTTP ${r.status}`); continue; }
+        const d=await r.json();
+        const url=d.result?.media_url||d.media_url||d.result?.url||'';
+        if(url) return {url, err:'', via:id.label};
+        errors.push(`${id.label}=empty`);
+      }
+      return {url:'', err:errors.join(', ')};
     }
     let playUrl='';
     for(const ev of ['download','play']){
       const got=await getSourceUrl(ev);
-      if(got.url){ playUrl=got.url; log(`  · source URL via event=${ev}`); break; }
+      if(got.url){ playUrl=got.url; log(`  · source URL via event=${ev} (${got.via})`); break; }
     }
     if(!playUrl) throw new Error('no media URL on source (tried download + play)');
     let dl=await fetch(playUrl);
@@ -276,13 +380,34 @@
     log(`  · duration ${duration}s`);
 
     // 2. Target episode_details (BEFORE upload)
-    const detUrl=`${CMS}/book.episode_details?chapter_id=${tgtEp.chapter_id}&view=cms&show_id=${state.tgtShowId}&is_novel=0`;
-    const detResp=await rlFetch(detUrl,{headers:hdrs(),credentials:'include'});
-    if(!detResp.ok) throw new Error('target episode_details HTTP '+detResp.status);
-    const det=await detResp.json();
-    let tgtChapter=det.result?.chapter_details;
-    let tgtStory=det.result?.story_details;
-    if(!tgtChapter||!tgtStory) throw new Error('target details missing');
+    async function getTargetDetails(){
+      const errors=[];
+      const ids=episodeIdCandidates(tgtEp, state.tgtShowId);
+      const attempts=[];
+      for(const id of ids) attempts.push({id, view:'cms'});
+      for(const id of ids) attempts.push({id, view:''});
+      attempts.push({id:{key:'',value:'',label:'chapter only'}, view:''});
+      for(const attempt of attempts){
+        const params={chapter_id:tgtEp.chapter_id,is_novel:'0'};
+        if(attempt.view) params.view=attempt.view;
+        if(attempt.id.key) params[attempt.id.key]=attempt.id.value;
+        const url=contentUrl('book.episode_details',params);
+        const r=await rlFetch(url,{headers:hdrs(),credentials:'include'});
+        const label=`${attempt.id.label}${attempt.view?'+cms':''}`;
+        if(!r.ok){ errors.push(`${label}=HTTP ${r.status}`); continue; }
+        const d=await r.json();
+        const chapter=d.result?.chapter_details;
+        const story=d.result?.story_details;
+        if(chapter&&story) return {url, chapter, story, label};
+        errors.push(`${label}=missing`);
+      }
+      throw new Error('target details missing — '+errors.join(', '));
+    }
+    const targetDetails=await getTargetDetails();
+    const detUrl=targetDetails.url;
+    let tgtChapter=targetDetails.chapter;
+    let tgtStory=targetDetails.story;
+    log(`  · target details via ${targetDetails.label}`);
     const beforeKey=tgtStory.s3_unique_key||'(empty)';
     log(`  · target story_id=${tgtStory.story_id||'?'} key-before=${beforeKey}`);
 
@@ -326,13 +451,15 @@
 
     // 6. update_episode — using the canonical key from server state
     const cmsNow=()=>{const d=new Date(),p=n=>String(n).padStart(2,'0');return `${d.getUTCFullYear()}-${p(d.getUTCMonth()+1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`;};
+    const resolvedBookId=tgtChapter.book_id||tgtEp.book_id||(tgtEp.lookup_key==='book_id'?tgtEp.lookup_id:'');
+    const resolvedShowId=tgtChapter.show_id||tgtEp.show_id||(tgtEp.lookup_key==='show_id'?tgtEp.lookup_id:'');
     const body={
       chapter_details: {...tgtChapter, audio_duration: duration, media_timestamp: cmsNow()},
       story_details: {...tgtStory, s3_unique_key: commitKey, duration: duration},
-      book_id: tgtChapter.book_id||tgtEp.book_id,
-      show_id: state.tgtShowId,
       view: 'cms'
     };
+    if(resolvedBookId) body.book_id=resolvedBookId;
+    if(resolvedShowId) body.show_id=resolvedShowId;
     const notify=await rlFetch(`${CMS}/book.update_episode?is_novel=0`,{
       method:'POST',
       headers:hdrs(),
