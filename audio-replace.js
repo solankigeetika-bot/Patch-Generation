@@ -2,7 +2,7 @@
 // API calls share the same origin/session as CMS UI itself. Loaded via the
 // PatchStudio "Audio Replace" bookmarklet.
 (function(){
-  const VERSION='2026-06-15.3-cms-origin-api';
+  const VERSION='2026-06-15.4-session-first-api';
   if(window.__AR_PANEL&&window.__AR_VERSION===VERSION){ window.__AR_PANEL.style.display='block'; return; }
   if(window.__AR_PANEL){
     try{ window.__AR_PANEL.remove(); }catch{}
@@ -55,6 +55,16 @@
       'auth-token':'web-auth',
       'source':'cms'
     };
+  }
+  function headerCandidates(base){
+    const token={label:'token', headers:hdrs()};
+    if(base?.key==='cms-origin'){
+      return [
+        {label:'session', headers:{'Content-Type':'application/json'}},
+        token
+      ];
+    }
+    return [token];
   }
   function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
 
@@ -139,10 +149,26 @@
 
   async function fetchEps(inputId){
     async function getList(url, base){
-      const r=await fetch(url,{headers:hdrs(),credentials:'include'});
-      if(!r.ok) return {status:r.status, eps:[], nextUrl:''};
-      const d=await r.json();
-      return {status:r.status, eps:episodeListFromPayload(d), nextUrl:nextListUrl(d,base)};
+      let best={status:0, eps:[], nextUrl:'', authLabel:''};
+      for(const hc of headerCandidates(base)){
+        const r=await fetch(url,{headers:hc.headers,credentials:'include'});
+        if(!r.ok){
+          if(!best.status) best={status:r.status, eps:[], nextUrl:'', authLabel:hc.label};
+          continue;
+        }
+        let d;
+        try{ d=await r.json(); }
+        catch(e){
+          if(!best.status) best={status:r.status, eps:[], nextUrl:'', authLabel:hc.label};
+          continue;
+        }
+        const eps=episodeListFromPayload(d);
+        const nextUrl=nextListUrl(d,base);
+        const res={status:r.status, eps, nextUrl, authLabel:hc.label};
+        if(eps.length||nextUrl) return res;
+        if(!best.status||best.status!==200) best=res;
+      }
+      return best;
     }
     async function paged(base, label, idKey, view, chapPag){
       let eps=[], firstStatus=200;
@@ -159,7 +185,8 @@
           __pf_lookup_id:inputId,
           __pf_lookup_label:label,
           __pf_base_key:base.key,
-          __pf_base_url:base.url
+          __pf_base_url:base.url,
+          __pf_auth_label:res.authLabel
         })));
         return res.nextUrl||'';
       };
@@ -191,7 +218,8 @@
         __pf_lookup_id:inputId,
         __pf_lookup_label:label,
         __pf_base_key:base.key,
-        __pf_base_url:base.url
+        __pf_base_url:base.url,
+        __pf_auth_label:res.authLabel
       })), firstStatus};
     }
     async function bookDetails(base, label){
@@ -209,7 +237,8 @@
           __pf_lookup_id:inputId,
           __pf_lookup_label:label,
           __pf_base_key:base.key,
-          __pf_base_url:base.url
+          __pf_base_url:base.url,
+          __pf_auth_label:res.authLabel
         })));
         return res.nextUrl||'';
       };
@@ -265,6 +294,7 @@
       const lookupId=ep.__pf_lookup_id||'';
       const lookupBaseKey=ep.__pf_base_key||'';
       const lookupBaseUrl=ep.__pf_base_url||'';
+      const lookupAuthLabel=ep.__pf_auth_label||'';
       merged.push({
         chapter_id:cid,
         book_id:cd.book_id||ep.book_id||(lookupKey==='book_id'?lookupId:''),
@@ -273,6 +303,7 @@
         lookup_id:lookupId,
         lookup_base_key:lookupBaseKey,
         lookup_base_url:lookupBaseUrl,
+        lookup_auth_label:lookupAuthLabel,
         chapter_title:cd.chapter_title||ep.chapter_title||'',
         seq:cd.natural_sequence_number||ep.natural_sequence_number||cd.seq_number||ep.seq_number||cd.sequence_number||ep.sequence_number||cd.episode_number||ep.episode_number||cd.sn||ep.sn||0,
         audio_duration:cd.audio_duration||ep.audio_duration||0,
@@ -350,6 +381,12 @@
     return out;
   }
 
+  function orderedHeaderCandidates(base, ep){
+    const all=headerCandidates(base);
+    if(!ep?.lookup_auth_label) return all;
+    return all.slice().sort((a,b)=>(a.label===ep.lookup_auth_label?-1:0)+(b.label===ep.lookup_auth_label?1:0));
+  }
+
   function episodeIdCandidates(ep, inputId){
     const out=[]; const seen=new Set();
     const add=(key,value,label)=>{
@@ -375,15 +412,17 @@
       const ids=episodeIdCandidates(srcEp, state.srcShowId).concat([{key:'',value:'',label:'chapter only'}]);
       for(const base of contentBaseCandidates(srcEp)){
         for(const id of ids){
-          const params={type:'episode',media_type:'audio',event:ev,chapter_id:srcEp.chapter_id};
-          if(id.key) params[id.key]=id.value;
-          const r=await rlFetch(contentUrl('get_media_url',params,base),{headers:hdrs(),credentials:'include'});
-          const label=`${base.key}:${id.label}`;
-          if(!r.ok){ errors.push(`${label}=HTTP ${r.status}`); continue; }
-          const d=await r.json();
-          const url=d.result?.media_url||d.media_url||d.result?.url||'';
-          if(url) return {url, err:'', via:label};
-          errors.push(`${label}=empty`);
+          for(const hc of orderedHeaderCandidates(base, srcEp)){
+            const params={type:'episode',media_type:'audio',event:ev,chapter_id:srcEp.chapter_id};
+            if(id.key) params[id.key]=id.value;
+            const r=await rlFetch(contentUrl('get_media_url',params,base),{headers:hc.headers,credentials:'include'});
+            const label=`${base.key}:${hc.label}:${id.label}`;
+            if(!r.ok){ errors.push(`${label}=HTTP ${r.status}`); continue; }
+            const d=await r.json();
+            const url=d.result?.media_url||d.media_url||d.result?.url||'';
+            if(url) return {url, err:'', via:label};
+            errors.push(`${label}=empty`);
+          }
         }
       }
       return {url:'', err:errors.join(', ')};
@@ -424,24 +463,27 @@
       attempts.push({id:{key:'',value:'',label:'chapter only'}, view:''});
       for(const base of contentBaseCandidates(tgtEp)){
         for(const attempt of attempts){
-          const params={chapter_id:tgtEp.chapter_id,is_novel:'0'};
-          if(attempt.view) params.view=attempt.view;
-          if(attempt.id.key) params[attempt.id.key]=attempt.id.value;
-          const url=contentUrl('book.episode_details',params,base);
-          const r=await rlFetch(url,{headers:hdrs(),credentials:'include'});
-          const label=`${base.key}:${attempt.id.label}${attempt.view?'+cms':''}`;
-          if(!r.ok){ errors.push(`${label}=HTTP ${r.status}`); continue; }
-          const d=await r.json();
-          const chapter=d.result?.chapter_details;
-          const story=d.result?.story_details;
-          if(chapter&&story) return {url, chapter, story, label, base};
-          errors.push(`${label}=missing`);
+          for(const hc of orderedHeaderCandidates(base, tgtEp)){
+            const params={chapter_id:tgtEp.chapter_id,is_novel:'0'};
+            if(attempt.view) params.view=attempt.view;
+            if(attempt.id.key) params[attempt.id.key]=attempt.id.value;
+            const url=contentUrl('book.episode_details',params,base);
+            const r=await rlFetch(url,{headers:hc.headers,credentials:'include'});
+            const label=`${base.key}:${hc.label}:${attempt.id.label}${attempt.view?'+cms':''}`;
+            if(!r.ok){ errors.push(`${label}=HTTP ${r.status}`); continue; }
+            const d=await r.json();
+            const chapter=d.result?.chapter_details;
+            const story=d.result?.story_details;
+            if(chapter&&story) return {url, chapter, story, label, base, headers:hc.headers};
+            errors.push(`${label}=missing`);
+          }
         }
       }
       throw new Error('target details missing — '+errors.join(', '));
     }
     const targetDetails=await getTargetDetails();
     const detUrl=targetDetails.url;
+    const targetHeaders=targetDetails.headers||hdrs();
     let tgtChapter=targetDetails.chapter;
     let tgtStory=targetDetails.story;
     log(`  · target details via ${targetDetails.label}`);
@@ -471,7 +513,7 @@
     await new Promise(r=>setTimeout(r, 1500));
     let postKey=beforeKey;
     try{
-      const a=await rlFetch(detUrl,{headers:hdrs(),credentials:'include'});
+      const a=await rlFetch(detUrl,{headers:targetHeaders,credentials:'include'});
       if(a.ok){
         const ad=await a.json();
         if(ad.result?.story_details){
@@ -499,7 +541,7 @@
     if(resolvedShowId) body.show_id=resolvedShowId;
     const notify=await rlFetch(contentUrl('book.update_episode',{is_novel:'0'},targetDetails.base),{
       method:'POST',
-      headers:hdrs(),
+      headers:targetHeaders,
       credentials:'include',
       body: JSON.stringify(body)
     });
@@ -508,7 +550,7 @@
 
     // 7. Verify by re-fetching — log only, don't throw on binding warning.
     try{
-      const v=await rlFetch(detUrl,{headers:hdrs(),credentials:'include'});
+      const v=await rlFetch(detUrl,{headers:targetHeaders,credentials:'include'});
       if(v.ok){
         const vd=await v.json();
         const persistedKey=vd.result?.story_details?.s3_unique_key||'';
