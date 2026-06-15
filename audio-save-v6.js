@@ -3,7 +3,7 @@
 // load episodes, read episode_details, then create the episode from the
 // generated TTS media without depending on visible rows in the CMS page.
 (function(){
-  const VERSION='2026-06-05.1-api-dom-fallback';
+  const VERSION='2026-06-15.1-published-fallback';
   if(window.__ASV_PANEL&&window.__ASV_VERSION===VERSION){
     window.__ASV_PANEL.style.display='block';
     return;
@@ -130,7 +130,16 @@
     const m=s.match(/(?:show_id|id)=([a-f0-9]{20,})/i)||s.match(/([a-f0-9]{20,})/i);
     if(!m) return null;
     const id=m[1];
-    return {url:`${CMS_SHOW_BASE}?tab=to_be_recorded&id=${encodeURIComponent(id)}`, showId:id};
+    const currentTab=(()=>{
+      try{
+        const u=new URL(location.href);
+        if(u.hostname==='cms.pocketfm.com'&&u.pathname.includes('/shows/audiobooks')){
+          return u.searchParams.get('tab')||'published';
+        }
+      }catch{}
+      return 'published';
+    })();
+    return {url:`${CMS_SHOW_BASE}?tab=${encodeURIComponent(currentTab)}&id=${encodeURIComponent(id)}`, showId:id};
   }
   function looksLikeEpisode(v){
     if(!v||typeof v!=='object') return false;
@@ -822,7 +831,7 @@
     try{
       const doc=docOf(w);
       const body=norm(doc.body?.innerText||doc.body?.textContent||'');
-      return /\bEpisode\s+\d+\b/i.test(body)||/\bTo Be Recorded\b/i.test(body);
+      return /\bEpisode\s+\d+\b/i.test(body)||/\bEp\s+\d+\b/i.test(body)||/\b(To Be Recorded|Published)\b/i.test(body);
     }catch{ return false; }
   }
   async function waitForEpisodeListOrRow(seq,w,timeout=EPISODE_LIST_WAIT_MS){
@@ -942,7 +951,8 @@
     state.from=(document.getElementById('asv-from')?.value||'').trim();
     state.to=(document.getElementById('asv-to')?.value||'').trim();
     state.delayMs=Math.max(700,Number(document.getElementById('asv-delay')?.value||state.delayMs)||1800);
-    state.clickMainSave=!!document.getElementById('asv-main-save')?.checked;
+    const mainSaveEl=document.getElementById('asv-main-save');
+    state.clickMainSave=mainSaveEl ? !!mainSaveEl.checked : state.clickMainSave!==false;
     persist();
   }
   function buildRange(from,to){
@@ -969,12 +979,13 @@
     let ok=0,fail=0;
     try{
       let selected=[];
+      let missing=[];
       let useDomFallback=false;
       try{
         state.eps=await fetchEps(target.showId);
         const bySeq=new Map(state.eps.map(ep=>[Number(ep.seq),ep]));
         selected=eps.map(seq=>bySeq.get(Number(seq))).filter(Boolean);
-        const missing=eps.filter(seq=>!bySeq.has(Number(seq)));
+        missing=eps.filter(seq=>!bySeq.has(Number(seq)));
         log(`CMS API loaded ${state.eps.length} episodes; selected ${selected.length} for ${state.from}-${state.to}`);
         if(missing.length) log(`Range not found in API: ${missing.join(', ')}`,'warn');
         if(!selected.length) useDomFallback=true;
@@ -1003,8 +1014,25 @@
             await saveEpisodeNumber(ep,target.showId);
             ok++;
           }catch(e){
+            log(`Ep ${ep.seq} API save failed: ${e.message}; trying visible-row fallback`,'warn');
+            try{
+              await saveEpisodeByVisibleRow(ep.seq);
+              ok++;
+            }catch(fallbackErr){
+              fail++;
+              log(`Ep ${ep.seq} failed: ${fallbackErr.message}`,'err');
+            }
+          }
+          if(!state.stop) await sleep(state.delayMs);
+        }
+        for(const seq of missing){
+          if(state.stop){ log('Stopped by user','warn'); break; }
+          try{
+            await saveEpisodeByVisibleRow(seq);
+            ok++;
+          }catch(e){
             fail++;
-            log(`Ep ${ep.seq} failed: ${e.message}`,'err');
+            log(`Ep ${seq} failed: ${e.message}`,'err');
           }
           if(!state.stop) await sleep(state.delayMs);
         }
@@ -1034,7 +1062,7 @@
     </div>
     <div style="padding:13px 14px">
       <div style="background:#f0fdf4;border:1px solid #86efac;border-radius:9px;padding:10px 12px;margin-bottom:10px;color:#14532d;font-size:12px;line-height:1.45">
-        Paste the CMS show ID or full CMS show URL, enter the episode range, then start. It uses the CMS API first; if CMS returns an empty list, it opens the visible episode rows and clicks Use Current Audio -> Save Audio.
+        Paste the CMS show ID or full CMS show URL, enter the episode range, then start. It uses the CMS API first; if an episode cannot be saved through the API, it opens the visible episode row and clicks Use Current Audio -> Save Audio.
       </div>
 
       <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:9px;padding:10px 12px;margin-bottom:10px">
@@ -1050,6 +1078,7 @@
 
       <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:10px;font-size:11px;color:#475569">
         <label>Delay <input id="asv-delay" type="number" min="700" step="100" value="${state.delayMs}" onchange="window.__ASV_set('delayMs',Math.max(700,Number(this.value)||1800))" style="width:82px;padding:4px;border:1px solid #cbd5e1;border-radius:5px"/> ms</label>
+        <label style="display:flex;align-items:center;gap:5px"><input id="asv-main-save" type="checkbox" ${state.clickMainSave?'checked':''} onchange="window.__ASV_set('clickMainSave',this.checked)" style="accent-color:#16a34a"/> Click page Save after Save Audio</label>
       </div>
 
       <div style="font-size:11px;color:#64748b;line-height:1.45;margin-bottom:10px">
