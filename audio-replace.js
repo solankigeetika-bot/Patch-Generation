@@ -2,7 +2,7 @@
 // API calls share the same origin/session as CMS UI itself. Loaded via the
 // PatchStudio "Audio Replace" bookmarklet.
 (function(){
-  const VERSION='2026-06-16.1-story-shaped-episodes';
+  const VERSION='2026-06-16.3-api-auth-only';
   if(window.__AR_PANEL&&window.__AR_VERSION===VERSION){ window.__AR_PANEL.style.display='block'; return; }
   if(window.__AR_PANEL){
     try{ window.__AR_PANEL.remove(); }catch{}
@@ -11,30 +11,79 @@
 
   const CMS='https://api.cms.pocketfm.com/v2/content_api';
   const UPLOAD_BASE='https://api.cms.pocketfm.com/v2/upload';
-  const CMS_ORIGIN_BASE=(location.hostname||'').endsWith('cms.pocketfm.com') ? `${location.origin}/content_api` : 'https://cms.pocketfm.com/content_api';
   const CONTENT_BASES=[
-    {key:'cms-origin', url:CMS_ORIGIN_BASE},
     {key:'api-v2', url:CMS}
   ];
   window.__AR_VERSION=VERSION;
 
   // ---- auth ----
-  function pickAuthToken(){
-    // Try common storage keys
-    const keys=['access-token','access_token','accessToken','token','auth_token','authToken','ps_token'];
-    for(const k of keys){
-      const v=localStorage.getItem(k);
-      if(v && v.length>20) return v;
+  function storageList(){
+    return [localStorage,sessionStorage].filter(Boolean);
+  }
+  function storageVal(key){
+    for(const store of storageList()){
+      try{
+        const v=store.getItem(key);
+        if(v) return v;
+      }catch{}
     }
     return '';
   }
-  function pickUid(){
-    const keys=['uid','user_id','userId','ps_uid'];
-    for(const k of keys){
-      const v=localStorage.getItem(k);
-      if(v && v.length>3) return v;
+  function storageKeys(){
+    const out=[];
+    for(const store of storageList()){
+      try{
+        for(let i=0;i<store.length;i++) out.push(store.key(i));
+      }catch{}
+    }
+    return out.filter(Boolean);
+  }
+  function findNestedValue(obj,names,min,depth=0,seen=new Set()){
+    if(!obj||typeof obj!=='object'||depth>5||seen.has(obj)) return '';
+    seen.add(obj);
+    for(const name of names){
+      const v=obj[name]||(obj.user_info&&obj.user_info[name])||(obj.userInfo&&obj.userInfo[name])||(obj.auth&&obj.auth[name]);
+      if(v&&String(v).length>=min) return String(v);
+    }
+    for(const val of Object.values(obj)){
+      if(typeof val==='string'&&/^\s*[\[{]/.test(val)){
+        try{
+          const found=findNestedValue(JSON.parse(val),names,min,depth+1,seen);
+          if(found) return found;
+        }catch{}
+      }else if(val&&typeof val==='object'){
+        const found=findNestedValue(val,names,min,depth+1,seen);
+        if(found) return found;
+      }
     }
     return '';
+  }
+  function pickStorageValue(exact,keyRe,min){
+    for(const key of exact){
+      const v=storageVal(key);
+      if(v&&v.length>=min) return v;
+    }
+    for(const key of storageKeys()){
+      if(keyRe.test(key)){
+        const v=storageVal(key);
+        if(v&&v.length>=min) return v;
+      }
+    }
+    for(const key of storageKeys()){
+      const raw=storageVal(key);
+      if(!raw||!/^\s*[\[{]/.test(raw)) continue;
+      try{
+        const found=findNestedValue(JSON.parse(raw),exact,min);
+        if(found) return found;
+      }catch{}
+    }
+    return '';
+  }
+  function pickAuthToken(){
+    return pickStorageValue(['token','access-token','access_token','accessToken','auth_token','authToken','id_token','idToken','sessionToken','ps_token'],/token|auth|access/i,20);
+  }
+  function pickUid(){
+    return pickStorageValue(['uid','user_id','userId','ps_uid'],/uid|user.?id/i,3);
   }
   const state={
     token: pickAuthToken(),
@@ -58,12 +107,6 @@
   }
   function headerCandidates(base){
     const token={label:'token', headers:hdrs()};
-    if(base?.key==='cms-origin'){
-      return [
-        {label:'session', headers:{'Content-Type':'application/json'}},
-        token
-      ];
-    }
     return [token];
   }
   function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
@@ -158,8 +201,18 @@
     return walk(data)||[];
   }
   function payloadShape(data){
+    function shortDiag(v){
+      if(v===undefined||v===null||v==='') return '';
+      if(typeof v==='object'){
+        try{ v=JSON.stringify(v); }catch{ v=String(v); }
+      }
+      return String(v).replace(/\s+/g,' ').slice(0,120);
+    }
     const roots=[['result',data?.result],['results',data?.results],['data',data?.data],['root',data]].filter(([,v])=>v&&typeof v==='object');
     const parts=[];
+    const status=shortDiag(pick(data?.status,data?.code,data?.result?.status,data?.result?.code,data?.data?.status,data?.data?.code));
+    const message=shortDiag(pick(data?.message,data?.error,data?.detail,data?.result?.message,data?.result?.error,data?.data?.message,data?.data?.error));
+    if(status||message) parts.push(`${status?`status=${status}`:''}${message?`${status?' ':''}msg=${message}`:''}`);
     for(const [name,obj] of roots.slice(0,3)){
       if(Array.isArray(obj)){ parts.push(`${name}[${obj.length}]`); continue; }
       const keys=Object.keys(obj).slice(0,8);
@@ -171,10 +224,18 @@
   function nextListUrl(data, base){
     const raw=data?.result?.next_url||data?.results?.next_url||data?.data?.next_url||data?.next_url||'';
     if(!raw) return '';
-    if(/^https?:\/\//i.test(raw)) return raw;
+    if(/^https?:\/\//i.test(raw)){
+      try{
+        const u=new URL(raw);
+        if(u.hostname==='cms.pocketfm.com'&&u.pathname.startsWith('/content_api/')){
+          return `${CMS}${u.pathname.replace(/^\/content_api/,'')}${u.search}`;
+        }
+      }catch{}
+      return raw;
+    }
     if(raw.startsWith('/v2/content_api/')) return `https://api.cms.pocketfm.com${raw}`;
-    if(raw.startsWith('/content_api/')) return base?.key==='cms-origin' ? `${location.origin}${raw}` : `${CMS}${raw.replace(/^\/content_api/,'')}`;
-    if(raw.startsWith('/')) return base?.key==='cms-origin' ? `${location.origin}${raw}` : `${base?.url||CMS}${raw}`;
+    if(raw.startsWith('/content_api/')) return `${CMS}${raw.replace(/^\/content_api/,'')}`;
+    if(raw.startsWith('/')) return `${base?.url||CMS}${raw}`;
     return `${base?.url||CMS}/${raw}`;
   }
   function buildEpisodeListUrl(base,idKey,id,view,chapPag,page){
@@ -205,7 +266,8 @@
         let d;
         try{ d=await r.json(); }
         catch(e){
-          if(!best.status) best={status:r.status, eps:[], nextUrl:'', authLabel:hc.label, shape:'non-json'};
+          const ct=(r.headers.get('content-type')||'').split(';')[0]||'unknown';
+          if(!best.status) best={status:r.status, eps:[], nextUrl:'', authLabel:hc.label, shape:`non-json:${ct}`};
           continue;
         }
         const eps=episodeListFromPayload(d);
@@ -224,7 +286,10 @@
         seenUrls.add(url);
         let res;
         try{ res=await getList(url,base); }
-        catch(e){ return ''; }
+        catch(e){
+          if(seenUrls.size===1){ firstStatus=0; firstShape=`fetch-error:${e.name||'error'}`; }
+          return '';
+        }
         if(seenUrls.size===1) firstStatus=res.status;
         if(seenUrls.size===1) firstShape=res.shape||'';
         if(res.eps.length) eps=eps.concat(res.eps.map(ep=>Object.assign({}, ep, {
@@ -258,7 +323,7 @@
       let firstStatus=200, firstShape='';
       let res;
       try{ res=await getList(buildSequencedUrl(base,endpoint,idKey,inputId),base); }
-      catch(e){ return {label:`${base.key}:${label}`, eps:[], firstStatus, shape:firstShape}; }
+      catch(e){ return {label:`${base.key}:${label}`, eps:[], firstStatus:0, shape:`fetch-error:${e.name||'error'}`}; }
       firstStatus=res.status;
       firstShape=res.shape||'';
       return {label:`${base.key}:${label}`, eps:res.eps.map(ep=>Object.assign({}, ep, {
@@ -278,7 +343,10 @@
         seenUrls.add(url);
         let res;
         try{ res=await getList(url,base); }
-        catch(e){ return ''; }
+        catch(e){
+          if(seenUrls.size===1){ firstStatus=0; firstShape=`fetch-error:${e.name||'error'}`; }
+          return '';
+        }
         if(seenUrls.size===1) firstStatus=res.status;
         if(seenUrls.size===1) firstShape=res.shape||'';
         if(res.eps.length) eps=eps.concat(res.eps.map(ep=>Object.assign({}, ep, {
