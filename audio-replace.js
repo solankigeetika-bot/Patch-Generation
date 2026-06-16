@@ -2,7 +2,7 @@
 // API calls share the same origin/session as CMS UI itself. Loaded via the
 // PatchStudio "Audio Replace" bookmarklet.
 (function(){
-  const VERSION='2026-06-16.3-api-auth-only';
+  const VERSION='2026-06-16.4-api-no-credentials';
   if(window.__AR_PANEL&&window.__AR_VERSION===VERSION){ window.__AR_PANEL.style.display='block'; return; }
   if(window.__AR_PANEL){
     try{ window.__AR_PANEL.remove(); }catch{}
@@ -108,6 +108,9 @@
   function headerCandidates(base){
     const token={label:'token', headers:hdrs()};
     return [token];
+  }
+  function apiFetch(url, opts={}){
+    return fetch(url,{...opts,credentials:'omit'});
   }
   function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
 
@@ -258,7 +261,7 @@
     async function getList(url, base){
       let best={status:0, eps:[], nextUrl:'', authLabel:'', shape:''};
       for(const hc of headerCandidates(base)){
-        const r=await fetch(url,{headers:hc.headers,credentials:'include'});
+        const r=await apiFetch(url,{headers:hc.headers});
         if(!r.ok){
           if(!best.status) best={status:r.status, eps:[], nextUrl:'', authLabel:hc.label, shape:''};
           continue;
@@ -470,7 +473,7 @@
   async function rlFetch(url, opts){
     let delay=2000;
     for(let attempt=0; attempt<4; attempt++){
-      const r=await fetch(url, opts);
+      const r=await apiFetch(url, opts);
       if(r.status!==429) return r;
       _lastRateLimitTs=Date.now();
       log(`  · rate-limited (429), waiting ${Math.round(delay/1000)}s before retry…`);
@@ -539,7 +542,7 @@
             if(srcEp.chapter_id) params.chapter_id=srcEp.chapter_id;
             if(srcEp.story_id) params.story_id=srcEp.story_id;
             if(id.key) params[id.key]=id.value;
-            const r=await rlFetch(contentUrl('get_media_url',params,base),{headers:hc.headers,credentials:'include'});
+            const r=await rlFetch(contentUrl('get_media_url',params,base),{headers:hc.headers});
             const label=`${base.key}:${hc.label}:${id.label}`;
             if(!r.ok){ errors.push(`${label}=HTTP ${r.status}`); continue; }
             const d=await r.json();
@@ -594,7 +597,7 @@
             if(attempt.view) params.view=attempt.view;
             if(attempt.id.key) params[attempt.id.key]=attempt.id.value;
             const url=contentUrl('book.episode_details',params,base);
-            const r=await rlFetch(url,{headers:hc.headers,credentials:'include'});
+            const r=await rlFetch(url,{headers:hc.headers});
             const label=`${base.key}:${hc.label}:${attempt.id.label}${attempt.view?'+cms':''}`;
             if(!r.ok){ errors.push(`${label}=HTTP ${r.status}`); continue; }
             const d=await r.json();
@@ -622,7 +625,7 @@
     const resolvedTargetChapterId=tgtChapter.chapter_id||tgtEp.chapter_id;
     if(!resolvedTargetChapterId) throw new Error('target chapter_id missing after episode_details');
     const presignUrl=`${UPLOAD_BASE}/get_presigned_url?tags=media&image_extension=${ext}&title=${title}&chapter_id=${resolvedTargetChapterId}`;
-    const up=await rlFetch(presignUrl,{headers:hdrs(),credentials:'include'});
+    const up=await rlFetch(presignUrl,{headers:hdrs()});
     if(!up.ok) throw new Error('presigned URL HTTP '+up.status);
     const upData=await up.json();
     const policy=upData.result?.[0];
@@ -641,7 +644,7 @@
     await new Promise(r=>setTimeout(r, 1500));
     let postKey=beforeKey;
     try{
-      const a=await rlFetch(detUrl,{headers:targetHeaders,credentials:'include'});
+      const a=await rlFetch(detUrl,{headers:targetHeaders});
       if(a.ok){
         const ad=await a.json();
         if(ad.result?.story_details){
@@ -670,7 +673,6 @@
     const notify=await rlFetch(contentUrl('book.update_episode',{is_novel:'0'},targetDetails.base),{
       method:'POST',
       headers:targetHeaders,
-      credentials:'include',
       body: JSON.stringify(body)
     });
     if(!notify.ok) throw new Error('book.update_episode HTTP '+notify.status);
@@ -678,7 +680,7 @@
 
     // 7. Verify by re-fetching — log only, don't throw on binding warning.
     try{
-      const v=await rlFetch(detUrl,{headers:targetHeaders,credentials:'include'});
+      const v=await rlFetch(detUrl,{headers:targetHeaders});
       if(v.ok){
         const vd=await v.json();
         const persistedKey=vd.result?.story_details?.s3_unique_key||'';
