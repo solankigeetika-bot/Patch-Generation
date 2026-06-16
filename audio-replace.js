@@ -2,7 +2,7 @@
 // API calls share the same origin/session as CMS UI itself. Loaded via the
 // PatchStudio "Audio Replace" bookmarklet.
 (function(){
-  const VERSION='2026-06-16.4-api-no-credentials';
+  const VERSION='2026-06-16.5-list-mode-pairing';
   if(window.__AR_PANEL&&window.__AR_VERSION===VERSION){ window.__AR_PANEL.style.display='block'; return; }
   if(window.__AR_PANEL){
     try{ window.__AR_PANEL.remove(); }catch{}
@@ -90,6 +90,9 @@
     uid: pickUid(),
     srcShowId:'', srcEps:[],
     tgtShowId:'', tgtEps:[],
+    srcMode:'to_be_recorded',
+    tgtMode:'all',
+    pairMode:'tail',
     pairs:[],
     srcFrom:'', srcTo:'', tgtFrom:'', tgtTo:'',
     log:[], running:false
@@ -257,7 +260,7 @@
     return `${base.url}/book.book_details?${params.toString()}`;
   }
 
-  async function fetchEps(inputId){
+  async function fetchEps(inputId, mode='all'){
     async function getList(url, base){
       let best={status:0, eps:[], nextUrl:'', authLabel:'', shape:''};
       for(const hc of headerCandidates(base)){
@@ -371,16 +374,19 @@
       }
       return {label:`${base.key}:${label}`, eps, firstStatus, shape:firstShape};
     }
-    const attempts=[
-      ['show:cms+chapPag','show_id','cms',true],
+    const allAttempts=[
       ['show:cms','show_id','cms',false],
-      ['show:plain+chapPag','show_id','',true],
       ['show:plain','show_id','',false],
-      ['book:cms+chapPag','book_id','cms',true],
       ['book:cms','book_id','cms',false],
-      ['book:plain+chapPag','book_id','',true],
       ['book:plain','book_id','',false]
     ];
+    const tbrAttempts=[
+      ['show:cms+chapPag','show_id','cms',true],
+      ['show:plain+chapPag','show_id','',true],
+      ['book:cms+chapPag','book_id','cms',true],
+      ['book:plain+chapPag','book_id','',true]
+    ];
+    const attempts=mode==='to_be_recorded'?tbrAttempts:allAttempts;
     const sequencedAttempts=[
       ['show:sequenced_episodes','show_id','book.get_sequenced_episodes'],
       ['book:sequenced_episodes','book_id','book.get_sequenced_episodes'],
@@ -389,16 +395,24 @@
       ['book:chapter_name','book_id','book.chapter_name']
     ];
     const results=[];
+    let selected=[];
     for(const base of CONTENT_BASES){
-      const baseResults=[
-        ...(await Promise.all(attempts.map(([label,key,v,c])=>paged(base,label,key,v,c)))),
-        await bookDetails(base,'book:book_details'),
-        ...(await Promise.all(sequencedAttempts.map(([label,key,endpoint])=>sequenced(base,label,key,endpoint))))
-      ];
+      const baseResults=await Promise.all(attempts.map(([label,key,v,c])=>paged(base,label,key,v,c)));
       results.push(...baseResults);
-      if(baseResults.some(r=>r.eps.length)) break;
+      const winner=baseResults.find(r=>r.eps.length);
+      if(winner){ selected=winner.eps; break; }
+
+      if(mode==='all'){
+        const detail=await bookDetails(base,'book:book_details');
+        results.push(detail);
+        if(detail.eps.length){ selected=detail.eps; break; }
+        const seqResults=await Promise.all(sequencedAttempts.map(([label,key,endpoint])=>sequenced(base,label,key,endpoint)));
+        results.push(...seqResults);
+        const seqWinner=seqResults.find(r=>r.eps.length);
+        if(seqWinner){ selected=seqWinner.eps; break; }
+      }
     }
-    const combined=results.flatMap(r=>r.eps);
+    const combined=selected;
     if(!combined.length){
       const allAuth=results.every(r=>r.firstStatus===401||r.firstStatus===403);
       if(allAuth) throw new Error('CMS auth — make sure you are logged into cms.pocketfm.com');
@@ -698,9 +712,17 @@
     const src=state.srcEps, tgt=state.tgtEps;
     if(!src.length||!tgt.length){ state.pairs=[]; return; }
     const tgtBySeq={};
-    tgt.forEach((t,i)=>{ if(t.seq) tgtBySeq[t.seq]=i; });
+    tgt.forEach((t,i)=>{ if(t.seq&&tgtBySeq[t.seq]==null) tgtBySeq[t.seq]=i; });
+    const tailOffset=Math.max(0,tgt.length-src.length);
     state.pairs=src.map((s,i)=>{
-      let tgtIdx=(s.seq && tgtBySeq[s.seq]!=null) ? tgtBySeq[s.seq] : i;
+      let tgtIdx=-1;
+      if(state.pairMode==='seq'){
+        tgtIdx=(s.seq && tgtBySeq[s.seq]!=null) ? tgtBySeq[s.seq] : -1;
+      }else if(state.pairMode==='row'){
+        tgtIdx=i;
+      }else{
+        tgtIdx=tailOffset+i;
+      }
       if(tgtIdx>=tgt.length) tgtIdx=-1;
       return {srcIdx:i, tgtIdx, enabled:tgtIdx>=0};
     });
@@ -726,7 +748,7 @@
     const btn=document.getElementById('ar-src-btn');
     btn.textContent='Loading…'; btn.disabled=true;
     try{
-      state.srcEps=await fetchEps(id);
+      state.srcEps=await fetchEps(id,state.srcMode);
       rebuildPairs();
       render();
     }catch(e){ alert('Source load failed: '+e.message); }
@@ -740,7 +762,7 @@
     const btn=document.getElementById('ar-tgt-btn');
     btn.textContent='Loading…'; btn.disabled=true;
     try{
-      state.tgtEps=await fetchEps(id);
+      state.tgtEps=await fetchEps(id,state.tgtMode);
       rebuildPairs();
       render();
     }catch(e){ alert('Target load failed: '+e.message); }
@@ -754,6 +776,23 @@
   function setRange(side,bound,value){
     const v=value===''?'':parseInt(value,10);
     state[(side==='src'?'src':'tgt')+(bound==='from'?'From':'To')]=(v===''||isNaN(v))?'':v;
+  }
+  function setMode(side,value){
+    const mode=value==='to_be_recorded'?'to_be_recorded':'all';
+    if(side==='src'){
+      state.srcMode=mode;
+      state.srcEps=[];
+    }else{
+      state.tgtMode=mode;
+      state.tgtEps=[];
+    }
+    state.pairs=[];
+    render();
+  }
+  function setPairMode(value){
+    state.pairMode=(value==='seq'||value==='row')?value:'tail';
+    rebuildPairs();
+    render();
   }
   function applyRange(){
     for(const p of state.pairs){
@@ -829,6 +868,8 @@
   window.__AR_load_tgt=loadTgt;
   window.__AR_set_pair=setPair;
   window.__AR_set_range=setRange;
+  window.__AR_set_mode=setMode;
+  window.__AR_set_pair_mode=setPairMode;
   window.__AR_apply_range=applyRange;
   window.__AR_clear_range=clearRange;
   window.__AR_set_all=setAll;
@@ -858,26 +899,59 @@
       h+=`<div style="background:#fef3c7;border:1px solid #fde68a;color:#92400e;padding:10px;border-radius:8px;font-size:11px;margin-bottom:10px">⚠ access-token / uid not auto-detected. Click "edit token" above and paste from PatchStudio's sidebar.</div>`;
     }
 
+    const seqRange=eps=>{
+      const nums=eps.map(e=>Number(e.seq)).filter(n=>Number.isFinite(n)&&n>0).sort((a,b)=>a-b);
+      if(!nums.length) return '';
+      return nums[0]===nums[nums.length-1]?`Ep ${nums[0]}`:`Ep ${nums[0]}-${nums[nums.length-1]}`;
+    };
+    const pairSummary=()=>{
+      const valid=state.pairs.filter(p=>p.tgtIdx>=0);
+      if(!valid.length) return '';
+      const first=valid[0], last=valid[valid.length-1];
+      const sf=state.srcEps[first.srcIdx], sl=state.srcEps[last.srcIdx];
+      const tf=state.tgtEps[first.tgtIdx], tl=state.tgtEps[last.tgtIdx];
+      if(!sf||!sl||!tf||!tl) return '';
+      return `maps Ep ${sf.seq||'?'}-${sl.seq||'?'} → Ep ${tf.seq||'?'}-${tl.seq||'?'}`;
+    };
+
     h+=`<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
       <div style="padding:10px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px">
         <div style="font-size:11px;font-weight:700;margin-bottom:4px">Source (QC show — read FROM)</div>
         <input id="ar-src" placeholder="show_id or CMS URL" value="${esc(state.srcShowId)}" style="width:100%;padding:5px 8px;border:1px solid #cbd5e1;border-radius:5px;font-family:monospace;font-size:11px"/>
+        <select onchange="window.__AR_set_mode('src',this.value)" style="margin-top:6px;width:100%;padding:5px 8px;border:1px solid #cbd5e1;border-radius:5px;font-size:11px;background:#fff">
+          <option value="to_be_recorded" ${state.srcMode==='to_be_recorded'?'selected':''}>To Be Recorded episodes</option>
+          <option value="all" ${state.srcMode==='all'?'selected':''}>All Episodes</option>
+        </select>
         <div style="margin-top:6px;display:flex;gap:6px;align-items:center">
           <button id="ar-src-btn" onclick="window.__AR_load_src()" style="padding:5px 10px;font-size:11px;border:none;background:#2563eb;color:#fff;border-radius:5px;cursor:pointer">Load Source</button>
-          <span style="font-family:monospace;font-size:10px;color:#64748b">${state.srcEps.length} loaded</span>
+          <span style="font-family:monospace;font-size:10px;color:#64748b">${state.srcEps.length} loaded · ${state.srcMode==='to_be_recorded'?'TBR':'All'}${state.srcEps.length?' · '+seqRange(state.srcEps):''}</span>
         </div>
       </div>
       <div style="padding:10px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px">
         <div style="font-size:11px;font-weight:700;margin-bottom:4px">Target (Live show — write INTO)</div>
         <input id="ar-tgt" placeholder="show_id or CMS URL" value="${esc(state.tgtShowId)}" style="width:100%;padding:5px 8px;border:1px solid #cbd5e1;border-radius:5px;font-family:monospace;font-size:11px"/>
+        <select onchange="window.__AR_set_mode('tgt',this.value)" style="margin-top:6px;width:100%;padding:5px 8px;border:1px solid #cbd5e1;border-radius:5px;font-size:11px;background:#fff">
+          <option value="all" ${state.tgtMode==='all'?'selected':''}>All Episodes</option>
+          <option value="to_be_recorded" ${state.tgtMode==='to_be_recorded'?'selected':''}>To Be Recorded episodes</option>
+        </select>
         <div style="margin-top:6px;display:flex;gap:6px;align-items:center">
           <button id="ar-tgt-btn" onclick="window.__AR_load_tgt()" style="padding:5px 10px;font-size:11px;border:none;background:#2563eb;color:#fff;border-radius:5px;cursor:pointer">Load Target</button>
-          <span style="font-family:monospace;font-size:10px;color:#64748b">${state.tgtEps.length} loaded</span>
+          <span style="font-family:monospace;font-size:10px;color:#64748b">${state.tgtEps.length} loaded · ${state.tgtMode==='to_be_recorded'?'TBR':'All'}${state.tgtEps.length?' · '+seqRange(state.tgtEps):''}</span>
         </div>
       </div>
     </div>`;
 
     if(state.pairs.length){
+      h+=`<div style="display:flex;gap:8px;align-items:center;background:#ecfeff;border:1px solid #bae6fd;border-radius:6px;padding:7px 10px;margin-bottom:8px;font-family:monospace;font-size:10px;flex-wrap:wrap">
+        <span style="font-weight:700">Pairing</span>
+        <select onchange="window.__AR_set_pair_mode(this.value)" style="padding:3px 6px;border:1px solid #93c5fd;border-radius:4px;background:#fff;font-size:10px">
+          <option value="tail" ${state.pairMode==='tail'?'selected':''}>Newest target batch</option>
+          <option value="seq" ${state.pairMode==='seq'?'selected':''}>Same episode #</option>
+          <option value="row" ${state.pairMode==='row'?'selected':''}>Row order</option>
+        </select>
+        <span style="color:#0f766e">${pairSummary()}</span>
+      </div>`;
+
       h+=`<div style="display:flex;gap:6px;align-items:center;background:#f1f5f9;border:1px solid #cbd5e1;border-radius:6px;padding:6px 10px;margin-bottom:8px;font-family:monospace;font-size:10px;flex-wrap:wrap">
         <span style="font-weight:700">Filter Ep #:</span>
         <span>Src</span>
