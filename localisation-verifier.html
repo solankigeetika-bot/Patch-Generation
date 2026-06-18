@@ -4,8 +4,6 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Localization Verifier</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
 <style>
   :root{
     --bg:#0f1115; --card:#171a21; --line:#262b36; --ink:#e7eaf0;
@@ -163,7 +161,41 @@ const isEmpty=v=>EMPTY.has(norm(v).toLowerCase());
 const isAlias=r=>CHAPTER_RE.test(norm(r["First Name (Localized)"]))||norm(r["Last Name (Localized)"])==="Yes";
 const cap=s=>s.charAt(0).toUpperCase()+s.slice(1);
 
-let lsWB=null, scriptText="";
+let lsBytes=null, scriptBytes=null, scriptName="", scriptText="";
+
+// ── resilient library loader (tries several CDNs) ─────────────
+function loadScript(urls){
+  return new Promise((resolve,reject)=>{
+    let i=0;
+    const tryNext=()=>{
+      if(i>=urls.length){reject(new Error("all sources failed"));return;}
+      const s=document.createElement("script");
+      s.src=urls[i++];
+      s.onload=()=>resolve();
+      s.onerror=tryNext;
+      document.head.appendChild(s);
+    };
+    tryNext();
+  });
+}
+let libsPromise=null;
+function ensureLibs(){
+  if(libsPromise) return libsPromise;
+  libsPromise=Promise.all([
+    (typeof XLSX!=="undefined")?Promise.resolve():loadScript([
+      "https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js",
+      "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js",
+      "https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js"]),
+    (typeof mammoth!=="undefined")?Promise.resolve():loadScript([
+      "https://cdn.jsdelivr.net/npm/mammoth@1.6.0/mammoth.browser.min.js",
+      "https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js",
+      "https://unpkg.com/mammoth@1.6.0/mammoth.browser.min.js"])
+      .catch(()=>{ /* mammoth optional — only needed for .docx */ }),
+  ]);
+  return libsPromise;
+}
+// start fetching libraries immediately, in the background
+ensureLibs().catch(()=>{});
 
 // ── file wiring ───────────────────────────────────────────────
 function wireDrop(dropId,inputId,labelId,onFile){
@@ -180,28 +212,28 @@ function wireDrop(dropId,inputId,labelId,onFile){
 }
 
 wireDrop("dropLS","fileLS","lsLabel",f=>{
+  hideErr();
   const rd=new FileReader();
-  rd.onload=e=>{ try{ lsWB=XLSX.read(new Uint8Array(e.target.result),{type:"array"}); checkReady(); }
-    catch(err){ showErr("Could not read the xlsx: "+err.message); } };
+  rd.onload=e=>{ lsBytes=e.target.result; checkReady(); };
+  rd.onerror=()=>showErr("Could not read the file.");
   rd.readAsArrayBuffer(f);
 });
 
 wireDrop("dropScript","fileScript","scriptLabel",f=>{
+  hideErr();
+  scriptName=f.name; scriptText=""; scriptBytes=null;
+  const rd=new FileReader();
   if(/\.docx$/i.test(f.name)){
-    const rd=new FileReader();
-    rd.onload=e=>mammoth.extractRawText({arrayBuffer:e.target.result})
-      .then(r=>{scriptText=r.value;})
-      .catch(err=>showErr("Could not read docx: "+err.message));
+    rd.onload=e=>{ scriptBytes=e.target.result; };  // extracted at run time
     rd.readAsArrayBuffer(f);
   } else {
-    const rd=new FileReader();
-    rd.onload=e=>{scriptText=e.target.result;};
+    rd.onload=e=>{ scriptText=e.target.result; };
     rd.readAsText(f);
   }
 });
 
 $("canon").addEventListener("input",()=>{ if($("canon").value.trim()) scriptText=$("canon").value; });
-function checkReady(){ $("run").disabled=!lsWB; }
+function checkReady(){ $("run").disabled=!lsBytes; }
 function showErr(m){ const e=$("err"); e.textContent=m; e.style.display="block"; }
 function hideErr(){ $("err").style.display="none"; }
 
@@ -329,16 +361,38 @@ function verify(wb,src,tgt,text){
 }
 
 // ── run ───────────────────────────────────────────────────────
-$("run").addEventListener("click",()=>{
+$("run").addEventListener("click",async()=>{
   hideErr();
   const src=$("src").value, tgt=$("tgt").value;
   if(src===tgt){ showErr("Source and target language must differ."); return; }
-  if(!lsWB){ showErr("Please choose an LS sheet first."); return; }
+  if(!lsBytes){ showErr("Please choose an LS sheet first."); return; }
   if($("canon").value.trim()) scriptText=$("canon").value;
 
+  const btn=$("run"); const orig=btn.textContent;
+  btn.disabled=true; btn.textContent="Loading libraries…";
+  try{ await ensureLibs(); }
+  catch(err){ showErr("Could not load the spreadsheet library from any CDN. Check your network/firewall, then reload."); btn.disabled=false; btn.textContent=orig; return; }
+  if(typeof XLSX==="undefined"){ showErr("Spreadsheet library unavailable. Reload the page and try again."); btn.disabled=false; btn.textContent=orig; return; }
+
+  // parse the xlsx now that the library is ready
+  let lsWB;
+  try{ lsWB=XLSX.read(new Uint8Array(lsBytes),{type:"array"}); }
+  catch(err){ showErr("Could not read the xlsx: "+err.message); btn.disabled=false; btn.textContent=orig; return; }
+
+  // extract docx script text if one was provided
+  if(scriptBytes && !scriptText){
+    btn.textContent="Reading script…";
+    if(typeof mammoth!=="undefined"){
+      try{ const r=await mammoth.extractRawText({arrayBuffer:scriptBytes}); scriptText=r.value; }
+      catch(_){ /* script is optional; ignore on failure */ }
+    }
+  }
+
+  btn.textContent="Verifying…";
   let res;
   try{ res=verify(lsWB,src,tgt,scriptText); }
-  catch(err){ showErr("Processing failed: "+err.message); console.error(err); return; }
+  catch(err){ showErr("Processing failed: "+err.message); console.error(err); btn.disabled=false; btn.textContent=orig; return; }
+  btn.disabled=false; btn.textContent=orig;
 
   const c=res.corrections;
   const by=s=>c.filter(x=>x.severity===s).length;
