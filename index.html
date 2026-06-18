@@ -3650,6 +3650,44 @@ function _episodeSeq(){
   return 0;
 }
 
+function _episodeSeqDirect(){
+  const keys=['natural_sequence_number','seq_number','sequence_number','episode_number','episode_no','episodeNo','chapter_number','chapter_no','chapterNo','seq','sequence','order_number','order'];
+  const nests=['chapter_details','chapterDetails','chapter','episode_details','episodeDetails','episode','details'];
+  function clean(v){
+    if(v==null||v==='') return 0;
+    const n=parseInt(String(v).replace(/,/g,''),10);
+    return Number.isFinite(n)&&n>0?n:0;
+  }
+  function direct(obj){
+    if(!obj||typeof obj!=='object') return 0;
+    for(const k of keys){
+      const n=clean(obj[k]);
+      if(n) return n;
+    }
+    return 0;
+  }
+  for(const obj of arguments){
+    const d=direct(obj); if(d) return d;
+    for(const nk of nests){
+      const n=direct(obj?.[nk]);
+      if(n) return n;
+    }
+  }
+  return 0;
+}
+
+function _rangeEpisodeNo(ep, fallbackIndex=0){
+  // Payment range math must not trust the title text. Titles can be
+  // inconsistent with CMS sequence numbers, especially for migrated/live
+  // episodes. Prefer direct CMS sequence fields, then the API list order.
+  return Number(ep?.rangeSeq||0) ||
+         Number(ep?.seqDirect||0) ||
+         _episodeSeqDirect(ep) ||
+         (fallbackIndex?Number(fallbackIndex):0) ||
+         Number(ep?.seq||0) ||
+         0;
+}
+
 function _maxDuration(){
   const keys=['audio_duration','audioDuration','raw_audio_duration','rawAudioDuration','rm_audio_duration','rm_duration','fm_audio_duration','fm_duration','ready_to_master_duration','readyToMasterDuration','latest_duration','duration','duration_sec','duration_secs','duration_seconds','durationInSec','duration_in_sec','length','audio_length','audioLength','track_duration','trackDuration','chapter_duration','chapterDuration','media_duration','play_duration','generated_audio_duration'];
   const nestKeys=['raw_media_assets','media_details','audio_details','rm_media','fm_media','raw_media','ready_to_master','assets','audio','media','tts_job_details','current_audio','currentAudio','audio_file','audioFile','generated_audio'];
@@ -4412,7 +4450,7 @@ async function renderPaymentReport(){
       <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap;margin-bottom:8px">
         <div>
           <div style="font-size:14px;font-weight:800;color:#334155">Show ID Range Calculator (not saved)</div>
-          <div style="font-size:10px;color:var(--muted)">Paste show IDs with episode ranges, run live from CMS, then download detailed duration/error/payment CSV. This does not add shows to Dashboard and does not save rows.</div>
+          <div style="font-size:10px;color:var(--muted)">Paste show IDs with episode ranges, run live from CMS, then download detailed duration/error/payment CSV. Uses CMS sequence/list order, not episode title text, and counts duration/errors regardless of episode status. This does not add shows to Dashboard and does not save rows.</div>
         </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap">
           <button class="btn btn-g btn-sm" onclick="clearRangeBatchCalc()" style="font-size:10px">Clear</button>
@@ -4674,16 +4712,19 @@ function _extractShowId(input){
 
 async function _fetchPaymentShowFromCMS(showId){
   if(!authToken||!uid) throw new Error('CMS not connected — set your auth token in the sidebar first.');
-  // 1) Episodes list (paginated). CMS is inconsistent across shows, so try
-  // both list flavours and merge them.
+  // 1) Episodes list. CMS is inconsistent across show states: view=cms tends
+  // to expose QC/to-be-recorded rows, while the default view may expose live
+  // rows. Range payout must count whichever episode numbers the user asked
+  // for irrespective of status, so fetch every known list flavour and merge.
   let showTitleFromCms='';
-  async function paged(chapPag){
+  async function paged(view, chapPag){
     let out=[]; let page=1; let lastSig='';
     while(page<=2000){
-      const params=[`show_id=${encodeURIComponent(showId)}`,'view=cms','is_novel=0',`page_no=${page}`];
+      const params=[`show_id=${encodeURIComponent(showId)}`,'is_novel=0',`page_no=${page}`];
+      if(view) params.push(`view=${encodeURIComponent(view)}`);
       if(chapPag) params.push('paginate_chapters=true');
       const r=await fetch(`${CMS_BASE}/book.show_episodes?${params.join('&')}`, {headers:hdrs()});
-      if(!r.ok){ console.warn(`CMS show list ${showId} page ${page} HTTP ${r.status}`); break; }
+      if(!r.ok){ console.warn(`CMS show list ${showId} view=${view||'default'} chapPag=${chapPag?'yes':'no'} page ${page} HTTP ${r.status}`); break; }
       const d=await r.json();
       const list=d.result?.episodes||[];
       if(!list.length) break;
@@ -4700,14 +4741,47 @@ async function _fetchPaymentShowFromCMS(showId){
     }
     return out;
   }
-  const [epsA, epsB]=await Promise.all([paged(false), paged(true)]);
+  async function once(view, chapPag){
+    const params=[`show_id=${encodeURIComponent(showId)}`,'is_novel=0'];
+    if(view) params.push(`view=${encodeURIComponent(view)}`);
+    if(chapPag) params.push('paginate_chapters=true');
+    const r=await fetch(`${CMS_BASE}/book.show_episodes?${params.join('&')}`, {headers:hdrs()});
+    if(!r.ok){ console.warn(`CMS show list once ${showId} view=${view||'default'} chapPag=${chapPag?'yes':'no'} HTTP ${r.status}`); return []; }
+    const d=await r.json();
+    const list=d.result?.episodes||[];
+    showTitleFromCms=showTitleFromCms||d.result?.show_title||list[0]?.chapter_details?.show_title||'';
+    return list;
+  }
+  const listGroups=await Promise.all([
+    once('cms', false),
+    once('cms', true),
+    once('', false),
+    once('', true),
+    paged('cms', false),
+    paged('cms', true),
+    paged('', false),
+    paged('', true)
+  ]);
   const eps=[];
-  const seenChap=new Set();
-  for(const ep of [...epsA, ...epsB]){
+  const byChap=new Map();
+  function listScore(ep){
+    const cd=ep.chapter_details||ep;
+    return (_maxDuration(cd, ep)?8:0) +
+      (_episodeSeqDirect(cd, ep)?6:0) +
+      ((cd.chapter_title||ep.chapter_title)?2:0) +
+      ((cd.audio_status||ep.audio_status||cd.chapter_Status||cd.chapter_status||ep.chapter_status)?1:0);
+  }
+  for(const ep of listGroups.flat()){
     const cd=ep.chapter_details||ep;
     const cid=cd.chapter_id||ep.chapter_id||'';
-    if(!cid||seenChap.has(cid)) continue;
-    seenChap.add(cid);
+    if(!cid) continue;
+    const prev=byChap.get(cid);
+    if(!prev||listScore(ep)>listScore(prev)) byChap.set(cid, ep);
+  }
+  let rangeIndex=0;
+  for(const ep of byChap.values()){
+    rangeIndex++;
+    ep.__rangeIndex=rangeIndex;
     eps.push(ep);
   }
   if(!eps.length){
@@ -4722,11 +4796,16 @@ async function _fetchPaymentShowFromCMS(showId){
     const cd=ep.chapter_details||ep;
     const chapId=cd.chapter_id||ep.chapter_id||'';
     if(!chapId) return null;
+    const seqDirect=_episodeSeqDirect(cd, ep);
+    const listSeq=Number(ep.__rangeIndex||0)||0;
+    const seq=_episodeSeq(cd, ep)||listSeq||0;
     return {
       chapId,
       title:cd.chapter_title||ep.chapter_title||'Episode',
       showName:showTitleFromCms||cd.show_title||ep.show_title||showId,
-      seq:_episodeSeq(cd, ep),
+      seq,
+      seqDirect,
+      rangeSeq:seqDirect||listSeq||seq,
       duration:_maxDuration(cd, ep),
       updatedAt:cd.updated_at||cd.update_time||ep.updated_at||null,
       qc:[],
@@ -4741,7 +4820,10 @@ async function _fetchPaymentShowFromCMS(showId){
       const cd=ep.chapter_details||ep;
       const chapId=cd.chapter_id||ep.chapter_id||''; if(!chapId) return;
       try{
-        const dr=await fetch(`${CMS_BASE}/book.episode_details?chapter_id=${chapId}&is_novel=0`, {headers:hdrs()});
+        const detailParams=new URLSearchParams({chapter_id:chapId, show_id:showId, view:'cms', is_novel:'0'});
+        const storyId=cd.story_id||ep.story_id||cd.storyId||ep.storyId||'';
+        if(storyId) detailParams.set('story_id', storyId);
+        const dr=await fetch(`${CMS_BASE}/book.episode_details?${detailParams.toString()}`, {headers:hdrs()});
         if(!dr.ok){ const fb=fallbackRow(ep, `detail_http_${dr.status}`); if(fb) out.push(fb); return; }
         const dd=await dr.json();
         const ch=dd.result?.chapter_details;
@@ -4755,10 +4837,15 @@ async function _fetchPaymentShowFromCMS(showId){
         }));
         // Episode-level update timestamp kept as a fallback for old data.
         const ts=ch.raw_audio_update_time||ch.rm_audio_update_time||ch.fm_audio_update_time||ch.script_update_time||cd.script_update_time||'';
+        const seqDirect=_episodeSeqDirect(ch, cd, ep);
+        const listSeq=Number(ep.__rangeIndex||0)||0;
+        const seq=_episodeSeq(ch, cd, ep)||listSeq||0;
         out.push({
           chapId, title:ch.chapter_title||cd.chapter_title||'Episode',
           showName:showTitleFromCms||ch.show_title||cd.show_title||showId,
-          seq:_episodeSeq(ch, cd, ep),
+          seq,
+          seqDirect,
+          rangeSeq:seqDirect||listSeq||seq,
           duration:_maxDuration(ch, cd, ep),
           updatedAt:ts||null, qc,
           statusWorkers:_extractCMSStatusWorkers(ch, cd)
@@ -4777,7 +4864,7 @@ async function _fetchPaymentShowFromCMS(showId){
   }catch(e){
     console.warn('Stored payment metadata merge failed:', e);
   }
-  merged.sort((a,b)=>(_episodeSeq(a)||999999)-(_episodeSeq(b)||999999));
+  merged.sort((a,b)=>(_rangeEpisodeNo(a, 999999))-(_rangeEpisodeNo(b, 999999)));
   return {episodes:merged, cmsShowTitle:showTitleFromCms||merged[0]?.showName||showId};
 }
 
@@ -4817,6 +4904,8 @@ async function _mergePaymentStoredEpisodeData(showId, showName, liveEpisodes=[])
       title:row.title||row.chapter_title||prev.title||'Episode',
       showName:row.showName||prev.showName||showName||showId,
       seq:_episodeSeq(row)||_episodeSeq(prev)||0,
+      seqDirect:_episodeSeqDirect(row)||_episodeSeqDirect(prev)||0,
+      rangeSeq:row.rangeSeq||prev.rangeSeq||_episodeSeqDirect(row)||_episodeSeqDirect(prev)||_episodeSeq(row)||_episodeSeq(prev)||0,
       duration:Math.max(prevDur, nextDur),
       updatedAt:row.updatedAt||row.updated_at||prev.updatedAt||null,
       qc:mergedQc,
@@ -4889,7 +4978,7 @@ async function _mergePaymentStoredEpisodeData(showId, showName, liveEpisodes=[])
     }, 'episodeRemarks');
   }
 
-  return [...byChap.values()].sort((a,b)=>(_episodeSeq(a)||999999)-(_episodeSeq(b)||999999));
+  return [...byChap.values()].sort((a,b)=>(_rangeEpisodeNo(a, 999999))-(_rangeEpisodeNo(b, 999999)));
 }
 
 async function addPaymentOnlyShow(){
@@ -4983,17 +5072,20 @@ async function runRangeBatchCalc(){
     for(const job of parsed.jobs){
       toast(`Fetching ${job.showId.substring(0,8)}...`,'ok');
       const fetched=await _fetchPaymentShowFromCMS(job.showId);
-      const episodes=(fetched.episodes||[]).sort((a,b)=>(a.seq||0)-(b.seq||0));
+      const episodes=(fetched.episodes||[])
+        .map((ep,i)=>({...ep, rangeSeq:_rangeEpisodeNo(ep, i+1)}))
+        .sort((a,b)=>(_rangeEpisodeNo(a, 999999))-(_rangeEpisodeNo(b, 999999)));
       const showName=fetched.cmsShowTitle||episodes[0]?.showName||job.showId;
       for(const range of job.ranges){
         const selected=episodes.filter(ep=>{
-          const seq=Number(ep.seq||0)||0;
+          const seq=_rangeEpisodeNo(ep);
           return seq>=range.from && seq<=range.to;
         });
-        const foundSeq=new Set(selected.map(ep=>Number(ep.seq||0)));
+        const foundSeq=new Set(selected.map(ep=>_rangeEpisodeNo(ep)).filter(Boolean));
         const missingEpisodes=[];
         for(let n=range.from;n<=range.to;n++) if(!foundSeq.has(n)) missingEpisodes.push(n);
         const episodeRows=selected.map(ep=>{
+          const rangeSeq=_rangeEpisodeNo(ep);
           const durationSec=Number(ep.duration||0)||0;
           const errors=(ep.qc||[]).length;
           const hours=durationSec/3600;
@@ -5004,6 +5096,8 @@ async function runRangeBatchCalc(){
             showName,
             chapId:ep.chapId,
             seq:ep.seq||0,
+            seqDirect:ep.seqDirect||0,
+            rangeSeq,
             title:ep.title||'',
             durationSec,
             hours,
@@ -5086,7 +5180,7 @@ function exportRangeBatchCSV(){
   rows.push(['TOTAL','','','',res.totals.episodes,_fmtHMS(res.totals.durationSec),(res.totals.durationSec/3600).toFixed(3),res.totals.timePay.toFixed(2),res.totals.errors,res.totals.errorPay.toFixed(2),res.totals.totalPay.toFixed(2),'']);
   rows.push([]);
   rows.push(['Episode Wise Breakup']);
-  rows.push(['Proof Listener','Show ID','Show','Range','Episode #','Episode Title','Chapter ID','Duration (h:mm:ss)','Hours Decimal','Time Pay (€)','Errors','Error Pay (€)','Total Pay (€)']);
+  rows.push(['Proof Listener','Show ID','Show','Range','Episode # Used For Range','CMS Seq','Episode Title','Chapter ID','Duration (h:mm:ss)','Hours Decimal','Time Pay (€)','Errors','Error Pay (€)','Total Pay (€)']);
   for(const j of res.jobs){
     for(const ep of j.episodeRows){
       rows.push([
@@ -5094,7 +5188,8 @@ function exportRangeBatchCSV(){
         j.showId,
         j.showName,
         `${j.from}-${j.to}`,
-        ep.seq,
+        ep.rangeSeq||ep.seq,
+        ep.seqDirect||ep.seq||'',
         ep.title,
         ep.chapId,
         _fmtHMS(ep.durationSec),
