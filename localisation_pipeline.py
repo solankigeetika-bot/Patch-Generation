@@ -174,16 +174,63 @@ def to_human_format(findings: list[Finding], existing: str = "") -> str:
 
 
 # ─── xlsx I/O helpers ─────────────────────────────────────────────────────────
+# Map the many header spellings used across LS exports to one canonical key set,
+# so all downstream logic can use stable names regardless of the source schema.
+COLUMN_ALIASES = {
+    "Type":                    ["type"],
+    "ID":                      ["id"],
+    "Original Name":           ["original name", "original_name", "original mention",
+                                "original_mention"],
+    "Localized Name":          ["localized name", "localised name", "localized_name",
+                                "localised_name", "localized mention", "localised mention",
+                                "localized_mention", "localised_mention"],
+    "English Translated Name": ["english translated name", "english translated mention"],
+    "First Name (Original)":   ["first name (original)", "first_name_original"],
+    "Last Name (Original)":    ["last name (original)", "last_name_original"],
+    "First Name (Localized)":  ["first name (localized)", "first name (localised)",
+                                "first_name_localized", "first_name_localised"],
+    "Last Name (Localized)":   ["last name (localized)", "last name (localised)",
+                                "last_name_localized", "last_name_localised"],
+    "Gender":                  ["gender"],
+    "Canonical Name":          ["canonical name", "canonical_name"],
+    "Chapter Numbers":         ["chapter numbers", "chapter_numbers"],
+    "Is New":                  ["is new", "is_new"],
+    "Localization Issues":     ["localization issues", "localisation issues"],
+    "Cultural Status":         ["cultural status", "cultural_status"],
+    "Localization Reason":     ["localization reason", "localisation reason"],
+    "Description":             ["description", "notes"],
+}
+
+
+def _canon_key(header: str) -> Optional[str]:
+    hl = header.strip().lower()
+    for canon, aliases in COLUMN_ALIASES.items():
+        if hl == canon.lower() or hl in aliases:
+            return canon
+    return None
+
+
 def read_sheet(wb: openpyxl.Workbook, name) -> tuple[list[str], list[dict]]:
+    """Read a sheet into a list of row dicts.
+
+    Each row dict is keyed by BOTH the original header AND (when recognised) the
+    canonical column name, so callers may use stable names like 'Original Name'
+    even when the sheet header is 'original_name'.
+    """
     ws = wb[name] if isinstance(name, str) else wb.worksheets[name]
     rows = list(ws.iter_rows(values_only=True))
     if not rows:
         return [], []
     headers = [str(h or "").strip() for h in rows[0]]
+    canon = [_canon_key(h) for h in headers]
     data = []
     for row in rows[1:]:
-        d = {h: (str(row[i]) if i < len(row) and row[i] is not None else "")
-             for i, h in enumerate(headers)}
+        d: dict = {}
+        for i, h in enumerate(headers):
+            val = str(row[i]) if i < len(row) and row[i] is not None else ""
+            d[h] = val
+            if canon[i] and canon[i] not in d:
+                d[canon[i]] = val
         data.append(d)
     return headers, data
 
@@ -289,6 +336,10 @@ def review_proposition(row: dict, universe: Universe, src: str, tgt: str) -> lis
     status = norm(row.get("Cultural Status", "")).upper()
     reason = norm(row.get("Localization Reason", ""))
 
+    # skip blank / spacer rows entirely
+    if is_empty(orig):
+        return []
+
     # C0: missing localisation
     if is_empty(loc):
         findings.append(Finding("S2", "critical", "missing_localised",
@@ -370,31 +421,61 @@ def check_name_collisions(
     ld_rows: list[dict],
     src: str,
     tgt: str,
+    mm_rows: Optional[list[dict]] = None,
 ) -> list[tuple[int, list[Finding]]]:
     """
-    Flag localized names that are shared by multiple distinct characters.
+    Flag localized names shared by multiple DISTINCT characters.
 
-    SAME_FIRST_NAME_COLLISION — same localized first name in >1 row.
-    SAME_LAST_NAME_COLLISION  — same localized last name in >1 row when the
-                                original surnames differ (different families).
+    Crucially, the collision pool spans BOTH the Localization Details rows and
+    every localized form in the Mention Mappings tab — because a clashing name
+    often lives only in the mention map (e.g. another character is *referred to*
+    as 'Pierre'). Characters are de-duplicated by their canonical original name,
+    so a character colliding with its own alias is not counted.
+
+    SAME_FIRST_NAME_COLLISION — same localized first name used by 2+ characters.
+    SAME_LAST_NAME_COLLISION  — same localized last name across different families.
     CULTURAL_CONTEXT_INAPPROPRIATE — source-language kinship term retained.
     """
-    # Build maps from localized name parts → list of (row_index, orig_name)
-    fn_map: dict[str, list[tuple[int, str]]] = defaultdict(list)
-    ln_map: dict[str, list[tuple[int, str]]] = defaultdict(list)
+    # localized-name-token -> set of distinct character identities (orig name)
+    fn_chars: dict[str, set[str]] = defaultdict(set)
+    ln_chars: dict[str, set[str]] = defaultdict(set)
 
-    for i, row in enumerate(ld_rows):
+    def add_first(tok: str, ident: str):
+        if tok and not is_empty(tok) and len(tok) > 2:
+            fn_chars[_apos(tok)].add(ident.lower())
+
+    def add_last(tok: str, ident: str):
+        if tok and not is_empty(tok) and tok.lower() != "yes" and not CHAPTER_RE.match(tok):
+            ln_chars[_apos(tok)].add(ident.lower())
+
+    # LD main rows
+    for row in ld_rows:
         if is_alias_row(row):
             continue
         orig = norm(row.get("Original Name", ""))
-        fn   = norm(row.get("First Name (Localized)", ""))
-        ln   = norm(row.get("Last Name (Localized)", ""))
         if not orig:
             continue
-        if fn and not is_empty(fn):
-            fn_map[fn.lower()].append((i, orig))
-        if ln and not is_empty(ln) and ln.lower() != "yes" and not CHAPTER_RE.match(ln):
-            ln_map[ln.lower()].append((i, orig))
+        add_first(norm(row.get("First Name (Localized)", "")), orig)
+        add_last(norm(row.get("Last Name (Localized)", "")), orig)
+
+    # Mention Mappings — localized mention forms, identified by Canonical Name
+    if mm_rows:
+        for row in mm_rows:
+            if norm(row.get("Type", "")).lower() not in ("", "character"):
+                continue
+            cn = norm(row.get("Canonical Name", ""))
+            lm = norm(row.get("Localized Name", ""))
+            if not cn or is_empty(lm):
+                continue
+            if any(k in lm.lower() for k in KINSHIP):
+                continue
+            core = _strip_title(lm)
+            toks = _PARTICLE_RE.sub("", core).strip().split()
+            if not toks:
+                continue
+            add_first(toks[0], cn)
+            if len(toks) > 1:
+                add_last(toks[-1], cn)
 
     row_findings: list[tuple[int, list[Finding]]] = []
 
@@ -407,31 +488,39 @@ def check_name_collisions(
         ln   = norm(row.get("Last Name (Localized)", ""))
         if not orig or is_empty(loc):
             continue
+        ident = orig.lower()
+        orig_surname = orig.split()[-1].lower() if " " in orig else orig.lower()
 
         findings: list[Finding] = []
 
-        # SAME_FIRST_NAME_COLLISION
+        # SAME_FIRST_NAME_COLLISION — shared by 2+ distinct characters
         if fn and not is_empty(fn):
-            group = fn_map.get(fn.lower(), [])
-            if len(group) > 1:
-                others = ", ".join(o for _, o in group if o != orig)
+            chars = fn_chars.get(_apos(fn), set())
+            others = sorted(chars - {ident})
+            if others:
                 findings.append(Finding(
                     "S2b", "medium", "same_first_name_collision",
-                    f"Character '{orig}' shares localized first name '{fn}' with: {others}. "
-                    f"Listener confusion risk. + affected mentions: {fn}",
+                    f"Character '{orig}' shares localized first name '{fn}' with: "
+                    f"{', '.join(others)}. Listener confusion risk. "
+                    f"+ affected mentions: {fn}",
                     "Consider a different localized first name to avoid ambiguity.",
                 ))
 
-        # SAME_LAST_NAME_COLLISION (only when original surnames differ)
+        # SAME_LAST_NAME_COLLISION — shared across different original families
         if ln and not is_empty(ln) and ln.lower() != "yes" and not CHAPTER_RE.match(ln):
-            group = ln_map.get(ln.lower(), [])
-            orig_lns = {(o.split()[-1].lower() if " " in o else o.lower()) for _, o in group}
-            if len(orig_lns) > 1:
-                others = ", ".join(o for _, o in group if o != orig)
+            chars = ln_chars.get(_apos(ln), set())
+            other_families = {
+                (o.split()[-1].lower() if " " in o else o.lower())
+                for o in chars
+            } - {orig_surname}
+            if other_families:
+                others = sorted(o for o in chars
+                                if (o.split()[-1].lower() if " " in o else o.lower())
+                                != orig_surname)
                 findings.append(Finding(
                     "S2b", "medium", "same_last_name_collision",
                     f"Character '{orig}' shares localized last name '{ln}' with character(s) "
-                    f"from a different family: {others}. May create confusion. "
+                    f"from a different family: {', '.join(others)}. May create confusion. "
                     f"+ affected mentions: {ln}",
                     "Consider a different localized last name.",
                 ))
@@ -449,6 +538,200 @@ def check_name_collisions(
 
         if findings:
             row_findings.append((i, findings))
+
+    return row_findings
+
+
+# ─── Lever 2: Entity / family consistency ────────────────────────────────────
+_FAMILY_ORIG_RE = re.compile(
+    r"^([a-zà-öø-ÿ]+)[\s\-](famili|family|dynasti|dynasty|clan|familie)\b", re.IGNORECASE)
+# pull the localized surname out of "la famille X" / "la dynastie X" / "le clan X"
+_FAMILY_LOC_RE = re.compile(
+    r"(?:famille|dynastie|clan|groupe)\s+(?:de\s+|des\s+)?([A-ZÀ-Ö][\wà-öø-ÿ’'\-]+)")
+
+
+def build_family_map(ld_rows: list[dict]) -> dict[str, str]:
+    """
+    Extract {original_surname_lower: localized_surname} from family entities such
+    as 'kaiser-familie' -> 'la famille Montclair'  =>  {'kaiser': 'Montclair'}.
+
+    A surname maps only if we can cleanly extract a capitalised target surname.
+    """
+    fam: dict[str, str] = {}
+    for row in ld_rows:
+        if norm(row.get("Type", "")).lower() != "entity":
+            continue
+        orig = norm(row.get("Original Name", "")).lower()
+        loc  = norm(row.get("Localized Name", ""))
+        m = _FAMILY_ORIG_RE.match(orig)
+        if not m:
+            continue
+        surname = m.group(1).strip()
+        lm = _FAMILY_LOC_RE.search(loc)
+        if not lm:
+            continue
+        loc_surname = lm.group(1).strip()
+        # first clean mapping wins (the canonical "<surname>-familie" entity)
+        fam.setdefault(surname, loc_surname)
+    return fam
+
+
+def _apos(s: str) -> str:
+    """Normalise curly/straight apostrophes for comparison."""
+    return s.replace("’", "'").replace("ʼ", "'").lower()
+
+
+def check_entity_consistency(
+    ld_rows: list[dict],
+) -> list[tuple[int, list[Finding]]]:
+    """
+    Lever 2 — ENTITY_INCONSISTENCY:
+    A character whose ORIGINAL surname belongs to a known family entity must use
+    that family's localized surname. Flags e.g. 'jacob kaiser' localized with
+    surname 'Barnier' when the Kaiser family entity localizes to 'Montclair'.
+    """
+    fam = build_family_map(ld_rows)
+    row_findings: list[tuple[int, list[Finding]]] = []
+    if not fam:
+        return row_findings
+
+    for i, row in enumerate(ld_rows):
+        if norm(row.get("Type", "")).lower() != "character" or is_alias_row(row):
+            continue
+        orig = norm(row.get("Original Name", ""))
+        ln   = norm(row.get("Last Name (Localized)", ""))
+        if " " not in orig or is_empty(ln) or ln.lower() == "yes":
+            continue
+        osurname = orig.split()[-1].lower()
+        expected = fam.get(osurname)
+        if not expected:
+            continue
+        # accept compound/hyphenated surnames that contain the family surname
+        # e.g. 'Féretvin-Barnier' satisfies an expected 'Barnier'
+        ln_tokens = {_apos(t) for t in re.split(r"[\s\-]+", ln) if t}
+        if _apos(expected) not in ln_tokens and _apos(ln) != _apos(expected):
+            row_findings.append((i, [Finding(
+                "S2c", "high", "entity_inconsistency",
+                f"Character '{orig}' has localized surname '{ln}', but the '{osurname}' "
+                f"family entity is localized as '{expected}'. Surname should be '{expected}'. "
+                f"+ affected mentions: {orig}",
+                f"Use the family surname '{expected}'.",
+                suggested_name=expected,
+            )]))
+    return row_findings
+
+
+# ─── Lever 1: Mention-map internal consistency ───────────────────────────────
+_TITLE_RE = re.compile(
+    r"^(monsieur|madame|mademoiselle|m\.|mme\.?|mlle\.?|dr\.?|docteur|professeur|"
+    r"prof\.?|maître|me\.?|sir|lord|lady)\s+", re.IGNORECASE)
+
+
+def _strip_title(s: str) -> str:
+    return _TITLE_RE.sub("", s).strip()
+
+
+# leading French articles / possessive particles to strip before comparing names
+_PARTICLE_RE = re.compile(r"^(d'|l'|de\s+la\s+|de\s+|du\s+|des\s+|le\s+|la\s+|les\s+)",
+                          re.IGNORECASE)
+
+
+def _name_first_token(s: str) -> str:
+    """Strip title + leading article/particle, return the first name token."""
+    core = _strip_title(s)
+    core = _PARTICLE_RE.sub("", core).strip()
+    core = _PARTICLE_RE.sub("", core).strip()  # handle "de l'" style doubles
+    toks = core.split()
+    return toks[0] if toks else ""
+
+
+def check_mention_consistency(
+    mm_rows: list[dict],
+    ld_rows: list[dict],
+) -> list[tuple[int, list[Finding]]]:
+    """
+    Lever 1 — group character Mention Mappings by Canonical Name and verify every
+    mention's localized FIRST name is stable across the character's mentions.
+
+    Conservative: only CHARACTER-type mentions whose ORIGINAL form actually uses
+    the character's first name are judged (title+surname-only forms are skipped,
+    since they carry no first name to check), and French articles/possessives are
+    stripped before comparison to avoid false 'd'Aurore' ≠ 'Aurore' flags.
+
+    Produces MENTION_MAP_INCONSISTENCY and SOURCE_NAME_NOT_LOCALISED.
+    """
+    # group CHARACTER mention rows by canonical name
+    groups: dict[str, list[int]] = defaultdict(list)
+    for i, row in enumerate(mm_rows):
+        if norm(row.get("Type", "")).lower() not in ("", "character"):
+            continue
+        cn = norm(row.get("Canonical Name", "")).lower()
+        if cn:
+            groups[cn].append(i)
+
+    row_findings: list[tuple[int, list[Finding]]] = []
+
+    for cn, idxs in groups.items():
+        orig_first = cn.split()[0] if cn else ""
+        if not orig_first or len(orig_first) < 3:
+            continue
+
+        # ── collect this character's localized first-name tokens, only from
+        #    mentions that actually USE the source first name ────────────────
+        # token -> {"count": n, "rows": [...], "src_leak": bool}
+        token_rows: dict[str, list[int]] = defaultdict(list)
+        token_src_leak: dict[str, bool] = {}
+        for i in idxs:
+            om = norm(mm_rows[i].get("Original Name", ""))
+            lm = norm(mm_rows[i].get("Localized Name", ""))
+            if is_empty(om) or is_empty(lm):
+                continue
+            oml = om.lower()
+            om_head = oml.split()[0].rstrip("s").rstrip("'")
+            if not om_head.startswith(orig_first[:4]):
+                continue
+            if any(k in oml for k in KINSHIP) or any(k in lm.lower() for k in KINSHIP):
+                continue
+            tok = _name_first_token(lm)
+            if not tok or len(tok) < 3:
+                continue
+            key = _apos(tok)
+            token_rows[key].append(i)
+            # is this token just the untranslated source name?
+            token_src_leak[key] = (key == orig_first) or (orig_first in _apos(lm).split())
+
+        if len(token_rows) < 2:
+            continue  # internally consistent → nothing to flag
+
+        # the majority token is the canonical localized first name; minorities
+        # are the inconsistencies to flag
+        majority = max(token_rows, key=lambda k: len(token_rows[k]))
+        canon_disp = majority.capitalize()
+
+        for tok, rows in token_rows.items():
+            if tok == majority:
+                continue
+            for i in rows:
+                om = norm(mm_rows[i].get("Original Name", ""))
+                lm = norm(mm_rows[i].get("Localized Name", ""))
+                if token_src_leak.get(tok):
+                    row_findings.append((i, [Finding(
+                        "S1", "medium", "source_name_not_localised",
+                        f"Mention '{om}' keeps the source name in its localization "
+                        f"'{lm}', while '{cn}' is elsewhere localized as '{canon_disp}'. "
+                        f"+ affected mentions: {om}",
+                        f"Localize to '{canon_disp}'.",
+                        suggested_name=canon_disp,
+                    )]))
+                else:
+                    row_findings.append((i, [Finding(
+                        "S1", "high", "mention_map_inconsistency",
+                        f"Character '{cn}' is localized inconsistently: mention '{om}' "
+                        f"uses '{lm}' but other mentions use '{canon_disp}'. "
+                        f"+ affected mentions: {om}",
+                        f"Use '{canon_disp}' consistently.",
+                        suggested_name=canon_disp,
+                    )]))
 
     return row_findings
 
@@ -803,7 +1086,7 @@ def run(args) -> int:
 
     # ── Stage 2b: Name collision checks ──────────────────────────────────────
     print("\nStage 2b: Name collision checks", file=sys.stderr)
-    coll_findings = check_name_collisions(ld_rows, src, tgt)
+    coll_findings = check_name_collisions(ld_rows, src, tgt, mm_rows)
     for i, fs in coll_findings:
         ld_findings[i].extend(fs)
     fn_c = sum(1 for _, fs in coll_findings for f in fs if "first_name" in f.kind)
@@ -811,6 +1094,15 @@ def run(args) -> int:
     cc_c = sum(1 for _, fs in coll_findings for f in fs if "cultural" in f.kind)
     print(f"  {fn_c} first-name collisions, {ln_c} last-name collisions, "
           f"{cc_c} cultural context issues.", file=sys.stderr)
+
+    # ── Lever 2: Entity / family consistency ─────────────────────────────────
+    print("\nLever 2: Entity / family consistency", file=sys.stderr)
+    fam = build_family_map(ld_rows)
+    ent_findings = check_entity_consistency(ld_rows)
+    for i, fs in ent_findings:
+        ld_findings[i].extend(fs)
+    print(f"  {len(fam)} family entities mapped, "
+          f"{len(ent_findings)} surname inconsistencies flagged.", file=sys.stderr)
 
     # LLM proposition review (optional)
     if not args.dry_run and client and cfg:
@@ -838,14 +1130,20 @@ def run(args) -> int:
     print(f"  {len(flat_findings)} inconsistencies.  Canonical map: {len(canonical)} entries.",
           file=sys.stderr)
 
-    # ── Stage 3: Mention mapping cascade ─────────────────────────────────────
-    print("\nStage 3: Mention mapping cascade", file=sys.stderr)
+    # ── Lever 1 + Stage 3: Mention-map consistency ───────────────────────────
+    print("\nLever 1: Mention-map consistency", file=sys.stderr)
     mm_findings: dict[int, list[Finding]] = defaultdict(list)
     if mm_rows:
-        mm_row_findings = check_mention_cascade(mm_rows, canonical)
+        mm_row_findings = check_mention_consistency(mm_rows, ld_rows)
         for i, fs in mm_row_findings:
             mm_findings[i].extend(fs)
-        print(f"  {len(mm_row_findings)} mention mapping issues.", file=sys.stderr)
+        # legacy canonical cascade (catches cases the grouping misses)
+        for i, fs in check_mention_cascade(mm_rows, canonical):
+            mm_findings[i].extend(fs)
+        mmi = sum(1 for _, fs in mm_row_findings for f in fs if "mention_map" in f.kind)
+        snl = sum(1 for _, fs in mm_row_findings for f in fs if "source_name" in f.kind)
+        print(f"  {mmi} mention inconsistencies, {snl} un-localized source names.",
+              file=sys.stderr)
     else:
         print("  (no Mention Mappings tab found)", file=sys.stderr)
 
