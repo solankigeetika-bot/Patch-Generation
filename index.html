@@ -5290,10 +5290,11 @@ function renderEpCards(){
     return;
   }
 
-  // Sort by sequence number (ascending)
+  // Sort by the human-facing episode number first. CMS natural_sequence_number
+  // can be offset on migrated/live shows (#2 while title says Episode 1).
   const sorted=[...episodes].sort((a,b)=>{
-    const seqA=a.natural_sequence_number||(a.chapter_details?.seq_number)||999;
-    const seqB=b.natural_sequence_number||(b.chapter_details?.seq_number)||999;
+    const seqA=_episodeSeqFromTitle(a.chapter_details||a,a)||_episodeSeqDirect(a.chapter_details||a,a)||999;
+    const seqB=_episodeSeqFromTitle(b.chapter_details||b,b)||_episodeSeqDirect(b.chapter_details||b,b)||999;
     return seqA-seqB;
   });
 
@@ -5303,7 +5304,8 @@ function renderEpCards(){
     const title=(cd.chapter_title||ep.chapter_title||'').toLowerCase();
     const hasQC=cd.hasQC||cd.qcCount>0||String(cd.audio_status||'').includes('issue');
     if(epFilterMode==='qc'&&!hasQC) return false;
-    if(epFilter&&!title.includes(epFilter)&&!String(ep.natural_sequence_number).includes(epFilter)) return false;
+    const displaySeq=_episodeSeqFromTitle(cd,ep)||_episodeSeqDirect(cd,ep)||'';
+    if(epFilter&&!title.includes(epFilter)&&!String(displaySeq).includes(epFilter)&&!String(ep.natural_sequence_number||'').includes(epFilter)) return false;
     return true;
   });
 
@@ -5317,7 +5319,7 @@ function renderEpCards(){
     const cid=cd.chapter_id||ep.chapter_id||'';
     const title=cd.chapter_title||ep.chapter_title||'Episode';
     const dur=ep.audio_duration||cd.audio_duration||0;
-    const seq=ep.natural_sequence_number||(cd.seq_number)||'';
+    const seq=_episodeSeqFromTitle(cd,ep)||_episodeSeqDirect(cd,ep)||'';
     const statusText=hasQC?`${qcCount} QC issue${qcCount!==1?'s':''}`:String(cd.audio_status||'').replace(/_/g,' ');
     return `<div class="ep-card" onclick="loadChapter('${cid}',0)" style="${hasQC?'border-left:3px solid var(--orange)':''}">
       <div class="ep-num">${seq?'#'+seq:''}</div>
@@ -5675,12 +5677,13 @@ function renderSEShowDetail(group){
       </div>
       <div class="se-ep-body">
         <table class="se-tbl">
-          <thead><tr><th>Time</th><th>Remark</th><th>Script Line</th><th>Raw Patch</th><th>Stitched?</th></tr></thead>
+          <thead><tr><th>Time</th><th>Remark</th><th>SE Notes</th><th>Script Line</th><th>Raw Patch</th><th>Stitched?</th></tr></thead>
           <tbody>${patches.map((p,pi)=>{
             const pSt=p.stitched||'';
             return `<tr style="${pSt==='yes'?'background:var(--green-light)':pSt==='no'?'background:var(--red-light)':''}">
               <td style="white-space:nowrap;font-family:var(--mono);font-size:11px;color:var(--accent)">${esc(p.time)}</td>
               <td style="font-size:11px;color:var(--text2);max-width:180px">${esc(p.remark||p.issueType||'')}</td>
+              <td style="font-size:11px;max-width:220px;color:var(--text2);white-space:pre-wrap">${esc(p.reviewerNote||p.seNote||p.note||'—')}</td>
               <td style="font-size:11px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(p.scriptLine)}">${esc((p.scriptLine||'').substring(0,50))}${(p.scriptLine||'').length>50?'...':''}</td>
               <td>${(()=>{
                 // Never offer a blob: URL to other users — it's only valid in
@@ -6299,6 +6302,7 @@ async function loadShow(directInput, forceRefresh){
               idx:i, time:qc.time, issueType:qc.issue_type||'',
               userEmail:qc.user_email||'', scriptLine:extractLine(qc.remarks),
               note:extractNote(qc.remarks), rawRemarks:qc.remarks,
+              reviewerNote:extractReviewerNote(qc),
               needsPatch:!!extractLine(qc.remarks),
               timestamp:_qcReportedAt(qc)||Date.now(),
               reportedAt:_qcReportedAt(qc)||''
@@ -6380,7 +6384,12 @@ async function loadChapter(chapId, idx){
         hideOv(); toast('No cached data. Someone with CMS access needs to load this episode first.','warn'); return;
       }
       activeEp={chapter_id:chapId, chapter_title:fbData.title}; finalAudioUrl=null; finalAudioBlob=null; RS={};
-      remarks = (fbData.remarks||[]).map((r,i)=>({...r, idx:i}));
+      const fbReviewerNotes=fbData.reviewerNotes||{};
+      remarks = (fbData.remarks||[]).map((r,i)=>({
+        ...r,
+        idx:i,
+        reviewerNote:(Array.isArray(fbReviewerNotes)?fbReviewerNotes[i]:fbReviewerNotes[String(i)])||r.reviewerNote||''
+      }));
 
       // Load accepted patch audio from SE data in Firebase
       const seSnap = await dbRef('seData/'+chapId).once('value');
@@ -6433,7 +6442,7 @@ async function loadChapter(chapId, idx){
     remarks=(ch.qc_details||[]).map((qc,i)=>{
       const stored=Array.isArray(fbRemarks)?fbRemarks[i]:fbRemarks[String(i)];
       const timeOverride=stored?.timeOverride||'';
-      const reviewerNote=(Array.isArray(fbReviewerNotes)?fbReviewerNotes[i]:fbReviewerNotes[String(i)])||'';
+      const reviewerNote=(Array.isArray(fbReviewerNotes)?fbReviewerNotes[i]:fbReviewerNotes[String(i)])||stored?.reviewerNote||extractReviewerNote(qc)||'';
       return {
         idx:i, time:qc.time, timeOverride, reviewerNote, issueType:qc.issue_type||'',
         userEmail:qc.user_email||'', timestamp:qc.timestamp||'',
@@ -6491,6 +6500,7 @@ async function loadChapter(chapId, idx){
       idx:r2.idx, time:r2.time, issueType:r2.issueType,
       userEmail:r2.userEmail, scriptLine:r2.scriptLine,
       note:r2.note, rawRemarks:r2.rawRemarks, needsPatch:r2.needsPatch,
+      reviewerNote:r2.reviewerNote||'',
       timestamp:r2.timestamp||'',
     }));
     await dbRef('episodeRemarks/'+chapId).set({
@@ -6559,6 +6569,29 @@ function extractNote(remarks){
   const stop=note.search(/[Ll]ine\s+from\s+[Ss]cript/i);
   if(stop>-1) note=note.slice(0,stop).trim();
   return note.split('\n')[0].replace(/["\u201d\u00bb]$/g,'').trim();
+}
+
+function extractReviewerNote(qc){
+  if(!qc) return '';
+  const fields=[
+    'reviewer_note','reviewer_notes','reviewers_note','reviewers_notes',
+    'se_note','se_notes','sound_engineer_note','sound_engineer_notes',
+    'editor_note','editor_notes','qc_note','qc_notes','comment','comments',
+    'feedback','review_feedback','remarks_note'
+  ];
+  for(const f of fields){
+    const v=qc[f];
+    if(typeof v==='string'&&v.trim()) return v.trim();
+  }
+  const raw=String(qc.remarks||qc.rawRemarks||'');
+  const m=raw.match(/(?:reviewer|review|se|sound\s*engineer|editor|qc)\s*(?:notes?|comments?|feedback|direction)\s*[\-\u2013\u2014:]+\s*["\u201c\u00ab]?(.+)/i);
+  if(m){
+    let note=m[1].replace(/^["\u201c\u00ab]|["\u201d\u00bb]$/g,'').trim();
+    const stop=note.search(/[Ll]ine\s+from\s+[Ss]cript|[Ww]ord\s*[:\-]/i);
+    if(stop>-1) note=note.slice(0,stop).trim();
+    return note.split('\n')[0].replace(/["\u201d\u00bb]$/g,'').trim();
+  }
+  return extractNote(raw);
 }
 
 // ── Render ───────────────────────────────────────────────────
@@ -6830,8 +6863,8 @@ function mkCard(r){
       </div>`:`<div style="margin-bottom:10px"><button class="btn btn-g btn-sm" onclick="setDisposition(${r.idx},'')" style="font-size:10px">↩ Undo</button></div>`}
 
       <div style="background:#f1f5f9;border:1px solid #cbd5e1;border-radius:7px;padding:8px 10px;margin-bottom:12px">
-        <div style="font-family:var(--mono);font-size:9px;color:var(--muted);letter-spacing:1px;margin-bottom:4px">📝 REVIEWER NOTES <span style="color:var(--muted2);font-weight:400;letter-spacing:0">— freeform notes for the team; saved automatically</span></div>
-        <textarea id="rn-${r.idx}" rows="2" placeholder="Optional notes (e.g. context that doesn't need a patch, follow-up needed, etc.)" onblur="saveReviewerNote(${r.idx}, this.value)" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:5px;font-size:12px;font-family:var(--sans);resize:vertical;background:#fff">${esc(r.reviewerNote||'')}</textarea>
+        <div style="font-family:var(--mono);font-size:9px;color:var(--muted);letter-spacing:1px;margin-bottom:4px">📝 SE NOTES <span style="color:var(--muted2);font-weight:400;letter-spacing:0">— reviewer/CMS notes for sound engineers; saved automatically</span></div>
+        <textarea id="rn-${r.idx}" rows="2" placeholder="Optional notes for SEs (context, pronunciation direction, follow-up needed, etc.)" onblur="saveReviewerNote(${r.idx}, this.value)" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:5px;font-size:12px;font-family:var(--sans);resize:vertical;background:#fff">${esc(r.reviewerNote||'')}</textarea>
       </div>
       ${disp==='no_patch'||disp==='wrong_error'?'':`${r.rawRemarks?`<div style="background:var(--surface2);border:1px solid var(--border);border-radius:7px;padding:9px 12px;margin-bottom:12px">
         <div style="font-family:var(--mono);font-size:9px;color:var(--muted);letter-spacing:1px;margin-bottom:4px">QC REMARKS</div>
@@ -7127,7 +7160,14 @@ async function updateSEDataForCurrentEp(){
         });
       }catch(e){ console.warn('Could not convert audio to base64:', e); }
     }
-    patchesData.push({time:r.time, remark:r.rawRemarks?.substring(0,100)||r.issueType, issueType:r.issueType, scriptLine:st.scriptLine||r.scriptLine, audioBase64});
+    patchesData.push({
+      time:r.time,
+      remark:r.rawRemarks?.substring(0,100)||r.issueType,
+      issueType:r.issueType,
+      reviewerNote:r.reviewerNote||r.note||'',
+      scriptLine:st.scriptLine||r.scriptLine,
+      audioBase64
+    });
   }
   saveSEData(chapId, title, patchesData, null);
 }
