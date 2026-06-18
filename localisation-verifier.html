@@ -1,1001 +1,377 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>Localisation Verifier</title>
-<script src="https://accounts.google.com/gsi/client" async></script>
-<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Cabinet+Grotesk:wght@400;500;700;800&display=swap" rel="stylesheet"/>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Localization Verifier</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
 <style>
-:root {
-  --bg:#060608;--s1:#0e0e14;--s2:#161622;--s3:#1e1e2e;
-  --border:#252538;--a1:#6ee7b7;--a2:#818cf8;--a3:#fb923c;
-  --red:#f87171;--yellow:#fbbf24;--text:#e2e8f0;--muted:#64748b;
-  --mono:'DM Mono',monospace;--head:'Cabinet Grotesk',sans-serif;
-}
-*{box-sizing:border-box;margin:0;padding:0;}
-body{background:var(--bg);color:var(--text);font-family:var(--head);min-height:100vh;display:flex;flex-direction:column;}
-
-/* TOPBAR */
-.topbar{background:var(--s1);border-bottom:1px solid var(--border);padding:14px 24px;display:flex;align-items:center;gap:14px;flex-shrink:0;}
-.brand{font-size:16px;font-weight:800;display:flex;align-items:center;gap:10px;}
-.brand-icon{width:30px;height:30px;border-radius:8px;background:linear-gradient(135deg,var(--a2),var(--a3));display:flex;align-items:center;justify-content:center;font-size:14px;}
-.brand em{font-style:normal;color:var(--a2);}
-.sep{width:1px;height:22px;background:var(--border);}
-.sdot{width:8px;height:8px;border-radius:50%;background:var(--muted);flex-shrink:0;}
-.sdot.on{background:var(--a1);box-shadow:0 0 8px rgba(110,231,183,.5);}
-.sdot.busy{background:var(--yellow);animation:blink 1s infinite;}
-@keyframes blink{0%,100%{opacity:1}50%{opacity:.2}}
-.stxt{font-family:var(--mono);font-size:11px;color:var(--muted);}
-.sp{flex:1;}
-.gauth-btn{padding:7px 14px;border-radius:7px;border:none;cursor:pointer;background:#fff;color:#111;font-family:var(--head);font-weight:700;font-size:12px;display:flex;align-items:center;gap:7px;}
-.gauth-btn:hover{background:#eee;}
-.gauth-st{font-family:var(--mono);font-size:11px;color:var(--muted);}
-.gauth-st.ok{color:var(--a1);}
-
-/* MAIN */
-.main{flex:1;overflow-y:auto;padding:24px;max-width:1440px;width:100%;margin:0 auto;}
-
-/* CONFIG BANNER */
-.cfg-banner{background:var(--s1);border:1px solid var(--border);border-radius:12px;padding:20px 24px;margin-bottom:22px;}
-.cfg-banner-top{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:0;}
-.cfg-title{font-size:15px;font-weight:800;margin-bottom:3px;}
-.cfg-sub{font-family:var(--mono);font-size:10px;color:var(--muted);}
-.cfg-summary{font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:12px;padding-top:12px;border-top:1px solid var(--border);display:none;}
-.cfg-summary strong{color:var(--text);}
-
-/* BUTTONS */
-.btn{font-family:var(--head);font-weight:700;font-size:13px;padding:9px 18px;border-radius:8px;border:none;cursor:pointer;transition:all .18s;display:inline-flex;align-items:center;gap:6px;}
-.btn-p{background:var(--a2);color:#fff;}
-.btn-p:hover{filter:brightness(1.12);}
-.btn-p:disabled{opacity:.35;cursor:not-allowed;}
-.btn-g{background:var(--s2);color:var(--text);border:1px solid var(--border);}
-.btn-g:hover{border-color:var(--a2);color:var(--a2);}
-.btn-exp{background:rgba(110,231,183,.1);color:var(--a1);border:1px solid rgba(110,231,183,.3);}
-.btn-exp:hover{background:rgba(110,231,183,.18);}
-.btn-exp:disabled{opacity:.35;cursor:not-allowed;}
-.btn-sm{padding:5px 11px;font-size:11px;border-radius:6px;}
-.btn-confirm{background:#3b4cf8;color:#fff;}
-.btn-confirm:hover{background:#5061ff;}
-.btn-fp{background:transparent;color:var(--muted);border:1px solid var(--border);}
-.btn-fp:hover{border-color:var(--red);color:var(--red);}
-.btn-reset{background:transparent;color:var(--muted);border:1px solid var(--border);font-size:10px;padding:3px 9px;}
-.btn-reset:hover{color:var(--text);}
-
-/* STATS BAR */
-.stats-bar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;}
-.sc{background:var(--s1);border:1px solid var(--border);border-radius:9px;padding:8px 14px;font-family:var(--mono);font-size:10px;color:var(--muted);}
-.sc strong{display:block;font-size:19px;font-family:var(--head);font-weight:800;color:var(--text);line-height:1.2;}
-.sc.c0 strong{color:var(--red);}
-.sc.c1 strong{color:var(--a3);}
-.sc.c2 strong{color:var(--a2);}
-.sc.c3 strong{color:var(--a1);}
-.stat-note{font-family:var(--mono);font-size:11px;color:var(--muted);margin-bottom:18px;}
-.stat-note .chk{color:var(--a1);}
-
-/* CTRL */
-.ctrl{display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap;}
-.ctrl-title{font-size:15px;font-weight:800;}
-.filter-tabs{display:flex;gap:5px;flex-wrap:wrap;}
-.ft{font-family:var(--mono);font-size:10px;padding:4px 11px;border-radius:20px;border:1px solid var(--border);background:none;color:var(--muted);cursor:pointer;transition:all .15s;}
-.ft:hover{border-color:rgba(129,140,248,.35);color:var(--text);}
-.ft.active{background:rgba(129,140,248,.1);color:var(--a2);border-color:rgba(129,140,248,.35);}
-
-/* TABLE */
-.tbox{background:var(--s1);border:1px solid var(--border);border-radius:12px;overflow:hidden;margin-bottom:20px;}
-table{width:100%;border-collapse:collapse;}
-th{font-family:var(--mono);font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:1.5px;padding:10px 12px;text-align:left;border-bottom:2px solid var(--border);background:var(--s1);white-space:nowrap;}
-td{padding:13px 12px;border-bottom:1px solid rgba(255,255,255,.04);vertical-align:top;}
-tr:last-child td{border-bottom:none;}
-tr:hover td{background:rgba(129,140,248,.02);}
-tr.tr-confirmed td{background:rgba(110,231,183,.025);}
-tr.tr-fp td{background:rgba(248,113,113,.02);opacity:.55;}
-
-/* ENGINE BADGE */
-.eng{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;border-radius:50%;font-family:var(--mono);font-size:10px;font-weight:600;}
-.eng-c0{background:rgba(248,113,113,.15);color:var(--red);border:1px solid rgba(248,113,113,.3);}
-.eng-c1{background:rgba(251,146,60,.15);color:var(--a3);border:1px solid rgba(251,146,60,.3);}
-.eng-c2{background:rgba(129,140,248,.15);color:var(--a2);border:1px solid rgba(129,140,248,.3);}
-.eng-c3{background:rgba(110,231,183,.12);color:var(--a1);border:1px solid rgba(110,231,183,.25);}
-
-/* SEVERITY */
-.sev{font-family:var(--mono);font-size:10px;padding:2px 8px;border-radius:20px;display:inline-block;white-space:nowrap;}
-.sev-high{background:rgba(248,113,113,.12);color:#f87171;border:1px solid rgba(248,113,113,.25);}
-.sev-medium{background:rgba(251,191,36,.12);color:#fbbf24;border:1px solid rgba(251,191,36,.25);}
-.sev-low{background:rgba(110,231,183,.1);color:var(--a1);border:1px solid rgba(110,231,183,.2);}
-
-/* CELL TYPES */
-.kind-tag{font-family:var(--mono);font-size:10px;color:var(--text);}
-.id-tag{font-family:var(--mono);font-size:11px;color:var(--a2);}
-.detail-txt{font-size:12px;color:var(--text);max-width:220px;line-height:1.5;}
-.affected-txt{font-family:var(--mono);font-size:10px;color:var(--muted);max-width:120px;word-break:break-word;line-height:1.4;}
-.fix-txt{font-size:11px;color:var(--a1);max-width:150px;line-height:1.4;}
-
-/* FEEDBACK */
-.fb-cell{min-width:210px;}
-.fb-inp{width:100%;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:var(--mono);font-size:10px;padding:6px 8px;outline:none;margin-bottom:5px;resize:none;}
-.fb-inp:focus{border-color:var(--a2);}
-.fb-inp::placeholder{color:var(--muted);}
-.fb-btns{display:flex;gap:5px;}
-.fb-done{font-family:var(--mono);font-size:10px;color:var(--muted);margin-bottom:6px;}
-.fb-done.conf{color:var(--a1);}
-.fb-done.fp{color:var(--red);}
-
-/* EMPTY / LOADING */
-.empty{text-align:center;padding:56px 20px;font-family:var(--mono);font-size:12px;color:var(--muted);}
-.empty .ico{font-size:38px;margin-bottom:10px;}
-.empty .etitle{font-size:14px;font-weight:700;color:var(--text);margin-bottom:7px;font-family:var(--head);}
-
-/* TOAST */
-.toasts{position:fixed;bottom:20px;right:20px;z-index:9000;display:flex;flex-direction:column;gap:7px;pointer-events:none;}
-.toast{background:var(--s2);border:1px solid var(--border);border-radius:9px;padding:10px 15px;font-family:var(--mono);font-size:12px;display:flex;gap:8px;align-items:center;animation:tin .25s ease;max-width:340px;pointer-events:auto;}
-@keyframes tin{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
-.tok{border-color:rgba(110,231,183,.3);}
-.terr{border-color:rgba(248,113,113,.3);}
-.twarn{border-color:rgba(251,191,36,.3);}
-
-/* MODAL */
-.overlay{position:fixed;inset:0;background:rgba(6,6,8,.85);z-index:1000;display:none;align-items:center;justify-content:center;backdrop-filter:blur(4px);}
-.overlay.open{display:flex;}
-.modal{background:var(--s1);border:1px solid var(--border);border-radius:16px;padding:26px;width:520px;max-width:96vw;max-height:92vh;overflow-y:auto;}
-.modal h2{font-size:18px;font-weight:800;margin-bottom:3px;}
-.modal-sub{font-family:var(--mono);font-size:10px;color:var(--muted);margin-bottom:20px;}
-.mf{margin-bottom:13px;}
-.mf label{font-family:var(--mono);font-size:9px;color:var(--muted);letter-spacing:1.5px;text-transform:uppercase;display:block;margin-bottom:5px;}
-.mf input,.mf select{width:100%;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-family:var(--mono);font-size:12px;padding:9px 12px;outline:none;}
-.mf input:focus,.mf select:focus{border-color:var(--a2);}
-.mf select option{background:var(--s2);}
-.mf .hint{font-family:var(--mono);font-size:10px;color:var(--muted);margin-top:4px;}
-.mactions{display:flex;gap:10px;margin-top:18px;}
-.mdivider{border:none;border-top:1px solid var(--border);margin:16px 0;}
-.msection{font-family:var(--mono);font-size:9px;color:var(--muted);letter-spacing:1.5px;text-transform:uppercase;margin-bottom:12px;}
-
-.col-warn{font-family:var(--mono);font-size:10px;color:var(--yellow);background:rgba(251,191,36,.07);border:1px solid rgba(251,191,36,.2);border-radius:7px;padding:8px 12px;margin-top:10px;display:none;}
+  :root{
+    --bg:#0f1115; --card:#171a21; --line:#262b36; --ink:#e7eaf0;
+    --muted:#8b94a7; --accent:#5b8cff; --accent2:#3a6df0;
+    --high:#ffa500; --med:#ffd54a; --low:#7fb2ff; --crit:#ff5470; --ok:#46d27a;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;}
+  .wrap{max-width:860px;margin:0 auto;padding:32px 20px 80px;}
+  h1{font-size:22px;margin:0 0 4px;}
+  .sub{color:var(--muted);margin:0 0 28px;font-size:14px;}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;
+    padding:22px;margin-bottom:18px;}
+  .step{display:flex;align-items:center;gap:10px;margin:0 0 16px;font-weight:600;}
+  .num{width:24px;height:24px;border-radius:50%;background:var(--accent2);
+    color:#fff;display:grid;place-items:center;font-size:13px;flex:none;}
+  label{display:block;font-size:13px;color:var(--muted);margin:0 0 6px;}
+  .row{display:flex;gap:16px;flex-wrap:wrap;}
+  .row > div{flex:1;min-width:200px;}
+  select,input[type=text]{width:100%;background:#0d0f14;border:1px solid var(--line);
+    color:var(--ink);border-radius:9px;padding:10px 12px;font-size:14px;}
+  .drop{border:1.5px dashed var(--line);border-radius:11px;padding:18px;
+    text-align:center;cursor:pointer;transition:.15s;background:#0d0f14;}
+  .drop:hover,.drop.hot{border-color:var(--accent);background:#10141d;}
+  .drop input{display:none;}
+  .drop .big{font-size:14px;color:var(--ink);}
+  .drop .small{font-size:12px;color:var(--muted);margin-top:4px;}
+  .drop.has{border-color:var(--ok);border-style:solid;}
+  textarea{width:100%;min-height:120px;background:#0d0f14;border:1px solid var(--line);
+    color:var(--ink);border-radius:9px;padding:11px 12px;font-size:13px;resize:vertical;
+    font-family:ui-monospace,Menlo,monospace;}
+  .or{text-align:center;color:var(--muted);font-size:12px;margin:12px 0;
+    text-transform:uppercase;letter-spacing:.08em;}
+  button.go{width:100%;background:var(--accent2);color:#fff;border:0;border-radius:10px;
+    padding:14px;font-size:15px;font-weight:600;cursor:pointer;margin-top:4px;}
+  button.go:hover{background:var(--accent);}
+  button.go:disabled{opacity:.45;cursor:not-allowed;}
+  .hint{font-size:12px;color:var(--muted);margin-top:8px;}
+  #out{display:none;}
+  .stat{display:flex;gap:14px;flex-wrap:wrap;margin:0 0 18px;}
+  .pill{background:#0d0f14;border:1px solid var(--line);border-radius:10px;
+    padding:10px 14px;flex:1;min-width:120px;}
+  .pill .n{font-size:22px;font-weight:700;}
+  .pill .l{font-size:12px;color:var(--muted);}
+  .pill.crit .n{color:var(--crit);} .pill.high .n{color:var(--high);}
+  .pill.med .n{color:var(--med);} .pill.fix .n{color:var(--ok);}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px;}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);
+    vertical-align:top;}
+  th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;
+    letter-spacing:.04em;}
+  td .from{color:var(--muted);text-decoration:line-through;}
+  td .to{color:var(--ok);font-weight:600;}
+  .tag{display:inline-block;font-size:11px;padding:2px 7px;border-radius:5px;
+    font-weight:600;margin-right:6px;}
+  .tag.high{background:rgba(255,165,0,.15);color:var(--high);}
+  .tag.medium{background:rgba(255,213,74,.15);color:var(--med);}
+  .tag.low{background:rgba(127,178,255,.15);color:var(--low);}
+  .tag.critical{background:rgba(255,84,112,.15);color:var(--crit);}
+  .dl{display:inline-block;background:var(--ok);color:#06250f;font-weight:700;
+    padding:13px 22px;border-radius:10px;text-decoration:none;cursor:pointer;border:0;
+    font-size:15px;}
+  .err{background:rgba(255,84,112,.1);border:1px solid var(--crit);color:#ffb3c0;
+    padding:12px 14px;border-radius:9px;font-size:13px;margin-top:12px;display:none;}
+  .scroll{max-height:440px;overflow:auto;border:1px solid var(--line);border-radius:10px;}
+  .muted{color:var(--muted);}
 </style>
 </head>
 <body>
-<div class="toasts" id="toasts"></div>
+<div class="wrap">
+  <h1>Localization Verifier</h1>
+  <p class="sub">Upload your LS sheet, pick the languages, give the show's script or canon — get the same sheet back with entities corrected and every change listed.</p>
 
-<!-- CONFIG MODAL -->
-<div class="overlay" id="cfgModal">
-<div class="modal">
-  <h2>Configure Verifier</h2>
-  <div class="modal-sub">Set source &amp; target language before running — this determines which checks apply</div>
-
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
-    <div class="mf">
-      <label>Source Language *</label>
-      <select id="c_src">
-        <option value="en-US">English US (en-US)</option>
-        <option value="en-GB">English UK (en-GB)</option>
-        <option value="fr-FR">French (fr-FR)</option>
-        <option value="de-DE">German (de-DE)</option>
-        <option value="it-IT">Italian (it-IT)</option>
-        <option value="es-ES">Spanish (es-ES)</option>
-        <option value="pt-BR">Portuguese BR</option>
-        <option value="tr-TR">Turkish (tr-TR)</option>
-      </select>
-    </div>
-    <div class="mf">
-      <label>Target Language *</label>
-      <select id="c_tgt">
-        <option value="fr-FR">French (fr-FR)</option>
-        <option value="de-DE">German (de-DE)</option>
-        <option value="it-IT">Italian (it-IT)</option>
-        <option value="es-ES">Spanish (es-ES)</option>
-        <option value="pt-BR">Portuguese BR</option>
-        <option value="tr-TR">Turkish (tr-TR)</option>
-        <option value="en-US">English US (en-US)</option>
-        <option value="en-GB">English UK (en-GB)</option>
-      </select>
-    </div>
-  </div>
-
-  <hr class="mdivider"/>
-
-  <div class="mf">
-    <label>Google Sheet URL *</label>
-    <input id="c_url" type="text" placeholder="https://docs.google.com/spreadsheets/d/…"/>
-    <div class="hint">The sheet containing your localisation data</div>
-  </div>
-  <div class="mf">
-    <label>Tab / Sheet Name (optional)</label>
-    <input id="c_tab" type="text" placeholder="Leave blank to use the first tab"/>
-  </div>
-
-  <hr class="mdivider"/>
-  <div class="msection">Column Mapping — leave blank to auto-detect</div>
-
-  <div class="mf">
-    <label>ID Column</label>
-    <input id="c_id" type="text" placeholder="e.g. char_id, id, entity_id"/>
-    <div class="hint">Column that uniquely identifies each row / character</div>
-  </div>
-  <div class="mf">
-    <label>Source Text Columns (comma-separated)</label>
-    <input id="c_src_cols" type="text" placeholder="e.g. source_name, en_text"/>
-  </div>
-  <div class="mf">
-    <label>Target / Localised Columns (comma-separated) *</label>
-    <input id="c_tgt_cols" type="text" placeholder="e.g. localised_name, fr_text"/>
-    <div class="hint">Columns that should contain the translated content</div>
-  </div>
-  <div class="mf">
-    <label>Source Script Column (optional but recommended)</label>
-    <input id="c_script_col" type="text" placeholder="e.g. source_script, en_dialogue, script_text"/>
-    <div class="hint">Column containing the raw source script/dialogue text — used to extract character names and check if they appear unlocalised in the target</div>
-  </div>
-  <div class="col-warn" id="colWarn">⚠ Could not auto-detect target columns — please fill in the field above.</div>
-
-  <div class="mactions">
-    <button class="btn btn-p" onclick="saveConfig()">Save &amp; Run Checks</button>
-    <button class="btn btn-g" onclick="closeCfg()">Cancel</button>
-  </div>
-</div>
-</div>
-
-<!-- TOPBAR -->
-<div class="topbar">
-  <div class="brand"><div class="brand-icon">🔍</div>Localisation <em>Verifier</em></div>
-  <div class="sep"></div>
-  <div class="sdot" id="sdot"></div>
-  <span class="stxt" id="stxt">Idle — configure to start</span>
-  <div class="sp"></div>
-  <button class="gauth-btn" id="gauthBtn" onclick="signIn()">
-    <svg width="15" height="15" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.47 2.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
-    Sign in with Google
-  </button>
-  <span class="gauth-st" id="gauthSt">Not signed in</span>
-</div>
-
-<!-- MAIN -->
-<div class="main">
-
-  <!-- CONFIG BANNER -->
-  <div class="cfg-banner" id="cfgBanner">
-    <div class="cfg-banner-top">
+  <div class="card">
+    <div class="step"><span class="num">1</span> Languages</div>
+    <div class="row">
       <div>
-        <div class="cfg-title">Localisation Verifier</div>
-        <div class="cfg-sub">Configure source &amp; target language, connect your sheet, then run automated checks</div>
+        <label>Source language</label>
+        <select id="src">
+          <option value="de">German</option>
+          <option value="en">English</option>
+          <option value="fr">French</option>
+          <option value="it">Italian</option>
+          <option value="es">Spanish</option>
+          <option value="pt">Portuguese</option>
+          <option value="tr">Turkish</option>
+        </select>
       </div>
-      <button class="btn btn-p" onclick="openCfg()">⚙ Configure &amp; Run</button>
-    </div>
-    <div class="cfg-summary" id="cfgSummary"></div>
-  </div>
-
-  <!-- RESULTS (hidden until checks run) -->
-  <div id="resultsArea" style="display:none;">
-
-    <!-- STATS BAR -->
-    <div class="stats-bar" id="statsBar"></div>
-    <div class="stat-note" id="statNote"></div>
-
-    <!-- SECTION HEADER -->
-    <div class="ctrl">
-      <div class="ctrl-title">2 · Issues &amp; Writer Feedback</div>
-      <div class="sp"></div>
-      <button class="btn btn-exp" id="expBtn" onclick="exportToSheet()">↗ Export to Sheet</button>
-      <button class="btn btn-g btn-sm" onclick="openCfg()">⚙ Re-configure</button>
-    </div>
-
-    <!-- FILTER TABS -->
-    <div class="filter-tabs" style="margin-bottom:14px;">
-      <button class="ft active" onclick="setFilter('all',this)">All</button>
-      <button class="ft" onclick="setFilter('C0',this)">C0 — Critical</button>
-      <button class="ft" onclick="setFilter('C1',this)">C1 — Character</button>
-      <button class="ft" onclick="setFilter('C2',this)">C2 — Content</button>
-      <button class="ft" onclick="setFilter('C3',this)">C3 — Format</button>
-      <button class="ft" onclick="setFilter('pending',this)">Pending</button>
-      <button class="ft" onclick="setFilter('confirmed',this)">Confirmed</button>
-      <button class="ft" onclick="setFilter('fp',this)">False Positives</button>
-    </div>
-
-    <!-- ISSUES TABLE -->
-    <div class="tbox">
-      <table>
-        <thead>
-          <tr>
-            <th>Engine</th>
-            <th>Severity</th>
-            <th>Kind</th>
-            <th>ID</th>
-            <th>Detail</th>
-            <th>Affected</th>
-            <th>Suggested Fix</th>
-            <th>Writer Feedback</th>
-          </tr>
-        </thead>
-        <tbody id="tbody"></tbody>
-      </table>
-      <div class="empty" id="tEmpty" style="display:none;">
-        <div class="ico">✓</div>No issues — or none matching this filter.
+      <div>
+        <label>Target language</label>
+        <select id="tgt">
+          <option value="fr">French</option>
+          <option value="de">German</option>
+          <option value="en">English</option>
+          <option value="it">Italian</option>
+          <option value="es">Spanish</option>
+          <option value="pt">Portuguese</option>
+          <option value="tr">Turkish</option>
+        </select>
       </div>
     </div>
-
   </div>
 
-  <!-- EMPTY STATE -->
-  <div class="empty" id="emptyState">
-    <div class="ico">🔍</div>
-    <div class="etitle">No checks run yet</div>
-    <div>Click <strong>Configure &amp; Run</strong> to set up source language, target language, and your data sheet.</div>
+  <div class="card">
+    <div class="step"><span class="num">2</span> LS sheet (.xlsx)</div>
+    <label class="drop" id="dropLS">
+      <input type="file" id="fileLS" accept=".xlsx,.xls">
+      <div class="big" id="lsLabel">Click or drop your LSv3 sheet</div>
+      <div class="small">Localization Details + Mention Mappings tabs</div>
+    </label>
   </div>
 
+  <div class="card">
+    <div class="step"><span class="num">3</span> Show script or story canon <span class="muted" style="font-weight:400;font-size:13px;">(optional, improves checks)</span></div>
+    <label class="drop" id="dropScript">
+      <input type="file" id="fileScript" accept=".txt,.docx,.md">
+      <div class="big" id="scriptLabel">Click or drop the script (.docx / .txt)</div>
+      <div class="small">Used as context to validate which entities are real</div>
+    </label>
+    <div class="or">— or paste canon —</div>
+    <textarea id="canon" placeholder="Paste the story canon / character bible here: who the characters are, places, organisations, relationships…"></textarea>
+  </div>
+
+  <button class="go" id="run" disabled>Verify &amp; correct</button>
+  <div class="hint">Everything runs in your browser. Nothing is uploaded to any server.</div>
+  <div class="err" id="err"></div>
+
+  <div id="out" class="card" style="margin-top:24px;">
+    <div class="step"><span class="num" style="background:var(--ok);">✓</span> Results</div>
+    <div class="stat" id="stat"></div>
+    <div style="margin-bottom:16px;"><button class="dl" id="dl">⬇ Download corrected sheet</button></div>
+    <div class="scroll">
+      <table id="resTable"><thead><tr>
+        <th>Where</th><th>Original</th><th>Correction</th><th>Why</th>
+      </tr></thead><tbody></tbody></table>
+    </div>
+  </div>
 </div>
 
 <script>
-// ── CONSTANTS ────────────────────────────────────────────────
-const LANG_NAMES = {
-  'en-US':'English (US)','en-GB':'English (UK)','fr-FR':'French',
-  'de-DE':'German','it-IT':'Italian','es-ES':'Spanish',
-  'pt-BR':'Portuguese (BR)','tr-TR':'Turkish'
-};
+"use strict";
+const LANGS={de:"German",fr:"French",en:"English",it:"Italian",es:"Spanish",pt:"Portuguese",tr:"Turkish"};
+const EMPTY=new Set(["","none","null","n/a","-","undefined","na","#n/a","tbd","tbc"]);
+const CHAPTER_RE=/^\d+(\s*,\s*\d+)*$/;
+const LOWER_START=/^[a-zà-öø-ÿ]/;
+const KINSHIP=new Set(["mama","maman","papa","schwester","schwägerin","bruder","tante","onkel",
+  "belle-sœur","sœur","frère","grand-père","grand-mère","chère","großvater","großmutter",
+  "oma","opa","schatz","liebling","belle-mère","beau-père","neveu","nièce","cousin","cousine"]);
+const SOURCE_LEAK={de:/\b(der|die|das|und|von|für|ist|bei|mit|auf|des|dem|den|ein|eine|einer|einen|einem|eines|nicht|herr|frau|kaiser|konzern|gesellschaft|firma)\b/i};
 
-// ── STATE ────────────────────────────────────────────────────
-let tokenClient, token = null;
-let cfg = JSON.parse(localStorage.getItem('lv_cfg') || 'null');
-let issues = [];      // [{engine,severity,kind,id,detail,affected,fix,rowIdx,_i}]
-let fb = {};          // _i → {corrected,why,status:'pending'|'confirmed'|'fp'}
-let activeFilter = 'all';
+const $=id=>document.getElementById(id);
+const norm=v=>String(v==null?"":v).trim();
+const isEmpty=v=>EMPTY.has(norm(v).toLowerCase());
+const isAlias=r=>CHAPTER_RE.test(norm(r["First Name (Localized)"]))||norm(r["Last Name (Localized)"])==="Yes";
+const cap=s=>s.charAt(0).toUpperCase()+s.slice(1);
 
-// ── GOOGLE OAUTH ─────────────────────────────────────────────
-window.onGoogleLibraryLoad = () => {
-  const cid = localStorage.getItem('lv_gid');
-  if (!cid) return;
-  tokenClient = google.accounts.oauth2.initTokenClient({
-    client_id: cid,
-    scope: 'https://www.googleapis.com/auth/spreadsheets',
-    callback: r => {
-      if (r.error) { toast('Sign-in failed: ' + r.error, 'err'); return; }
-      token = r.access_token;
-      document.getElementById('gauthSt').textContent = 'Signed in ✓';
-      document.getElementById('gauthSt').className = 'gauth-st ok';
-      document.getElementById('gauthBtn').textContent = '↺ Re-authenticate';
-      toast('Signed in to Google', 'ok');
-    }
+let lsWB=null, scriptText="";
+
+// ── file wiring ───────────────────────────────────────────────
+function wireDrop(dropId,inputId,labelId,onFile){
+  const drop=$(dropId),input=$(inputId),label=$(labelId);
+  drop.addEventListener("dragover",e=>{e.preventDefault();drop.classList.add("hot");});
+  drop.addEventListener("dragleave",()=>drop.classList.remove("hot"));
+  drop.addEventListener("drop",e=>{e.preventDefault();drop.classList.remove("hot");
+    if(e.dataTransfer.files[0]){input.files=e.dataTransfer.files;input.dispatchEvent(new Event("change"));}});
+  input.addEventListener("change",()=>{
+    const f=input.files[0]; if(!f)return;
+    drop.classList.add("has"); label.textContent=f.name;
+    onFile(f);
   });
-};
+}
 
-function signIn() {
-  let cid = localStorage.getItem('lv_gid');
-  if (!cid) {
-    cid = prompt('Paste your Google OAuth Client ID:');
-    if (!cid) return;
-    localStorage.setItem('lv_gid', cid.trim());
-    location.reload(); return;
+wireDrop("dropLS","fileLS","lsLabel",f=>{
+  const rd=new FileReader();
+  rd.onload=e=>{ try{ lsWB=XLSX.read(new Uint8Array(e.target.result),{type:"array"}); checkReady(); }
+    catch(err){ showErr("Could not read the xlsx: "+err.message); } };
+  rd.readAsArrayBuffer(f);
+});
+
+wireDrop("dropScript","fileScript","scriptLabel",f=>{
+  if(/\.docx$/i.test(f.name)){
+    const rd=new FileReader();
+    rd.onload=e=>mammoth.extractRawText({arrayBuffer:e.target.result})
+      .then(r=>{scriptText=r.value;})
+      .catch(err=>showErr("Could not read docx: "+err.message));
+    rd.readAsArrayBuffer(f);
+  } else {
+    const rd=new FileReader();
+    rd.onload=e=>{scriptText=e.target.result;};
+    rd.readAsText(f);
   }
-  if (!tokenClient) { toast('Google API still loading…', 'warn'); return; }
-  tokenClient.requestAccessToken({ prompt: 'consent' });
+});
+
+$("canon").addEventListener("input",()=>{ if($("canon").value.trim()) scriptText=$("canon").value; });
+function checkReady(){ $("run").disabled=!lsWB; }
+function showErr(m){ const e=$("err"); e.textContent=m; e.style.display="block"; }
+function hideErr(){ $("err").style.display="none"; }
+
+// ── sheet helpers ─────────────────────────────────────────────
+function sheetToRows(ws){
+  const rows=XLSX.utils.sheet_to_json(ws,{header:1,defval:""});
+  if(!rows.length) return {headers:[],data:[]};
+  const headers=rows[0].map(h=>norm(h));
+  const data=rows.slice(1).map(r=>{
+    const o={}; headers.forEach((h,i)=>o[h]=norm(r[i])); return o;
+  });
+  return {headers,data};
+}
+const findSheet=(wb,kw)=>wb.SheetNames.find(n=>n.toLowerCase().includes(kw));
+
+// ── canon / script entity extraction ──────────────────────────
+function scriptEntities(text){
+  const set=new Set();
+  if(!text) return set;
+  const re=/\b([A-ZÀ-Ö][a-zà-öA-ZÀ-Öäöüß'’\-]{2,})\b/g; let m;
+  while((m=re.exec(text))) set.add(m[1].toLowerCase());
+  return set;
 }
 
-// ── CONFIG MODAL ─────────────────────────────────────────────
-function openCfg() {
-  if (cfg) {
-    document.getElementById('c_src').value        = cfg.srcLang   || 'en-US';
-    document.getElementById('c_tgt').value        = cfg.tgtLang   || 'fr-FR';
-    document.getElementById('c_url').value        = cfg.sheetUrl  || '';
-    document.getElementById('c_tab').value        = cfg.tab       || '';
-    document.getElementById('c_id').value         = cfg.idCol     || '';
-    document.getElementById('c_src_cols').value   = (cfg.srcCols  || []).join(', ');
-    document.getElementById('c_tgt_cols').value   = (cfg.tgtCols  || []).join(', ');
-    document.getElementById('c_script_col').value = cfg.scriptCol || '';
-  }
-  document.getElementById('colWarn').style.display = 'none';
-  document.getElementById('cfgModal').classList.add('open');
-}
+// ── the verification + correction engine ──────────────────────
+function verify(wb,src,tgt,text){
+  const corrections=[];
+  const ldName=findSheet(wb,"detail")||wb.SheetNames[0];
+  const mmName=findSheet(wb,"mention");
+  const ld=sheetToRows(wb.Sheets[ldName]);
+  const mm=mmName?sheetToRows(wb.Sheets[mmName]):{headers:[],data:[]};
+  const leak=SOURCE_LEAK[src];
+  const ents=scriptEntities(text);
 
-function closeCfg() { document.getElementById('cfgModal').classList.remove('open'); }
-window.addEventListener('click', e => { if (e.target === document.getElementById('cfgModal')) closeCfg(); });
-
-function saveConfig() {
-  const sheetUrl = document.getElementById('c_url').value.trim();
-  const srcLang  = document.getElementById('c_src').value;
-  const tgtLang  = document.getElementById('c_tgt').value;
-
-  if (!sheetUrl) { toast('Sheet URL is required', 'warn'); return; }
-  if (srcLang === tgtLang) { toast('Source and target must be different languages', 'warn'); return; }
-
-  const sheetId = sheetUrl.match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/)?.[1];
-  if (!sheetId) { toast('Invalid Google Sheet URL', 'err'); return; }
-
-  cfg = {
-    srcLang, tgtLang, sheetUrl, sheetId,
-    tab:       document.getElementById('c_tab').value.trim(),
-    idCol:     document.getElementById('c_id').value.trim(),
-    srcCols:   document.getElementById('c_src_cols').value.split(',').map(s=>s.trim()).filter(Boolean),
-    tgtCols:   document.getElementById('c_tgt_cols').value.split(',').map(s=>s.trim()).filter(Boolean),
-    scriptCol: document.getElementById('c_script_col').value.trim(),
-  };
-  localStorage.setItem('lv_cfg', JSON.stringify(cfg));
-  closeCfg();
-  runVerifier();
-}
-
-// ── SHEET READER ─────────────────────────────────────────────
-async function loadSheetValues() {
-  if (!token) throw new Error('Not signed in to Google — click Sign in with Google first.');
-  const range = cfg.tab ? encodeURIComponent(cfg.tab + '!A:ZZ') : 'A%3AZZ';
-  const url = `https://sheets.googleapis.com/v4/spreadsheets/${cfg.sheetId}/values/${range}?access_token=${token}`;
-  const r = await fetch(url);
-  if (!r.ok) throw new Error('Sheets API ' + r.status + ': ' + await r.text());
-  return (await r.json()).values || [];
-}
-
-function parseRows(values) {
-  if (!values.length) return { headers: [], rows: [] };
-  const headers = values[0].map(h => (h || '').trim());
-  const rows = [];
-  for (let i = 1; i < values.length; i++) {
-    const d = { _row: i + 1 };
-    headers.forEach((h, j) => { d[h] = (values[i][j] !== undefined ? String(values[i][j]) : '').trim(); });
-    rows.push(d);
-  }
-  return { headers, rows };
-}
-
-// ── COLUMN AUTO-DETECT ────────────────────────────────────────
-function detectCols(headers) {
-  const lc = h => h.toLowerCase();
-  const tgt = cfg.tgtLang.split('-')[0].toLowerCase();
-  const src = cfg.srcLang.split('-')[0].toLowerCase();
-
-  const idCol = cfg.idCol || headers.find(h =>
-    ['char_id','character_id','entity_id','id','row_id'].includes(lc(h))
-  ) || headers[0] || '';
-
-  let tgtCols = cfg.tgtCols.length ? cfg.tgtCols : headers.filter(h => {
-    const l = lc(h);
-    return l.includes('localised') || l.includes('localized') ||
-           l.includes('translated') || l.includes('target') ||
-           l.startsWith(tgt + '_') || l.endsWith('_' + tgt) ||
-           l === 'translation' || l === 'localisation';
+  // Stage 4 — uniformly flat rule: canonical = majority localized form per source name
+  const tally={};
+  ld.data.forEach(r=>{
+    if(isAlias(r))return;
+    const o=norm(r["Original Name"]).toLowerCase(), l=norm(r["Localized Name"]);
+    if(isEmpty(o)||isEmpty(l))return;
+    (tally[o]=tally[o]||{})[l]=(tally[o][l]||0)+1;
+  });
+  const canonical={};
+  Object.entries(tally).forEach(([o,m])=>{
+    canonical[o]=Object.entries(m).sort((a,b)=>b[1]-a[1])[0][0];
   });
 
-  let srcCols = cfg.srcCols.length ? cfg.srcCols : headers.filter(h => {
-    const l = lc(h);
-    return l.includes('source') || l.includes('original') ||
-           l.startsWith(src + '_') || l.endsWith('_' + src) ||
-           l === 'english' || l === 'en';
-  });
+  // per-row LD checks + corrections
+  ld.data.forEach(r=>{
+    if(isAlias(r))return;
+    const orig=norm(r["Original Name"]), loc=norm(r["Localized Name"]);
+    const issues=[];
 
-  // Auto-detect source script column
-  const scriptPatterns = ['script','dialogue','dialog','narration','text','content','episode_text','source_text','en_script','source_script'];
-  const scriptCol = cfg.scriptCol || headers.find(h => scriptPatterns.some(p => lc(h).includes(p))) || '';
-
-  return { idCol, tgtCols, srcCols, scriptCol };
-}
-
-// ── SCRIPT ENTITY EXTRACTOR ───────────────────────────────────
-function extractScriptEntities(rows, scriptCol) {
-  if (!scriptCol) return null;
-
-  // Dialogue speaker labels: "NAME:" or "NAME -" or "NAME –" at line start
-  // Handles ALL CAPS and Title Case names up to 40 chars
-  const SPEAKER_RE = /^([A-ZÀ-Ö][A-ZÀ-Öa-zà-ö\s\-']{0,39})\s*[:–—-]\s/gm;
-  // Stage directions / parentheticals to skip
-  const STAGE_DIR = /^\s*[\[(]/;
-
-  const speakerCount = new Map();
-  const properNounCount = new Map();
-
-  rows.forEach(row => {
-    const text = (row[scriptCol] || '').trim();
-    if (!text) return;
-
-    // Extract speaker labels
-    for (const m of text.matchAll(SPEAKER_RE)) {
-      const spk = m[1].trim().replace(/\s+/g, ' ');
-      if (STAGE_DIR.test(spk) || spk.length < 2) continue;
-      speakerCount.set(spk, (speakerCount.get(spk) || 0) + 1);
+    if(isEmpty(loc)){
+      issues.push(["MISSING_LOCALISATION","critical",
+        `'${orig}' has no ${LANGS[tgt]} localized name.`,null]);
+    } else {
+      // Stage 4 correction: deviates from canonical → fix it
+      const canon=canonical[orig.toLowerCase()];
+      if(canon&&loc!==canon){
+        issues.push(["CROSS_CHARACTER_INCONSISTENCY","high",
+          `'${orig}' was '${loc}' here but '${canon}' elsewhere — unified to '${canon}'.`,canon]);
+        r["Localized Name"]=canon;
+      }
+      // casing correction
+      const cur=norm(r["Localized Name"]);
+      if(LOWER_START.test(cur)){
+        const fixed=cap(cur);
+        issues.push(["ENTITY_INCONSISTENCY","low",
+          `'${cur}' started lowercase — capitalised to '${fixed}'.`,fixed]);
+        r["Localized Name"]=fixed;
+      }
+      // source-language leak (flag only)
+      if(leak){ const lm=norm(r["Localized Name"]).match(leak);
+        if(lm) issues.push(["ENTITY_INCONSISTENCY","high",
+          `${LANGS[src]} word '${lm[0]}' present in localized name '${norm(r["Localized Name"])}'.`,null]); }
     }
 
-    // Extract recurring proper nouns (capitalised mid-sentence, not all-caps labels)
-    text.split(/\n/).forEach(line => {
-      const words = line.trim().split(/\s+/);
-      words.forEach((w, i) => {
-        if (i === 0) return; // skip sentence-start (ambiguous)
-        const clean = w.replace(/[^a-zA-ZÀ-ÿ'-]/g, '');
-        if (clean.length < 3) return;
-        if (clean === clean.toUpperCase()) return; // skip ALL-CAPS labels
-        const first = clean[0];
-        if (first === first.toUpperCase() && first !== first.toLowerCase()) {
-          properNounCount.set(clean, (properNounCount.get(clean) || 0) + 1);
-        }
-      });
-    });
-  });
-
-  // Keep speakers that appear 2+ times (avoids one-off typos)
-  const speakers = new Map(
-    [...speakerCount.entries()].filter(([, c]) => c >= 2)
-  );
-  // Keep proper nouns appearing 3+ times mid-sentence
-  const properNouns = new Map(
-    [...properNounCount.entries()].filter(([, c]) => c >= 3)
-  );
-
-  return { speakers, properNouns };
-}
-
-// Build reverse lookup: lowercase source name → entity ID
-function buildSourceNameIndex(rows, idCol, srcCols) {
-  const index = new Map(); // lower-case source name → {id, srcName}
-  rows.forEach(row => {
-    const id = row[idCol]; if (!id || isEmpty(id)) return;
-    srcCols.forEach(col => {
-      const v = (row[col] || '').trim();
-      if (v && !isEmpty(v)) index.set(v.toLowerCase(), { id, srcName: v });
-    });
-  });
-  return index;
-}
-
-// ── CHECK ENGINES ─────────────────────────────────────────────
-
-const EMPTY_VALS = new Set(['', 'none', 'null', 'n/a', '-', 'undefined', 'na', '#n/a']);
-const isEmpty = v => EMPTY_VALS.has((v || '').trim().toLowerCase());
-
-function c0_checks(rows, idCol, tgtCols, srcCols, scriptEntities) {
-  const out = [];
-  const tgtName = LANG_NAMES[cfg.tgtLang] || cfg.tgtLang;
-
-  rows.forEach(row => {
-    const id = row[idCol] || `row_${row._row}`;
-    // Resolve entity's source name for better error messages
-    const srcName = srcCols.map(c => row[c]).find(v => v && !isEmpty(v)) || '';
-
-    // Look up whether this entity appears as a speaker in the source script
-    let scriptCtx = '';
-    if (scriptEntities && srcName) {
-      const srcLow = srcName.toLowerCase();
-      for (const [spk] of scriptEntities.speakers) {
-        if (spk.toLowerCase().includes(srcLow) || srcLow.includes(spk.toLowerCase())) {
-          scriptCtx = ` (script speaker: "${spk}")`;
-          break;
-        }
-      }
+    if(issues.length){
+      const cell=issues.map(([t,s,d])=>`${t}: ${d} (Severity: ${s})`).join(" | ");
+      const prev=norm(r["Localization Issues"]);
+      r["Localization Issues"]=prev?prev+" | "+cell:cell;
+      issues.forEach(([tag,sev,detail,fix])=>corrections.push(
+        {where:"Localization Details",original:orig,fix,tag,severity:sev,detail}));
     }
-
-    tgtCols.forEach(col => {
-      if (!(col in row)) return;
-      const val = row[col];
-      if (isEmpty(val)) {
-        const label = srcName ? `'${srcName}'` : `'${id}'`;
-        out.push({ engine:'C0', severity:'high', kind:'missing_localised', id,
-          detail: `${label} has no ${tgtName} localised name.${scriptCtx}`,
-          affected: srcName || val || '(empty)',
-          fix: `Add a ${tgtName} translation for ${label} in column '${col}'`,
-          rowIdx: row._row });
-      }
-      // Placeholder markers
-      if (val && /\[TRANSLATE\]|TODO:|TBD|\[MISSING\]|XXX/i.test(val)) {
-        out.push({ engine:'C0', severity:'high', kind:'placeholder_text', id,
-          detail: `'${col}' contains a placeholder marker — not yet translated.`,
-          affected: val.substring(0,80), fix: 'Replace placeholder with actual translation', rowIdx: row._row });
-      }
-    });
   });
-  return out;
+
+  // Stage 3 — cascade canonical decisions into Mention Mappings
+  mm.data.forEach(r=>{
+    const om=norm(r["Original Mention"]), lm=norm(r["Localized Mention"]);
+    const canonName=norm(r["Canonical Name"]);
+    if(isEmpty(om)||isEmpty(lm))return;
+    if([...KINSHIP].some(k=>om.toLowerCase().includes(k)||lm.toLowerCase().includes(k)))return;
+    let key=(canonName||om).toLowerCase();
+    let canonLoc=canonical[key];
+    if(!canonLoc){ for(const ck in canonical){ if(ck&&(ck.includes(key)||key.includes(ck))){canonLoc=canonical[ck];break;} } }
+    if(!canonLoc)return;
+    const cf=canonLoc.split(" ")[0].toLowerCase(), lf=lm.split(" ")[0].toLowerCase();
+    if(cf&&lf&&cf!==lf){
+      if(canonName&&!om.toLowerCase().includes(canonName.toLowerCase()))return;
+      const fixed=lm.replace(new RegExp(lm.split(" ")[0],"i"),canonLoc.split(" ")[0]);
+      const detail=`'${om}' → '${lm}' but canonical is '${canonLoc}' — corrected to '${fixed}'.`;
+      r["Localized Mention"]=fixed;
+      const note=`MENTION_MAP_INCONSISTENCY: ${detail} (Severity: high)`;
+      const prev=norm(r["Verification Notes"]);
+      r["Verification Notes"]=prev?prev+" | "+note:note;
+      corrections.push({where:"Mention Mappings",original:om,
+        fix:fixed,tag:"MENTION_MAP_INCONSISTENCY",severity:"high",detail});
+    }
+  });
+
+  // rebuild workbook tabs preserving headers
+  function writeBack(name,parsed){
+    if(!name)return;
+    const hdrs=parsed.headers.slice();
+    if(name===ldName&&!hdrs.includes("Localization Issues"))hdrs.push("Localization Issues");
+    if(name===mmName&&!hdrs.includes("Verification Notes"))hdrs.push("Verification Notes");
+    const aoa=[hdrs, ...parsed.data.map(r=>hdrs.map(h=>r[h]!=null?r[h]:""))];
+    wb.Sheets[name]=XLSX.utils.aoa_to_sheet(aoa);
+  }
+  writeBack(ldName,ld);
+  if(mmName)writeBack(mmName,mm);
+
+  return {corrections,wb};
 }
 
-function c1_checks(rows, idCol, tgtCols, srcCols, scriptEntities) {
-  const out = [];
-  const tgtName = LANG_NAMES[cfg.tgtLang] || cfg.tgtLang;
+// ── run ───────────────────────────────────────────────────────
+$("run").addEventListener("click",()=>{
+  hideErr();
+  const src=$("src").value, tgt=$("tgt").value;
+  if(src===tgt){ showErr("Source and target language must differ."); return; }
+  if(!lsWB){ showErr("Please choose an LS sheet first."); return; }
+  if($("canon").value.trim()) scriptText=$("canon").value;
 
-  // Name inconsistency: same ID → different values in same column
-  const map = {};
-  rows.forEach(row => {
-    const id = row[idCol]; if (!id || isEmpty(id)) return;
-    if (!map[id]) map[id] = {};
-    tgtCols.forEach(col => {
-      const v = row[col]; if (!v || isEmpty(v)) return;
-      if (!map[id][col]) map[id][col] = new Set();
-      map[id][col].add(v);
-    });
-  });
-  Object.entries(map).forEach(([id, colMap]) => {
-    Object.entries(colMap).forEach(([col, vals]) => {
-      if (vals.size > 1) {
-        const list = [...vals];
-        out.push({ engine:'C1', severity:'medium', kind:'name_inconsistency', id,
-          detail: `'${id}' has ${vals.size} different localised values in '${col}'.`,
-          affected: list.join(' | '), fix: `Standardise to: "${list[0]}"`, rowIdx: null });
-      }
-    });
-  });
+  let res;
+  try{ res=verify(lsWB,src,tgt,scriptText); }
+  catch(err){ showErr("Processing failed: "+err.message); console.error(err); return; }
 
-  // Script-derived checks: speakers extracted from source script
-  if (scriptEntities && scriptEntities.speakers.size) {
-    const srcNameIndex = buildSourceNameIndex(rows, idCol, srcCols);
+  const c=res.corrections;
+  const by=s=>c.filter(x=>x.severity===s).length;
+  $("stat").innerHTML=`
+    <div class="pill fix"><div class="n">${c.length}</div><div class="l">Corrections</div></div>
+    <div class="pill crit"><div class="n">${by("critical")}</div><div class="l">Critical</div></div>
+    <div class="pill high"><div class="n">${by("high")}</div><div class="l">High</div></div>
+    <div class="pill med"><div class="n">${by("medium")+by("low")}</div><div class="l">Medium / Low</div></div>`;
 
-    scriptEntities.speakers.forEach((count, speaker) => {
-      const spkLow = speaker.toLowerCase();
-
-      // Try to match speaker to a sheet row via source name columns
-      let matchedEntry = null;
-      for (const [nameLow, entry] of srcNameIndex) {
-        if (nameLow === spkLow || spkLow.includes(nameLow) || nameLow.includes(spkLow)) {
-          matchedEntry = entry; break;
-        }
-      }
-
-      if (matchedEntry) {
-        // Entity is in the sheet — check if it has a localised value
-        const matchedRow = rows.find(r => r[idCol] === matchedEntry.id);
-        if (matchedRow) {
-          const hasLocalised = tgtCols.some(col => matchedRow[col] && !isEmpty(matchedRow[col]));
-          if (!hasLocalised) {
-            out.push({ engine:'C1', severity:'high', kind:'missing_char_entry', id: matchedEntry.id,
-              detail: `Script speaker '${speaker}' (${matchedEntry.id}) appears ${count}× in source but has no ${tgtName} name.`,
-              affected: speaker,
-              fix: `Add a ${tgtName} localised name for '${speaker}'`, rowIdx: null });
-          }
-        }
-      } else {
-        // Speaker in script but not in the localisation sheet at all
-        out.push({ engine:'C1', severity:'medium', kind:'unlisted_speaker', id: speaker,
-          detail: `Script speaker '${speaker}' appears ${count}× but has no row in the localisation sheet.`,
-          affected: speaker,
-          fix: 'Add this character to the localisation sheet with a source name and localised name', rowIdx: null });
-      }
+  const tb=$("resTable").querySelector("tbody"); tb.innerHTML="";
+  if(!c.length){
+    tb.innerHTML=`<tr><td colspan="4" class="muted">No issues found — the sheet is consistent. ✓</td></tr>`;
+  } else {
+    c.forEach(x=>{
+      const tr=document.createElement("tr");
+      tr.innerHTML=`<td>${x.where}</td>
+        <td>${x.original}</td>
+        <td>${x.fix?'<span class="to">'+x.fix+'</span>':'<span class="muted">flagged — manual fix</span>'}</td>
+        <td><span class="tag ${x.severity}">${x.tag}</span>${x.detail}</td>`;
+      tb.appendChild(tr);
     });
   }
 
-  return out;
-}
+  // build download
+  const out=XLSX.write(res.wb,{bookType:"xlsx",type:"array"});
+  const blob=new Blob([out],{type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
+  const url=URL.createObjectURL(blob);
+  $("dl").onclick=()=>{ const a=document.createElement("a");
+    a.href=url; a.download="LS_verified_corrected.xlsx"; a.click(); };
 
-function c2_checks(rows, idCol, srcCols, tgtCols, scriptEntities) {
-  const out = [];
-  const tgtCode = cfg.tgtLang.split('-')[0];
-
-  // French common-word patterns to detect English leaked into FR fields
-  const EN_WORDS = /\b(the|and|with|that|this|from|have|are|was|for|not|but|they|she|his|her|our|you|all)\b/i;
-  const FR_ACCENT = /[àâäéèêëîïôöùûüÿçæœ]/i;
-  const DE_UMLAUT = /[äöüÄÖÜß]/i;
-  const IT_ACCENT = /[àèéìíîòóùú]/i;
-
-  rows.forEach(row => {
-    const id = row[idCol] || `row_${row._row}`;
-
-    // Verbatim copy: target equals source
-    srcCols.forEach(sc => {
-      tgtCols.forEach(tc => {
-        const sv = (row[sc]||'').trim(), tv = (row[tc]||'').trim();
-        if (sv.length > 4 && tv.length > 4 && sv.toLowerCase() === tv.toLowerCase()) {
-          out.push({ engine:'C2', severity:'medium', kind:'verbatim_copy', id,
-            detail: `'${tc}' is identical to source '${sc}' — possibly untranslated.`,
-            affected: tv.substring(0,80), fix: `Translate to ${LANG_NAMES[cfg.tgtLang]||cfg.tgtLang}`, rowIdx: row._row });
-        }
-      });
-    });
-
-    // Source language detected in target field
-    tgtCols.forEach(col => {
-      const v = (row[col]||'').trim();
-      if (v.length < 10 || isEmpty(v)) return;
-      let detected = false;
-      if (tgtCode === 'fr' && EN_WORDS.test(v) && !FR_ACCENT.test(v) && v.split(/\s+/).length > 3) detected = true;
-      if (tgtCode === 'de' && EN_WORDS.test(v) && !DE_UMLAUT.test(v) && v.split(/\s+/).length > 3) detected = true;
-      if (tgtCode === 'it' && EN_WORDS.test(v) && !IT_ACCENT.test(v) && v.split(/\s+/).length > 3) detected = true;
-      if (detected) {
-        out.push({ engine:'C2', severity:'medium', kind:'source_language_detected', id,
-          detail: `'${col}' may contain source language text in a ${LANG_NAMES[cfg.tgtLang]||cfg.tgtLang} field.`,
-          affected: v.substring(0,80), fix: 'Verify the text is correctly translated', rowIdx: row._row });
-      }
-    });
-
-    // Source character name used verbatim in target text — should be the localised name
-    if (scriptEntities && scriptEntities.speakers.size) {
-      tgtCols.forEach(col => {
-        const v = (row[col] || '').trim();
-        if (!v || isEmpty(v) || v.length < 5) return;
-        const vLow = v.toLowerCase();
-        scriptEntities.speakers.forEach((count, speaker) => {
-          if (speaker.length < 3) return;
-          const spkLow = speaker.toLowerCase();
-          // Whole-word match to avoid false positives inside longer words
-          const wordRe = new RegExp('\\b' + spkLow.replace(/[.*+?^${}()|[\]\\]/g,'\\$&') + '\\b', 'i');
-          if (wordRe.test(vLow)) {
-            out.push({ engine:'C2', severity:'medium', kind:'unlocalised_name_in_target', id,
-              detail: `Source character name '${speaker}' appears verbatim in '${col}' — target should use the localised name.`,
-              affected: v.substring(0, 90),
-              fix: `Replace '${speaker}' with its ${LANG_NAMES[cfg.tgtLang]||cfg.tgtLang} localised name`,
-              rowIdx: row._row });
-          }
-        });
-      });
-    }
-  });
-  return out;
-}
-
-function c3_checks(rows, idCol, srcCols, tgtCols) {
-  const out = [];
-  const tgtCode = cfg.tgtLang.split('-')[0];
-
-  const QUOTE_CHECKS = {
-    fr: { re: /"[^"]{2,}"/, fix: 'Use « guillemets » for French quotations' },
-    de: { re: /"[^"]{2,}"/, fix: 'Use „ typographic quotes" for German' },
-    it: { re: /"[^"]{2,}"/, fix: 'Use « virgolette » for Italian' },
-  };
-  const NUM_CHECKS = {
-    fr: { re: /\d{1,3},\d{3}/, fix: 'French uses a space as thousands separator (1 000)' },
-    de: { re: /\d{1,3},\d{3}/, fix: 'German uses a period as thousands separator (1.000)' },
-  };
-
-  rows.forEach(row => {
-    const id = row[idCol] || `row_${row._row}`;
-
-    // Length anomaly
-    srcCols.forEach(sc => {
-      tgtCols.forEach(tc => {
-        const sv = (row[sc]||'').trim(), tv = (row[tc]||'').trim();
-        if (sv.length < 15 || tv.length < 5 || isEmpty(tv)) return;
-        const ratio = tv.length / sv.length;
-        if (ratio < 0.25 || ratio > 3.5) {
-          out.push({ engine:'C3', severity:'low', kind:'length_anomaly', id,
-            detail: `Length ratio ${ratio.toFixed(2)}× (${sv.length}→${tv.length} chars).`,
-            affected: tv.substring(0,70), fix: ratio < 0.25 ? 'Translation may be truncated' : 'Translation may be too verbose', rowIdx: row._row });
-        }
-      });
-    });
-
-    // Wrong quote style
-    const qc = QUOTE_CHECKS[tgtCode];
-    if (qc) {
-      tgtCols.forEach(col => {
-        const v = row[col] || '';
-        if (v.length > 5 && qc.re.test(v)) {
-          out.push({ engine:'C3', severity:'low', kind:'wrong_quote_style', id,
-            detail: `'${col}' uses straight quotes instead of typographic quotes for ${cfg.tgtLang}.`,
-            affected: v.substring(0,80), fix: qc.fix, rowIdx: row._row });
-        }
-      });
-    }
-
-    // Wrong number format
-    const nc = NUM_CHECKS[tgtCode];
-    if (nc) {
-      tgtCols.forEach(col => {
-        const v = row[col] || '';
-        if (nc.re.test(v)) {
-          out.push({ engine:'C3', severity:'low', kind:'number_format', id,
-            detail: `'${col}' may use wrong number format for ${cfg.tgtLang}.`,
-            affected: (v.match(nc.re)||[''])[0], fix: nc.fix, rowIdx: row._row });
-        }
-      });
-    }
-  });
-  return out;
-}
-
-// ── RUNNER ────────────────────────────────────────────────────
-async function runVerifier() {
-  if (!cfg) { openCfg(); return; }
-  setStatus('busy', 'Loading sheet…');
-  document.getElementById('emptyState').style.display = 'none';
-  document.getElementById('resultsArea').style.display = 'none';
-
-  try {
-    const values = await loadSheetValues();
-    if (!values.length) throw new Error('Sheet is empty or inaccessible');
-    const { headers, rows } = parseRows(values);
-    const { idCol, tgtCols, srcCols, scriptCol } = detectCols(headers);
-
-    if (!tgtCols.length) {
-      document.getElementById('colWarn').style.display = 'block';
-      openCfg();
-      setStatus('', 'Config needed');
-      toast('Could not detect target columns — please specify them in config', 'warn');
-      return;
-    }
-
-    setStatus('busy', 'Reading source script…');
-    const scriptEntities = extractScriptEntities(rows, scriptCol);
-    const speakerCount = scriptEntities ? scriptEntities.speakers.size : 0;
-    const nounCount    = scriptEntities ? scriptEntities.properNouns.size : 0;
-    if (scriptCol) {
-      toast(`Script parsed: ${speakerCount} speakers, ${nounCount} recurring proper nouns`, 'ok');
-    }
-
-    setStatus('busy', 'Running C0 checks…');
-    const c0 = c0_checks(rows, idCol, tgtCols, srcCols, scriptEntities);
-    setStatus('busy', 'Running C1 checks…');
-    const c1 = c1_checks(rows, idCol, tgtCols, srcCols, scriptEntities);
-    setStatus('busy', 'Running C2 checks…');
-    const c2 = c2_checks(rows, idCol, srcCols, tgtCols, scriptEntities);
-    setStatus('busy', 'Running C3 checks…');
-    const c3 = c3_checks(rows, idCol, srcCols, tgtCols);
-
-    issues = [...c0, ...c1, ...c2, ...c3].map((iss, i) => ({ ...iss, _i: i }));
-    fb = {};
-
-    cfg._batchRows     = rows.length;
-    cfg._idCol         = idCol;
-    cfg._tgtCols       = tgtCols;
-    cfg._srcCols       = srcCols;
-    cfg._scriptCol     = scriptCol;
-    cfg._speakerCount  = speakerCount;
-    cfg._nounCount     = nounCount;
-    localStorage.setItem('lv_cfg', JSON.stringify(cfg));
-
-    renderResults(rows.length);
-    setStatus('on', issues.length + ' issues found');
-    toast('Checks complete — ' + issues.length + ' issues', issues.length > 0 ? 'ok' : 'ok');
-
-  } catch(e) {
-    setStatus('', 'Error');
-    toast('Error: ' + e.message, 'err');
-    document.getElementById('emptyState').style.display = 'block';
-    console.error(e);
-  }
-}
-
-// ── RENDER ────────────────────────────────────────────────────
-function renderResults(batchRows) {
-  document.getElementById('resultsArea').style.display = 'block';
-  const c0 = issues.filter(i=>i.engine==='C0').length;
-  const c1 = issues.filter(i=>i.engine==='C1').length;
-  const c2 = issues.filter(i=>i.engine==='C2').length;
-  const c3 = issues.filter(i=>i.engine==='C3').length;
-  const tgtName = LANG_NAMES[cfg.tgtLang] || cfg.tgtLang;
-  const srcName = LANG_NAMES[cfg.srcLang] || cfg.srcLang;
-
-  document.getElementById('statsBar').innerHTML =
-    `<div class="sc"><strong>${tgtName}</strong>language</div>
-     <div class="sc"><strong>${batchRows}</strong>batch rows</div>
-     <div class="sc"><strong>${issues.length}</strong>new mentions</div>
-     <div class="sc c0"><strong>${c0}</strong>C0</div>
-     <div class="sc c1"><strong>${c1}</strong>C1</div>
-     <div class="sc c2"><strong>${c2}</strong>C2</div>
-     <div class="sc c3"><strong>${c3}</strong>C3</div>
-     <div class="sc"><strong>${issues.length}</strong>total issues</div>`;
-
-  const scriptInfo = cfg._scriptCol
-    ? ` &nbsp;·&nbsp; Script: <strong>${cfg._speakerCount} speakers</strong>, <strong>${cfg._nounCount} proper nouns</strong> extracted`
-    : ` &nbsp;·&nbsp; <em style="color:var(--yellow)">No script column set — C1 character checks limited</em>`;
-  document.getElementById('statNote').innerHTML =
-    `<span class="chk">✓</span> C3 ran on ${batchRows} new mention(s). &nbsp;·&nbsp; Source: <strong>${srcName}</strong> → Target: <strong>${tgtName}</strong>${scriptInfo}`;
-
-  const cs = document.getElementById('cfgSummary');
-  cs.style.display = 'block';
-  cs.innerHTML = `<strong>Source:</strong> ${srcName} &nbsp;·&nbsp; <strong>Target:</strong> ${tgtName} &nbsp;·&nbsp; <strong>Sheet:</strong> ${cfg.sheetId} &nbsp;·&nbsp; <strong>Target cols:</strong> ${(cfg._tgtCols||[]).join(', ')||'—'}`;
-
-  renderTable();
-}
-
-function renderTable() {
-  const filtered = issues.filter(iss => {
-    const s = (fb[iss._i]||{}).status || 'pending';
-    if (activeFilter === 'all')       return true;
-    if (activeFilter === 'pending')   return s === 'pending';
-    if (activeFilter === 'confirmed') return s === 'confirmed';
-    if (activeFilter === 'fp')        return s === 'fp';
-    return iss.engine === activeFilter;
-  });
-
-  document.getElementById('tEmpty').style.display = filtered.length ? 'none' : 'block';
-  document.getElementById('tbody').innerHTML = filtered.map(iss => {
-    const f = fb[iss._i] || {};
-    const st = f.status || 'pending';
-    const trCls = st === 'confirmed' ? 'tr-confirmed' : st === 'fp' ? 'tr-fp' : '';
-    const engCls = 'eng-' + iss.engine.toLowerCase();
-
-    const feedbackHtml = st !== 'pending'
-      ? `<div class="fb-done ${st==='confirmed'?'conf':'fp'}">${st==='confirmed'?'✓ Confirmed':'✗ False positive'}${f.corrected?` · <em>${esc(f.corrected.substring(0,30))}</em>`:''}</div>
-         <button class="btn btn-reset" onclick="resetFb(${iss._i})">↺ Reset</button>`
-      : `<textarea class="fb-inp" rows="1" placeholder="corrected rendering (optional)" onchange="saveFb(${iss._i},'corrected',this.value)">${esc(f.corrected||'')}</textarea>
-         <textarea class="fb-inp" rows="1" placeholder="why — the teaching signal" onchange="saveFb(${iss._i},'why',this.value)">${esc(f.why||'')}</textarea>
-         <div class="fb-btns">
-           <button class="btn btn-sm btn-confirm" onclick="setFbStatus(${iss._i},'confirmed')">Confirm</button>
-           <button class="btn btn-sm btn-fp" onclick="setFbStatus(${iss._i},'fp')">False positive</button>
-         </div>`;
-
-    return `<tr class="${trCls}" id="ir-${iss._i}">
-      <td><span class="eng ${engCls}">${iss.engine}</span></td>
-      <td><span class="sev sev-${iss.severity}">${iss.severity}</span></td>
-      <td><span class="kind-tag">${esc(iss.kind)}</span></td>
-      <td><span class="id-tag">${esc(iss.id)}</span></td>
-      <td><div class="detail-txt">${esc(iss.detail)}</div></td>
-      <td><div class="affected-txt">${esc(iss.affected)}</div></td>
-      <td><div class="fix-txt">${esc(iss.fix)}</div></td>
-      <td class="fb-cell">${feedbackHtml}</td>
-    </tr>`;
-  }).join('');
-}
-
-function saveFb(i, field, val) {
-  if (!fb[i]) fb[i] = { status:'pending', corrected:'', why:'' };
-  fb[i][field] = val;
-}
-
-function setFbStatus(i, status) {
-  if (!fb[i]) fb[i] = { status:'pending', corrected:'', why:'' };
-  // capture current textarea values before re-render
-  const corrEl = document.querySelector(`#ir-${i} .fb-inp:first-of-type`);
-  const whyEl  = document.querySelector(`#ir-${i} .fb-inp:last-of-type`);
-  if (corrEl) fb[i].corrected = corrEl.value;
-  if (whyEl)  fb[i].why = whyEl.value;
-  fb[i].status = status;
-  renderTable();
-}
-
-function resetFb(i) { delete fb[i]; renderTable(); }
-
-function setFilter(f, el) {
-  activeFilter = f;
-  document.querySelectorAll('.ft').forEach(b => b.classList.remove('active'));
-  el.classList.add('active');
-  renderTable();
-}
-
-// ── EXPORT ────────────────────────────────────────────────────
-async function exportToSheet() {
-  if (!token) { toast('Sign in to Google first', 'warn'); return; }
-  if (!issues.length) { toast('No issues to export', 'warn'); return; }
-
-  const btn = document.getElementById('expBtn');
-  btn.disabled = true;
-  setStatus('busy', 'Exporting…');
-
-  try {
-    const headers = ['ENGINE','SEVERITY','KIND','ID','DETAIL','AFFECTED','SUGGESTED_FIX','STATUS','CORRECTED_RENDERING','WHY_TEACHING_SIGNAL','SOURCE_ROW'];
-    const data = issues.map(iss => {
-      const f = fb[iss._i] || {};
-      return [iss.engine, iss.severity, iss.kind, iss.id, iss.detail, iss.affected,
-              iss.fix, f.status||'pending', f.corrected||'', f.why||'', iss.rowIdx||''];
-    });
-    const values = [headers, ...data];
-
-    // Create new tab
-    const today = new Date().toISOString().slice(0,10);
-    const tabName = `LV Export ${today}`;
-    const addR = await fetch(
-      `https://sheets.googleapis.com/v4/spreadsheets/${cfg.sheetId}:batchUpdate?access_token=${token}`,
-      { method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ requests:[{ addSheet:{ properties:{ title: tabName } } }] }) }
-    );
-    // Proceed even if tab already exists (batchUpdate may return 400 — we still try to write)
-
-    const range = encodeURIComponent(tabName + '!A1');
-    const wr = await fetch(
-      `https://sheets.googleapis.com/v4/spreadsheets/${cfg.sheetId}/values/${range}?valueInputOption=RAW&access_token=${token}`,
-      { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ values }) }
-    );
-    if (!wr.ok) throw new Error('Sheet write failed: ' + await wr.text());
-
-    toast(`Exported ${issues.length} issues to tab "${tabName}"`, 'ok');
-    setStatus('on', 'Export complete');
-    window.open(`https://docs.google.com/spreadsheets/d/${cfg.sheetId}`, '_blank');
-  } catch(e) {
-    toast('Export failed: ' + e.message, 'err');
-    setStatus('', 'Error');
-  }
-  btn.disabled = false;
-}
-
-// ── UTILS ─────────────────────────────────────────────────────
-function esc(s) {
-  return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-}
-function setStatus(s, t) {
-  document.getElementById('sdot').className = 'sdot' + (s?' '+s:'');
-  document.getElementById('stxt').textContent = t;
-}
-function toast(msg, type='ok') {
-  const el = document.createElement('div');
-  el.className = 'toast t'+type;
-  el.textContent = msg;
-  document.getElementById('toasts').appendChild(el);
-  setTimeout(() => el.remove(), 4000);
-}
-
-// ── INIT ──────────────────────────────────────────────────────
-if (cfg) {
-  const cs = document.getElementById('cfgSummary');
-  cs.style.display = 'block';
-  cs.innerHTML = `<strong>Source:</strong> ${LANG_NAMES[cfg.srcLang]||cfg.srcLang} &nbsp;·&nbsp; <strong>Target:</strong> ${LANG_NAMES[cfg.tgtLang]||cfg.tgtLang} &nbsp;·&nbsp; <strong>Sheet:</strong> ${cfg.sheetId}`;
-}
+  $("out").style.display="block";
+  $("out").scrollIntoView({behavior:"smooth"});
+});
 </script>
 </body>
 </html>
