@@ -3686,8 +3686,8 @@ function _episodeSeqFromTitle(){
     if(!obj||typeof obj!=='object') return 0;
     const title=String(obj.chapter_title||obj.title||obj.name||obj.episode_title||'').trim();
     if(!title) return 0;
-    const m=title.match(/\b(?:episode|ep)\s*#?\s*(\d{1,5})\b/i) ||
-      title.match(/\b(?:episode|ep)\s*(\d{1,5})\s*[-:.]/i) ||
+    const m=title.match(/\b(?:episode|epis[oó]dio|[ée]pisode|folge|kapitel|chapter|chapitre|cap[ií]tulo|cap|ep)\s*#?\s*(\d{1,5})\b/i) ||
+      title.match(/\b(?:episode|epis[oó]dio|[ée]pisode|folge|kapitel|chapter|chapitre|cap[ií]tulo|cap|ep)\s*(\d{1,5})\s*[-:.]/i) ||
       title.match(/^#?\s*(\d{1,5})\s*[-.:]/);
     return clean(m?.[1]);
   }
@@ -3702,17 +3702,41 @@ function _episodeSeqFromTitle(){
   return 0;
 }
 
-function _rangeEpisodeNo(ep, fallbackIndex=0){
+function _dominantRangeOffset(episodes){
+  const counts={};
+  for(const ep of episodes||[]){
+    const titleNo=_episodeSeqFromTitle(ep);
+    const cmsSeq=Number(ep?.seqDirect||0)||_episodeSeqDirect(ep);
+    if(!titleNo||!cmsSeq) continue;
+    const off=cmsSeq-titleNo;
+    if(Math.abs(off)>100) continue;
+    counts[off]=(counts[off]||0)+1;
+  }
+  let best=0, bestCount=0;
+  for(const [off, count] of Object.entries(counts)){
+    if(count>bestCount){ best=parseInt(off,10); bestCount=count; }
+  }
+  return bestCount>=2?best:0;
+}
+
+function _rangeEpisodeInfo(ep, fallbackIndex=0, offset=0){
+  const titleNo=_episodeSeqFromTitle(ep);
+  const cmsSeq=Number(ep?.seqDirect||0)||_episodeSeqDirect(ep)||Number(ep?.seq||0)||0;
+  const listNo=fallbackIndex?Number(fallbackIndex):0;
+  const adjusted=(offset&&cmsSeq)?cmsSeq-offset:0;
+  if(titleNo) return {num:titleNo, source:'title', titleNo, cmsSeq, adjusted, listNo};
+  if(adjusted>0) return {num:adjusted, source:`cms-offset(${offset})`, titleNo, cmsSeq, adjusted, listNo};
+  if(Number(ep?.rangeSeq||0)) return {num:Number(ep.rangeSeq), source:'stored', titleNo, cmsSeq, adjusted, listNo};
+  if(listNo) return {num:listNo, source:'list-order', titleNo, cmsSeq, adjusted, listNo};
+  if(cmsSeq) return {num:cmsSeq, source:'cms-seq', titleNo, cmsSeq, adjusted, listNo};
+  return {num:0, source:'unknown', titleNo, cmsSeq, adjusted, listNo};
+}
+
+function _rangeEpisodeNo(ep, fallbackIndex=0, offset=0){
   // For payout, user-entered ranges are the human-facing episode numbers
   // shown in titles ("Episode 21"), not always CMS natural_sequence_number.
   // Some CMS shows are offset after migration/live changes, so title wins.
-  return _episodeSeqFromTitle(ep) ||
-         Number(ep?.rangeSeq||0) ||
-         Number(ep?.seqDirect||0) ||
-         _episodeSeqDirect(ep) ||
-         (fallbackIndex?Number(fallbackIndex):0) ||
-         Number(ep?.seq||0) ||
-         0;
+  return _rangeEpisodeInfo(ep, fallbackIndex, offset).num;
 }
 
 function _maxDuration(){
@@ -5050,12 +5074,17 @@ async function runRangeBatchCalc(){
     for(const job of parsed.jobs){
       toast(`Fetching ${job.showId.substring(0,8)}...`,'ok');
       const fetched=await _fetchPaymentShowFromCMS(job.showId);
-      const episodes=(fetched.episodes||[])
-        .map((ep,i)=>({...ep, rangeSeq:_rangeEpisodeNo(ep, i+1)}))
+      const rawEpisodes=fetched.episodes||[];
+      const seqOffset=_dominantRangeOffset(rawEpisodes);
+      const episodes=rawEpisodes
+        .map((ep,i)=>{
+          const info=_rangeEpisodeInfo(ep, i+1, seqOffset);
+          return {...ep, rangeSeq:info.num, rangeSource:info.source, titleSeq:info.titleNo, seqDirect:info.cmsSeq, seqOffset};
+        })
         .sort((a,b)=>(_rangeEpisodeNo(a, 999999))-(_rangeEpisodeNo(b, 999999)));
       const showName=fetched.cmsShowTitle||episodes[0]?.showName||job.showId;
       const availableSeqs=episodes.map(ep=>_rangeEpisodeNo(ep)).filter(Boolean).sort((a,b)=>a-b);
-      const availableSpan=availableSeqs.length ? `${availableSeqs[0]}-${availableSeqs[availableSeqs.length-1]}` : '—';
+      const availableSpan=availableSeqs.length ? `${availableSeqs[0]}-${availableSeqs[availableSeqs.length-1]}${seqOffset?` (CMS offset ${seqOffset})`:''}` : '—';
       for(const range of job.ranges){
         const selected=episodes.filter(ep=>{
           const seq=_rangeEpisodeNo(ep);
@@ -5078,6 +5107,9 @@ async function runRangeBatchCalc(){
             seq:ep.seq||0,
             seqDirect:ep.seqDirect||0,
             rangeSeq,
+            titleSeq:ep.titleSeq||0,
+            rangeSource:ep.rangeSource||'unknown',
+            seqOffset:ep.seqOffset||0,
             title:ep.title||'',
             durationSec,
             hours,
@@ -5164,7 +5196,7 @@ function exportRangeBatchCSV(){
   rows.push(['TOTAL','','','','','',res.totals.episodes,_fmtHMS(res.totals.durationSec),(res.totals.durationSec/3600).toFixed(3),res.totals.timePay.toFixed(2),res.totals.errors,res.totals.errorPay.toFixed(2),res.totals.totalPay.toFixed(2),'']);
   rows.push([]);
   rows.push(['Episode Wise Breakup']);
-  rows.push(['Proof Listener','Show ID','Show','Range','Title Episode # Used','CMS Seq','Episode Title','Chapter ID','Duration (h:mm:ss)','Hours Decimal','Time Pay (€)','Errors','Error Pay (€)','Total Pay (€)']);
+  rows.push(['Proof Listener','Show ID','Show','Range','Title Episode # Used','CMS Seq','Match Source','Episode Title','Chapter ID','Duration (h:mm:ss)','Hours Decimal','Time Pay (€)','Errors','Error Pay (€)','Total Pay (€)']);
   for(const j of res.jobs){
     for(const ep of j.episodeRows){
       rows.push([
@@ -5174,6 +5206,7 @@ function exportRangeBatchCSV(){
         `${j.from}-${j.to}`,
         ep.rangeSeq||ep.seq,
         ep.seqDirect||ep.seq||'',
+        ep.rangeSource||'',
         ep.title,
         ep.chapId,
         _fmtHMS(ep.durationSec),
