@@ -3676,11 +3676,38 @@ function _episodeSeqDirect(){
   return 0;
 }
 
+function _episodeSeqFromTitle(){
+  function clean(v){
+    if(v==null||v==='') return 0;
+    const n=parseInt(String(v).replace(/,/g,''),10);
+    return Number.isFinite(n)&&n>0?n:0;
+  }
+  function one(obj){
+    if(!obj||typeof obj!=='object') return 0;
+    const title=String(obj.chapter_title||obj.title||obj.name||obj.episode_title||'').trim();
+    if(!title) return 0;
+    const m=title.match(/\b(?:episode|ep)\s*#?\s*(\d{1,5})\b/i) ||
+      title.match(/\b(?:episode|ep)\s*(\d{1,5})\s*[-:.]/i) ||
+      title.match(/^#?\s*(\d{1,5})\s*[-.:]/);
+    return clean(m?.[1]);
+  }
+  const nests=['chapter_details','chapterDetails','chapter','episode_details','episodeDetails','episode','details'];
+  for(const obj of arguments){
+    const n=one(obj); if(n) return n;
+    for(const nk of nests){
+      const x=one(obj?.[nk]);
+      if(x) return x;
+    }
+  }
+  return 0;
+}
+
 function _rangeEpisodeNo(ep, fallbackIndex=0){
-  // Payment range math must not trust the title text. Titles can be
-  // inconsistent with CMS sequence numbers, especially for migrated/live
-  // episodes. Prefer direct CMS sequence fields, then the API list order.
-  return Number(ep?.rangeSeq||0) ||
+  // For payout, user-entered ranges are the human-facing episode numbers
+  // shown in titles ("Episode 21"), not always CMS natural_sequence_number.
+  // Some CMS shows are offset after migration/live changes, so title wins.
+  return _episodeSeqFromTitle(ep) ||
+         Number(ep?.rangeSeq||0) ||
          Number(ep?.seqDirect||0) ||
          _episodeSeqDirect(ep) ||
          (fallbackIndex?Number(fallbackIndex):0) ||
@@ -5137,7 +5164,7 @@ function exportRangeBatchCSV(){
   rows.push(['TOTAL','','','','','',res.totals.episodes,_fmtHMS(res.totals.durationSec),(res.totals.durationSec/3600).toFixed(3),res.totals.timePay.toFixed(2),res.totals.errors,res.totals.errorPay.toFixed(2),res.totals.totalPay.toFixed(2),'']);
   rows.push([]);
   rows.push(['Episode Wise Breakup']);
-  rows.push(['Proof Listener','Show ID','Show','Range','Episode # Used For Range','CMS Seq','Episode Title','Chapter ID','Duration (h:mm:ss)','Hours Decimal','Time Pay (€)','Errors','Error Pay (€)','Total Pay (€)']);
+  rows.push(['Proof Listener','Show ID','Show','Range','Title Episode # Used','CMS Seq','Episode Title','Chapter ID','Duration (h:mm:ss)','Hours Decimal','Time Pay (€)','Errors','Error Pay (€)','Total Pay (€)']);
   for(const j of res.jobs){
     for(const ep of j.episodeRows){
       rows.push([
