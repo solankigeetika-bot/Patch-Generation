@@ -4482,6 +4482,8 @@ async function renderPaymentReport(){
             <th style="padding:5px 8px;text-align:left">Show ID</th>
             <th style="padding:5px 8px;text-align:left">Show</th>
             <th style="padding:5px 8px;text-align:right">Range</th>
+            <th style="padding:5px 8px;text-align:right">Fetched</th>
+            <th style="padding:5px 8px;text-align:right">Available #</th>
             <th style="padding:5px 8px;text-align:right">Episodes</th>
             <th style="padding:5px 8px;text-align:right">Duration</th>
             <th style="padding:5px 8px;text-align:right">Time Pay</th>
@@ -4494,6 +4496,8 @@ async function renderPaymentReport(){
             <td style="padding:4px 8px">${esc(j.showId.substring(0,10))}...</td>
             <td style="padding:4px 8px">${esc(j.showName||'')}</td>
             <td style="padding:4px 8px;text-align:right">${j.from}-${j.to}</td>
+            <td style="padding:4px 8px;text-align:right">${j.fetchedCount||0}</td>
+            <td style="padding:4px 8px;text-align:right">${esc(j.availableSpan||'—')}</td>
             <td style="padding:4px 8px;text-align:right">${j.episodeCount}</td>
             <td style="padding:4px 8px;text-align:right">${_fmtHMS(j.durationSec)}</td>
             <td style="padding:4px 8px;text-align:right">€${j.timePay.toFixed(2)}</td>
@@ -4712,81 +4716,28 @@ function _extractShowId(input){
 
 async function _fetchPaymentShowFromCMS(showId){
   if(!authToken||!uid) throw new Error('CMS not connected — set your auth token in the sidebar first.');
-  // 1) Episodes list. CMS is inconsistent across show states: view=cms tends
-  // to expose QC/to-be-recorded rows, while the default view may expose live
-  // rows. Range payout must count whichever episode numbers the user asked
-  // for irrespective of status, so fetch every known list flavour and merge.
+  // 1) Episodes list. Reuse the Audio Replace loader because it already tries
+  // show_id/book_id, cms/default views, paginated/unpaginated forms,
+  // sequenced endpoints, book_details, and nested payload shapes. Payment
+  // range calculations should not depend on status-specific CMS lists.
   let showTitleFromCms='';
-  async function paged(view, chapPag){
-    let out=[]; let page=1; let lastSig='';
-    while(page<=2000){
-      const params=[`show_id=${encodeURIComponent(showId)}`,'is_novel=0',`page_no=${page}`];
-      if(view) params.push(`view=${encodeURIComponent(view)}`);
-      if(chapPag) params.push('paginate_chapters=true');
-      const r=await fetch(`${CMS_BASE}/book.show_episodes?${params.join('&')}`, {headers:hdrs()});
-      if(!r.ok){ console.warn(`CMS show list ${showId} view=${view||'default'} chapPag=${chapPag?'yes':'no'} page ${page} HTTP ${r.status}`); break; }
-      const d=await r.json();
-      const list=d.result?.episodes||[];
-      if(!list.length) break;
-      showTitleFromCms=showTitleFromCms||d.result?.show_title||list[0]?.chapter_details?.show_title||'';
-      const sig=list.map(ep=>{
-        const cd=ep.chapter_details||ep;
-        return cd.chapter_id||ep.chapter_id||'';
-      }).join('|');
-      if(sig&&sig===lastSig) break;
-      lastSig=sig;
-      out=out.concat(list);
-      if(!d.result?.next_url && list.length<10) break;
-      page++;
-    }
-    return out;
-  }
-  async function once(view, chapPag){
-    const params=[`show_id=${encodeURIComponent(showId)}`,'is_novel=0'];
-    if(view) params.push(`view=${encodeURIComponent(view)}`);
-    if(chapPag) params.push('paginate_chapters=true');
-    const r=await fetch(`${CMS_BASE}/book.show_episodes?${params.join('&')}`, {headers:hdrs()});
-    if(!r.ok){ console.warn(`CMS show list once ${showId} view=${view||'default'} chapPag=${chapPag?'yes':'no'} HTTP ${r.status}`); return []; }
-    const d=await r.json();
-    const list=d.result?.episodes||[];
-    showTitleFromCms=showTitleFromCms||d.result?.show_title||list[0]?.chapter_details?.show_title||'';
-    return list;
-  }
-  const listGroups=await Promise.all([
-    once('cms', false),
-    once('cms', true),
-    once('', false),
-    once('', true),
-    paged('cms', false),
-    paged('cms', true),
-    paged('', false),
-    paged('', true)
-  ]);
-  const eps=[];
-  const byChap=new Map();
-  function listScore(ep){
-    const cd=ep.chapter_details||ep;
-    return (_maxDuration(cd, ep)?8:0) +
-      (_episodeSeqDirect(cd, ep)?6:0) +
-      ((cd.chapter_title||ep.chapter_title)?2:0) +
-      ((cd.audio_status||ep.audio_status||cd.chapter_Status||cd.chapter_status||ep.chapter_status)?1:0);
-  }
-  for(const ep of listGroups.flat()){
-    const cd=ep.chapter_details||ep;
-    const cid=cd.chapter_id||ep.chapter_id||'';
-    if(!cid) continue;
-    const prev=byChap.get(cid);
-    if(!prev||listScore(ep)>listScore(prev)) byChap.set(cid, ep);
+  let eps=[];
+  let listErr=null;
+  try{
+    eps=await _fetchEpisodesFor(showId);
+  }catch(e){
+    listErr=e;
+    eps=[];
   }
   let rangeIndex=0;
-  for(const ep of byChap.values()){
+  for(const ep of eps){
     rangeIndex++;
     ep.__rangeIndex=rangeIndex;
-    eps.push(ep);
   }
   if(!eps.length){
     const stored=await _mergePaymentStoredEpisodeData(showId, showTitleFromCms, []);
     if(stored.length) return {episodes:stored, cmsShowTitle:stored[0]?.showName||showTitleFromCms||showId};
+    if(listErr) throw listErr;
     throw new Error(`No episodes returned for show ${showId}. Check show ID and CMS login.`);
   }
   showTitleFromCms=showTitleFromCms||eps[0]?.chapter_details?.show_title||'';
@@ -5076,6 +5027,8 @@ async function runRangeBatchCalc(){
         .map((ep,i)=>({...ep, rangeSeq:_rangeEpisodeNo(ep, i+1)}))
         .sort((a,b)=>(_rangeEpisodeNo(a, 999999))-(_rangeEpisodeNo(b, 999999)));
       const showName=fetched.cmsShowTitle||episodes[0]?.showName||job.showId;
+      const availableSeqs=episodes.map(ep=>_rangeEpisodeNo(ep)).filter(Boolean).sort((a,b)=>a-b);
+      const availableSpan=availableSeqs.length ? `${availableSeqs[0]}-${availableSeqs[availableSeqs.length-1]}` : '—';
       for(const range of job.ranges){
         const selected=episodes.filter(ep=>{
           const seq=_rangeEpisodeNo(ep);
@@ -5124,6 +5077,8 @@ async function runRangeBatchCalc(){
           errorPay,
           totalPay:timePay+errorPay,
           missingEpisodes,
+          fetchedCount:episodes.length,
+          availableSpan,
           episodeRows
         };
         outJobs.push(row);
@@ -5160,13 +5115,15 @@ function exportRangeBatchCSV(){
   rows.push(['Rates', `€${PAY_RATE_HOUR.toFixed(2)}/hour`, `€${PAY_RATE_ERROR.toFixed(2)}/error`]);
   rows.push([]);
   rows.push(['Summary']);
-  rows.push(['Show ID','Show','Range From','Range To','Episodes','Duration (h:mm:ss)','Hours Decimal','Time Pay (€)','Errors','Error Pay (€)','Total Pay (€)','Missing Episodes']);
+  rows.push(['Show ID','Show','Range From','Range To','Fetched Episodes','Available Episode # Span','Selected Episodes','Duration (h:mm:ss)','Hours Decimal','Time Pay (€)','Errors','Error Pay (€)','Total Pay (€)','Missing Episodes']);
   for(const j of res.jobs){
     rows.push([
       j.showId,
       j.showName,
       j.from,
       j.to,
+      j.fetchedCount||0,
+      j.availableSpan||'',
       j.episodeCount,
       _fmtHMS(j.durationSec),
       (j.durationSec/3600).toFixed(3),
@@ -5177,7 +5134,7 @@ function exportRangeBatchCSV(){
       j.missingEpisodes.join(', ')
     ]);
   }
-  rows.push(['TOTAL','','','',res.totals.episodes,_fmtHMS(res.totals.durationSec),(res.totals.durationSec/3600).toFixed(3),res.totals.timePay.toFixed(2),res.totals.errors,res.totals.errorPay.toFixed(2),res.totals.totalPay.toFixed(2),'']);
+  rows.push(['TOTAL','','','','','',res.totals.episodes,_fmtHMS(res.totals.durationSec),(res.totals.durationSec/3600).toFixed(3),res.totals.timePay.toFixed(2),res.totals.errors,res.totals.errorPay.toFixed(2),res.totals.totalPay.toFixed(2),'']);
   rows.push([]);
   rows.push(['Episode Wise Breakup']);
   rows.push(['Proof Listener','Show ID','Show','Range','Episode # Used For Range','CMS Seq','Episode Title','Chapter ID','Duration (h:mm:ss)','Hours Decimal','Time Pay (€)','Errors','Error Pay (€)','Total Pay (€)']);
