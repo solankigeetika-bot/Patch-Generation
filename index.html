@@ -5423,6 +5423,30 @@ async function loadEpisodePatches(chapId){
   const raw = snap.val() || [];
   const arr = Array.isArray(raw) ? raw : Object.values(raw);
   ep.patches = arr.filter(p => p != null);
+  try{
+    const remSnap = await dbRef('episodeRemarks/'+chapId).once('value');
+    const remData = remSnap.val() || {};
+    const remarksArr = Array.isArray(remData.remarks) ? remData.remarks : Object.values(remData.remarks||{});
+    const reviewerNotes = remData.reviewerNotes || {};
+    const used = new Set();
+    ep.patches = ep.patches.map((p, pi)=>{
+      let matchIdx = -1;
+      if(p?.time){
+        matchIdx = remarksArr.findIndex((r, ri)=>!used.has(ri) && r && String(r.time||'')===String(p.time||''));
+      }
+      if(matchIdx<0 && p?.issueType){
+        matchIdx = remarksArr.findIndex((r, ri)=>!used.has(ri) && r && String(r.issueType||'')===String(p.issueType||''));
+      }
+      if(matchIdx<0) matchIdx = pi < remarksArr.length ? pi : -1;
+      const r = matchIdx>=0 ? remarksArr[matchIdx] : null;
+      if(matchIdx>=0) used.add(matchIdx);
+      const noteFromMap = matchIdx>=0 ? (Array.isArray(reviewerNotes)?reviewerNotes[matchIdx]:reviewerNotes[String(matchIdx)]) : '';
+      const note = p.reviewerNote || p.seNote || p.note || noteFromMap || r?.reviewerNote || extractReviewerNote(r) || r?.note || '';
+      return {...p, reviewerNote:note};
+    });
+  }catch(e){
+    console.warn('Could not enrich SE notes for', chapId, e);
+  }
   ep._patchesLoaded = true;
   // Backfill counts if they weren't denormalized
   if(ep.patchCount == null) ep.patchCount = ep.patches.length;
