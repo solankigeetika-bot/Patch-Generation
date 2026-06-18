@@ -258,7 +258,7 @@ function scriptEntities(text){
   return set;
 }
 
-// ── the verification + correction engine ──────────────────────
+// ── the verification engine ───────────────────────────────────
 function verify(wb,src,tgt,text){
   const corrections=[];
   const ldName=findSheet(wb,"detail")||wb.SheetNames[0];
@@ -266,13 +266,33 @@ function verify(wb,src,tgt,text){
   const ld=sheetToRows(wb.Sheets[ldName]);
   const mm=mmName?sheetToRows(wb.Sheets[mmName]):{headers:[],data:[]};
   const leak=SOURCE_LEAK[src];
-  const ents=scriptEntities(text);
 
-  // Stage 4 — uniformly flat rule: canonical = majority localized form per source name
+  // header normaliser — handle both "Original Name" and "original_name" etc.
+  const col=(parsed,kws)=>{
+    const hs=parsed.headers;
+    for(const kw of kws){ const h=hs.find(h=>h.toLowerCase().includes(kw)); if(h)return h; }
+    return null;
+  };
+  const origH   =col(ld,["original_name","original name"]);
+  const locH    =col(ld,["localised_name","localized_name","localized name","localised name"]);
+  const fnH     =col(ld,["first name (loc","first_name_loc"]);
+  const lnH     =col(ld,["last name (loc","last_name_loc"]);
+  const issH    =col(ld,["localization issue","localisation issue"]);
+  const statH   =col(ld,["cultural status","cultural_status"]);
+  const reasonH =col(ld,["localization reason","localisation reason"]);
+
+  function getf(r,h){return h?norm(r[h]):""; }
+  function isAliasRow(r){
+    const fn=getf(r,fnH),ln=getf(r,lnH);
+    return CHAPTER_RE.test(fn)||ln.toLowerCase()==="yes";
+  }
+
+  // ── Stage 4: uniformly flat rule ─────────────────────────────
+  // canonical[orig_lower] = most-common localized form in this sheet
   const tally={};
   ld.data.forEach(r=>{
-    if(isAlias(r))return;
-    const o=norm(r["Original Name"]).toLowerCase(), l=norm(r["Localized Name"]);
+    if(isAliasRow(r))return;
+    const o=getf(r,origH).toLowerCase(), l=getf(r,locH);
     if(isEmpty(o)||isEmpty(l))return;
     (tally[o]=tally[o]||{})[l]=(tally[o][l]||0)+1;
   });
@@ -281,81 +301,154 @@ function verify(wb,src,tgt,text){
     canonical[o]=Object.entries(m).sort((a,b)=>b[1]-a[1])[0][0];
   });
 
-  // per-row LD checks + corrections
+  // ── Build name-collision maps ─────────────────────────────────
+  // fn_map[localized_fn_lower] = [{origFn, origFull}]
+  // ln_map[localized_ln_lower] = [{origLn, origFull}]
+  const fn_map={}, ln_map={};
   ld.data.forEach(r=>{
-    if(isAlias(r))return;
-    const orig=norm(r["Original Name"]), loc=norm(r["Localized Name"]);
+    if(isAliasRow(r))return;
+    const origFull=getf(r,origH), fn=getf(r,fnH), ln=getf(r,lnH);
+    if(!origFull)return;
+    const origFn=origFull.split(" ")[0].toLowerCase();
+    const origLn=origFull.includes(" ")?origFull.split(" ").pop().toLowerCase():"";
+    if(fn&&!isEmpty(fn)){
+      const k=fn.toLowerCase();
+      (fn_map[k]=fn_map[k]||[]).push({origFn,origFull,fn,ln});
+    }
+    if(ln&&!isEmpty(ln)&&ln.toLowerCase()!=="yes"&&!CHAPTER_RE.test(ln)){
+      const k=ln.toLowerCase();
+      (ln_map[k]=ln_map[k]||[]).push({origLn,origFull,fn,ln});
+    }
+  });
+
+  // ── Per-row LD checks ─────────────────────────────────────────
+  ld.data.forEach(r=>{
+    if(isAliasRow(r))return;
+    const orig=getf(r,origH), loc=getf(r,locH);
+    const fn=getf(r,fnH), ln=getf(r,lnH);
+    const status=getf(r,statH).toUpperCase();
     const issues=[];
 
+    // MISSING
     if(isEmpty(loc)){
       issues.push(["MISSING_LOCALISATION","critical",
-        `'${orig}' has no ${LANGS[tgt]} localized name.`,null]);
+        `'${orig}' has no ${LANGS[tgt]||tgt} localized name.`,null]);
     } else {
-      // Stage 4 correction: deviates from canonical → fix it
+      // flat rule: deviates from canonical
       const canon=canonical[orig.toLowerCase()];
       if(canon&&loc!==canon){
         issues.push(["CROSS_CHARACTER_INCONSISTENCY","high",
-          `'${orig}' was '${loc}' here but '${canon}' elsewhere — unified to '${canon}'.`,canon]);
-        r["Localized Name"]=canon;
+          `'${orig}' is '${loc}' here but '${canon}' elsewhere in this sheet. + affected mentions: ${orig} (Severity: high)`,
+          null]);
       }
-      // casing correction
-      const cur=norm(r["Localized Name"]);
-      if(LOWER_START.test(cur)){
-        const fixed=cap(cur);
-        issues.push(["ENTITY_INCONSISTENCY","low",
-          `'${cur}' started lowercase — capitalised to '${fixed}'.`,fixed]);
-        r["Localized Name"]=fixed;
-      }
-      // source-language leak (flag only)
-      if(leak){ const lm=norm(r["Localized Name"]).match(leak);
+
+      // source-language leak
+      if(leak){ const lm=loc.match(leak);
         if(lm) issues.push(["ENTITY_INCONSISTENCY","high",
-          `${LANGS[src]} word '${lm[0]}' present in localized name '${norm(r["Localized Name"])}'.`,null]); }
+          `${LANGS[src]||src} word '${lm[0]}' found in localized name '${loc}'. + affected mentions: ${orig} (Severity: high)`,null]); }
+
+      // SAME_FIRST_NAME_COLLISION
+      // Flag whenever the same localized first name is shared by >1 character row.
+      // Even if the original first names are the same spelling, they may be different
+      // characters in the story — listener confusion risk either way.
+      if(fn&&!isEmpty(fn)){
+        const group=fn_map[fn.toLowerCase()]||[];
+        if(group.length>1){
+          const others=group.filter(e=>e.origFull!==orig).map(e=>e.origFull).join(", ");
+          issues.push(["SAME_FIRST_NAME_COLLISION","medium",
+            `Character '${orig}' shares localized first name '${fn}' with unrelated character(s): ${others}. Listener confusion risk. + affected mentions: ${fn} (Severity: medium)`,
+            null]);
+        }
+      }
+
+      // SAME_LAST_NAME_COLLISION — only flag when original surnames differ
+      // (same family sharing a surname in the target is intentional and expected)
+      if(ln&&!isEmpty(ln)&&ln.toLowerCase()!=="yes"&&!CHAPTER_RE.test(ln)){
+        const group=ln_map[ln.toLowerCase()]||[];
+        const origLn_r=orig.includes(" ")?orig.split(" ").pop().toLowerCase():orig.toLowerCase();
+        const uniqueOrigLns=new Set(group.map(e=>e.origLn));
+        if(uniqueOrigLns.size>1){
+          const others=group.filter(e=>e.origFull!==orig).map(e=>e.origFull).join(", ");
+          issues.push(["SAME_LAST_NAME_COLLISION","medium",
+            `Character '${orig}' shares localized last name '${ln}' with character(s) from a different family: ${others}. May create confusion. + affected mentions: ${ln} (Severity: medium)`,
+            null]);
+        }
+      }
+
+      // CULTURAL_CONTEXT_INAPPROPRIATE: source-lang kinship retained
+      const srcKinshipDE=/\b(onkel|tante|bruder|schwester|schwägerin|großvater|großmutter|oma|opa|schatz)\b/i;
+      if(src==="de"&&srcKinshipDE.test(loc)){
+        const m=loc.match(srcKinshipDE);
+        issues.push(["CULTURAL_CONTEXT_INAPPROPRIATE","high",
+          `German familial term '${m[0]}' was retained in the localized name. Should be adapted to ${LANGS[tgt]||tgt} equivalent. + affected mentions: ${orig} (Severity: high)`,
+          null]);
+      }
     }
 
     if(issues.length){
-      const cell=issues.map(([t,s,d])=>`${t}: ${d} (Severity: ${s})`).join(" | ");
-      const prev=norm(r["Localization Issues"]);
-      r["Localization Issues"]=prev?prev+" | "+cell:cell;
+      const cell=issues.map(([t,,d])=>`${t}: ${d}`).join(" | ");
+      const prev=getf(r,issH);
+      if(issH) r[issH]=prev?prev+" | "+cell:cell;
       issues.forEach(([tag,sev,detail,fix])=>corrections.push(
         {where:"Localization Details",original:orig,fix,tag,severity:sev,detail}));
     }
   });
 
-  // Stage 3 — cascade canonical decisions into Mention Mappings
+  // ── Stage 3: Mention Mappings — flag-only, no auto-correct ────
+  const mmOrigH  =col(mm,["original_mention","original mention","original_name","original name"]);
+  const mmLocH   =col(mm,["localised_mention","localized_mention","localised mention","localized mention","localised_name","localized_name"]);
+  const mmCanonH =col(mm,["canonical name","canonical_name"]);
+  const mmNoteH  =col(mm,["verification note","verification_note"]);
+
   mm.data.forEach(r=>{
-    const om=norm(r["Original Mention"]), lm=norm(r["Localized Mention"]);
-    const canonName=norm(r["Canonical Name"]);
+    const om  =mmOrigH ?norm(r[mmOrigH]) :"";
+    const lm  =mmLocH  ?norm(r[mmLocH])  :"";
+    const cn  =mmCanonH?norm(r[mmCanonH]):"";
     if(isEmpty(om)||isEmpty(lm))return;
     if([...KINSHIP].some(k=>om.toLowerCase().includes(k)||lm.toLowerCase().includes(k)))return;
-    let key=(canonName||om).toLowerCase();
+
+    let key=(cn||om).toLowerCase();
     let canonLoc=canonical[key];
-    if(!canonLoc){ for(const ck in canonical){ if(ck&&(ck.includes(key)||key.includes(ck))){canonLoc=canonical[ck];break;} } }
+    if(!canonLoc){
+      for(const ck in canonical){
+        if(ck&&ck.length>3&&(ck.includes(key.split(" ")[0])||key.includes(ck.split(" ")[0]))){
+          canonLoc=canonical[ck]; break;
+        }
+      }
+    }
     if(!canonLoc)return;
-    const cf=canonLoc.split(" ")[0].toLowerCase(), lf=lm.split(" ")[0].toLowerCase();
-    if(cf&&lf&&cf!==lf){
-      if(canonName&&!om.toLowerCase().includes(canonName.toLowerCase()))return;
-      const fixed=lm.replace(new RegExp(lm.split(" ")[0],"i"),canonLoc.split(" ")[0]);
-      const detail=`'${om}' → '${lm}' but canonical is '${canonLoc}' — corrected to '${fixed}'.`;
-      r["Localized Mention"]=fixed;
-      const note=`MENTION_MAP_INCONSISTENCY: ${detail} (Severity: high)`;
-      const prev=norm(r["Verification Notes"]);
-      r["Verification Notes"]=prev?prev+" | "+note:note;
-      corrections.push({where:"Mention Mappings",original:om,
-        fix:fixed,tag:"MENTION_MAP_INCONSISTENCY",severity:"high",detail});
+
+    // only flag when the localized mention's first token clearly differs from canonical first token
+    // and it's not just a title variant (Monsieur/Madame prefix)
+    const titleRe=/^(monsieur|madame|mademoiselle|dr\.?|prof\.?|m\.|mme\.?)\s/i;
+    const lmCore=lm.replace(titleRe,"").trim();
+    const cf=canonLoc.split(" ")[0].toLowerCase();
+    const lf=lmCore.split(" ")[0].toLowerCase();
+
+    if(cf&&lf&&cf!==lf&&lf.length>2){
+      const detail=`'${om}' is localized as '${lm}' but the canonical localization for '${cn||om}' is '${canonLoc}'. + affected mentions: ${om} (Severity: high)`;
+      if(mmNoteH){
+        const prev=norm(r[mmNoteH]);
+        r[mmNoteH]=prev
+          ?prev+" | MENTION_MAP_INCONSISTENCY: "+detail
+          :"MENTION_MAP_INCONSISTENCY: "+detail;
+      }
+      corrections.push({where:"Mention Mappings",original:om,fix:null,
+        tag:"MENTION_MAP_INCONSISTENCY",severity:"high",detail});
     }
   });
 
-  // rebuild workbook tabs preserving headers
-  function writeBack(name,parsed){
+  // ── rebuild workbook ──────────────────────────────────────────
+  function writeBack(name,parsed,issueCol,noteCol){
     if(!name)return;
     const hdrs=parsed.headers.slice();
-    if(name===ldName&&!hdrs.includes("Localization Issues"))hdrs.push("Localization Issues");
-    if(name===mmName&&!hdrs.includes("Verification Notes"))hdrs.push("Verification Notes");
-    const aoa=[hdrs, ...parsed.data.map(r=>hdrs.map(h=>r[h]!=null?r[h]:""))];
+    if(issueCol&&!hdrs.includes(issueCol))hdrs.push(issueCol);
+    if(noteCol&&!hdrs.includes(noteCol))hdrs.push(noteCol);
+    const aoa=[hdrs,...parsed.data.map(r=>hdrs.map(h=>r[h]!=null?r[h]:""))];
     wb.Sheets[name]=XLSX.utils.aoa_to_sheet(aoa);
   }
-  writeBack(ldName,ld);
-  if(mmName)writeBack(mmName,mm);
+  writeBack(ldName,ld,issH||"Localization Issues",null);
+  if(mmName)writeBack(mmName,mm,null,mmNoteH||"Verification Notes");
 
   return {corrections,wb};
 }

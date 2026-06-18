@@ -359,6 +359,100 @@ def review_proposition(row: dict, universe: Universe, src: str, tgt: str) -> lis
     return findings
 
 
+# ─── Name collision check (new Stage 2b) ─────────────────────────────────────
+DE_KINSHIP_RE = re.compile(
+    r"\b(onkel|tante|bruder|schwester|schwägerin|großvater|großmutter|oma|opa|schatz)\b",
+    re.IGNORECASE,
+)
+
+
+def check_name_collisions(
+    ld_rows: list[dict],
+    src: str,
+    tgt: str,
+) -> list[tuple[int, list[Finding]]]:
+    """
+    Flag localized names that are shared by multiple distinct characters.
+
+    SAME_FIRST_NAME_COLLISION — same localized first name in >1 row.
+    SAME_LAST_NAME_COLLISION  — same localized last name in >1 row when the
+                                original surnames differ (different families).
+    CULTURAL_CONTEXT_INAPPROPRIATE — source-language kinship term retained.
+    """
+    # Build maps from localized name parts → list of (row_index, orig_name)
+    fn_map: dict[str, list[tuple[int, str]]] = defaultdict(list)
+    ln_map: dict[str, list[tuple[int, str]]] = defaultdict(list)
+
+    for i, row in enumerate(ld_rows):
+        if is_alias_row(row):
+            continue
+        orig = norm(row.get("Original Name", ""))
+        fn   = norm(row.get("First Name (Localized)", ""))
+        ln   = norm(row.get("Last Name (Localized)", ""))
+        if not orig:
+            continue
+        if fn and not is_empty(fn):
+            fn_map[fn.lower()].append((i, orig))
+        if ln and not is_empty(ln) and ln.lower() != "yes" and not CHAPTER_RE.match(ln):
+            ln_map[ln.lower()].append((i, orig))
+
+    row_findings: list[tuple[int, list[Finding]]] = []
+
+    for i, row in enumerate(ld_rows):
+        if is_alias_row(row):
+            continue
+        orig = norm(row.get("Original Name", ""))
+        loc  = norm(row.get("Localized Name", ""))
+        fn   = norm(row.get("First Name (Localized)", ""))
+        ln   = norm(row.get("Last Name (Localized)", ""))
+        if not orig or is_empty(loc):
+            continue
+
+        findings: list[Finding] = []
+
+        # SAME_FIRST_NAME_COLLISION
+        if fn and not is_empty(fn):
+            group = fn_map.get(fn.lower(), [])
+            if len(group) > 1:
+                others = ", ".join(o for _, o in group if o != orig)
+                findings.append(Finding(
+                    "S2b", "medium", "same_first_name_collision",
+                    f"Character '{orig}' shares localized first name '{fn}' with: {others}. "
+                    f"Listener confusion risk. + affected mentions: {fn}",
+                    "Consider a different localized first name to avoid ambiguity.",
+                ))
+
+        # SAME_LAST_NAME_COLLISION (only when original surnames differ)
+        if ln and not is_empty(ln) and ln.lower() != "yes" and not CHAPTER_RE.match(ln):
+            group = ln_map.get(ln.lower(), [])
+            orig_lns = {(o.split()[-1].lower() if " " in o else o.lower()) for _, o in group}
+            if len(orig_lns) > 1:
+                others = ", ".join(o for _, o in group if o != orig)
+                findings.append(Finding(
+                    "S2b", "medium", "same_last_name_collision",
+                    f"Character '{orig}' shares localized last name '{ln}' with character(s) "
+                    f"from a different family: {others}. May create confusion. "
+                    f"+ affected mentions: {ln}",
+                    "Consider a different localized last name.",
+                ))
+
+        # CULTURAL_CONTEXT_INAPPROPRIATE (German kinship retained in target)
+        if src.startswith("de") and DE_KINSHIP_RE.search(loc):
+            m = DE_KINSHIP_RE.search(loc)
+            findings.append(Finding(
+                "S2b", "high", "cultural_context_inappropriate",
+                f"German kinship term '{m.group()}' retained in localized name '{loc}' "
+                f"for '{orig}'. Should be adapted to {lang_name(tgt)} equivalent. "
+                f"+ affected mentions: {orig}",
+                f"Replace '{m.group()}' with its {lang_name(tgt)} equivalent.",
+            ))
+
+        if findings:
+            row_findings.append((i, findings))
+
+    return row_findings
+
+
 # ─── Stage 4: Uniformly flat rule ────────────────────────────────────────────
 def check_flat_consistency(
     ld_rows: list[dict],
@@ -706,6 +800,17 @@ def run(args) -> int:
 
     s2_count = sum(1 for fs in ld_findings.values() if fs)
     print(f"  {s2_count} rows with issues.", file=sys.stderr)
+
+    # ── Stage 2b: Name collision checks ──────────────────────────────────────
+    print("\nStage 2b: Name collision checks", file=sys.stderr)
+    coll_findings = check_name_collisions(ld_rows, src, tgt)
+    for i, fs in coll_findings:
+        ld_findings[i].extend(fs)
+    fn_c = sum(1 for _, fs in coll_findings for f in fs if "first_name" in f.kind)
+    ln_c = sum(1 for _, fs in coll_findings for f in fs if "last_name" in f.kind)
+    cc_c = sum(1 for _, fs in coll_findings for f in fs if "cultural" in f.kind)
+    print(f"  {fn_c} first-name collisions, {ln_c} last-name collisions, "
+          f"{cc_c} cultural context issues.", file=sys.stderr)
 
     # LLM proposition review (optional)
     if not args.dry_run and client and cfg:
