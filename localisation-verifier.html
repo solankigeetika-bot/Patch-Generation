@@ -220,6 +220,11 @@ tr.tr-fp td{background:rgba(248,113,113,.02);opacity:.55;}
     <input id="c_tgt_cols" type="text" placeholder="e.g. localised_name, fr_text"/>
     <div class="hint">Columns that should contain the translated content</div>
   </div>
+  <div class="mf">
+    <label>Source Script Column (optional but recommended)</label>
+    <input id="c_script_col" type="text" placeholder="e.g. source_script, en_dialogue, script_text"/>
+    <div class="hint">Column containing the raw source script/dialogue text — used to extract character names and check if they appear unlocalised in the target</div>
+  </div>
   <div class="col-warn" id="colWarn">⚠ Could not auto-detect target columns — please fill in the field above.</div>
 
   <div class="mactions">
@@ -366,13 +371,14 @@ function signIn() {
 // ── CONFIG MODAL ─────────────────────────────────────────────
 function openCfg() {
   if (cfg) {
-    document.getElementById('c_src').value      = cfg.srcLang  || 'en-US';
-    document.getElementById('c_tgt').value      = cfg.tgtLang  || 'fr-FR';
-    document.getElementById('c_url').value      = cfg.sheetUrl || '';
-    document.getElementById('c_tab').value      = cfg.tab      || '';
-    document.getElementById('c_id').value       = cfg.idCol    || '';
-    document.getElementById('c_src_cols').value = (cfg.srcCols || []).join(', ');
-    document.getElementById('c_tgt_cols').value = (cfg.tgtCols || []).join(', ');
+    document.getElementById('c_src').value        = cfg.srcLang   || 'en-US';
+    document.getElementById('c_tgt').value        = cfg.tgtLang   || 'fr-FR';
+    document.getElementById('c_url').value        = cfg.sheetUrl  || '';
+    document.getElementById('c_tab').value        = cfg.tab       || '';
+    document.getElementById('c_id').value         = cfg.idCol     || '';
+    document.getElementById('c_src_cols').value   = (cfg.srcCols  || []).join(', ');
+    document.getElementById('c_tgt_cols').value   = (cfg.tgtCols  || []).join(', ');
+    document.getElementById('c_script_col').value = cfg.scriptCol || '';
   }
   document.getElementById('colWarn').style.display = 'none';
   document.getElementById('cfgModal').classList.add('open');
@@ -394,10 +400,11 @@ function saveConfig() {
 
   cfg = {
     srcLang, tgtLang, sheetUrl, sheetId,
-    tab:     document.getElementById('c_tab').value.trim(),
-    idCol:   document.getElementById('c_id').value.trim(),
-    srcCols: document.getElementById('c_src_cols').value.split(',').map(s=>s.trim()).filter(Boolean),
-    tgtCols: document.getElementById('c_tgt_cols').value.split(',').map(s=>s.trim()).filter(Boolean),
+    tab:       document.getElementById('c_tab').value.trim(),
+    idCol:     document.getElementById('c_id').value.trim(),
+    srcCols:   document.getElementById('c_src_cols').value.split(',').map(s=>s.trim()).filter(Boolean),
+    tgtCols:   document.getElementById('c_tgt_cols').value.split(',').map(s=>s.trim()).filter(Boolean),
+    scriptCol: document.getElementById('c_script_col').value.trim(),
   };
   localStorage.setItem('lv_cfg', JSON.stringify(cfg));
   closeCfg();
@@ -451,7 +458,76 @@ function detectCols(headers) {
            l === 'english' || l === 'en';
   });
 
-  return { idCol, tgtCols, srcCols };
+  // Auto-detect source script column
+  const scriptPatterns = ['script','dialogue','dialog','narration','text','content','episode_text','source_text','en_script','source_script'];
+  const scriptCol = cfg.scriptCol || headers.find(h => scriptPatterns.some(p => lc(h).includes(p))) || '';
+
+  return { idCol, tgtCols, srcCols, scriptCol };
+}
+
+// ── SCRIPT ENTITY EXTRACTOR ───────────────────────────────────
+function extractScriptEntities(rows, scriptCol) {
+  if (!scriptCol) return null;
+
+  // Dialogue speaker labels: "NAME:" or "NAME -" or "NAME –" at line start
+  // Handles ALL CAPS and Title Case names up to 40 chars
+  const SPEAKER_RE = /^([A-ZÀ-Ö][A-ZÀ-Öa-zà-ö\s\-']{0,39})\s*[:–—-]\s/gm;
+  // Stage directions / parentheticals to skip
+  const STAGE_DIR = /^\s*[\[(]/;
+
+  const speakerCount = new Map();
+  const properNounCount = new Map();
+
+  rows.forEach(row => {
+    const text = (row[scriptCol] || '').trim();
+    if (!text) return;
+
+    // Extract speaker labels
+    for (const m of text.matchAll(SPEAKER_RE)) {
+      const spk = m[1].trim().replace(/\s+/g, ' ');
+      if (STAGE_DIR.test(spk) || spk.length < 2) continue;
+      speakerCount.set(spk, (speakerCount.get(spk) || 0) + 1);
+    }
+
+    // Extract recurring proper nouns (capitalised mid-sentence, not all-caps labels)
+    text.split(/\n/).forEach(line => {
+      const words = line.trim().split(/\s+/);
+      words.forEach((w, i) => {
+        if (i === 0) return; // skip sentence-start (ambiguous)
+        const clean = w.replace(/[^a-zA-ZÀ-ÿ'-]/g, '');
+        if (clean.length < 3) return;
+        if (clean === clean.toUpperCase()) return; // skip ALL-CAPS labels
+        const first = clean[0];
+        if (first === first.toUpperCase() && first !== first.toLowerCase()) {
+          properNounCount.set(clean, (properNounCount.get(clean) || 0) + 1);
+        }
+      });
+    });
+  });
+
+  // Keep speakers that appear 2+ times (avoids one-off typos)
+  const speakers = new Map(
+    [...speakerCount.entries()].filter(([, c]) => c >= 2)
+  );
+  // Keep proper nouns appearing 3+ times mid-sentence
+  const properNouns = new Map(
+    [...properNounCount.entries()].filter(([, c]) => c >= 3)
+  );
+
+  return { speakers, properNouns };
+}
+
+// Build reverse lookup: lowercase source name → entity ID
+function buildSourceNameIndex(rows, idCol, srcCols) {
+  const index = new Map(); // lower-case source name → {id, srcName}
+  rows.forEach(row => {
+    const id = row[idCol]; if (!id || isEmpty(id)) return;
+    srcCols.forEach(col => {
+      const v = (row[col] || '').trim();
+      if (v && !isEmpty(v)) index.set(v.toLowerCase(), { id, srcName: v });
+    });
+  });
+  return index;
 }
 
 // ── CHECK ENGINES ─────────────────────────────────────────────
@@ -459,22 +535,42 @@ function detectCols(headers) {
 const EMPTY_VALS = new Set(['', 'none', 'null', 'n/a', '-', 'undefined', 'na', '#n/a']);
 const isEmpty = v => EMPTY_VALS.has((v || '').trim().toLowerCase());
 
-function c0_checks(rows, idCol, tgtCols) {
+function c0_checks(rows, idCol, tgtCols, srcCols, scriptEntities) {
   const out = [];
+  const tgtName = LANG_NAMES[cfg.tgtLang] || cfg.tgtLang;
+
   rows.forEach(row => {
     const id = row[idCol] || `row_${row._row}`;
+    // Resolve entity's source name for better error messages
+    const srcName = srcCols.map(c => row[c]).find(v => v && !isEmpty(v)) || '';
+
+    // Look up whether this entity appears as a speaker in the source script
+    let scriptCtx = '';
+    if (scriptEntities && srcName) {
+      const srcLow = srcName.toLowerCase();
+      for (const [spk] of scriptEntities.speakers) {
+        if (spk.toLowerCase().includes(srcLow) || srcLow.includes(spk.toLowerCase())) {
+          scriptCtx = ` (script speaker: "${spk}")`;
+          break;
+        }
+      }
+    }
+
     tgtCols.forEach(col => {
       if (!(col in row)) return;
       const val = row[col];
       if (isEmpty(val)) {
+        const label = srcName ? `'${srcName}'` : `'${id}'`;
         out.push({ engine:'C0', severity:'high', kind:'missing_localised', id,
-          detail: `'${val || '(empty)'}' has no localised_name.`,
-          affected: val || '(empty)', fix: `Provide a ${LANG_NAMES[cfg.tgtLang] || cfg.tgtLang} value for '${col}'`, rowIdx: row._row });
+          detail: `${label} has no ${tgtName} localised name.${scriptCtx}`,
+          affected: srcName || val || '(empty)',
+          fix: `Add a ${tgtName} translation for ${label} in column '${col}'`,
+          rowIdx: row._row });
       }
       // Placeholder markers
-      if (/\[TRANSLATE\]|TODO:|TBD|\[MISSING\]|XXX/i.test(val)) {
+      if (val && /\[TRANSLATE\]|TODO:|TBD|\[MISSING\]|XXX/i.test(val)) {
         out.push({ engine:'C0', severity:'high', kind:'placeholder_text', id,
-          detail: `'${col}' contains a placeholder marker.`,
+          detail: `'${col}' contains a placeholder marker — not yet translated.`,
           affected: val.substring(0,80), fix: 'Replace placeholder with actual translation', rowIdx: row._row });
       }
     });
@@ -482,8 +578,10 @@ function c0_checks(rows, idCol, tgtCols) {
   return out;
 }
 
-function c1_checks(rows, idCol, tgtCols) {
+function c1_checks(rows, idCol, tgtCols, srcCols, scriptEntities) {
   const out = [];
+  const tgtName = LANG_NAMES[cfg.tgtLang] || cfg.tgtLang;
+
   // Name inconsistency: same ID → different values in same column
   const map = {};
   rows.forEach(row => {
@@ -500,15 +598,53 @@ function c1_checks(rows, idCol, tgtCols) {
       if (vals.size > 1) {
         const list = [...vals];
         out.push({ engine:'C1', severity:'medium', kind:'name_inconsistency', id,
-          detail: `'${id}' has ${vals.size} different values in '${col}'.`,
+          detail: `'${id}' has ${vals.size} different localised values in '${col}'.`,
           affected: list.join(' | '), fix: `Standardise to: "${list[0]}"`, rowIdx: null });
       }
     });
   });
+
+  // Script-derived checks: speakers extracted from source script
+  if (scriptEntities && scriptEntities.speakers.size) {
+    const srcNameIndex = buildSourceNameIndex(rows, idCol, srcCols);
+
+    scriptEntities.speakers.forEach((count, speaker) => {
+      const spkLow = speaker.toLowerCase();
+
+      // Try to match speaker to a sheet row via source name columns
+      let matchedEntry = null;
+      for (const [nameLow, entry] of srcNameIndex) {
+        if (nameLow === spkLow || spkLow.includes(nameLow) || nameLow.includes(spkLow)) {
+          matchedEntry = entry; break;
+        }
+      }
+
+      if (matchedEntry) {
+        // Entity is in the sheet — check if it has a localised value
+        const matchedRow = rows.find(r => r[idCol] === matchedEntry.id);
+        if (matchedRow) {
+          const hasLocalised = tgtCols.some(col => matchedRow[col] && !isEmpty(matchedRow[col]));
+          if (!hasLocalised) {
+            out.push({ engine:'C1', severity:'high', kind:'missing_char_entry', id: matchedEntry.id,
+              detail: `Script speaker '${speaker}' (${matchedEntry.id}) appears ${count}× in source but has no ${tgtName} name.`,
+              affected: speaker,
+              fix: `Add a ${tgtName} localised name for '${speaker}'`, rowIdx: null });
+          }
+        }
+      } else {
+        // Speaker in script but not in the localisation sheet at all
+        out.push({ engine:'C1', severity:'medium', kind:'unlisted_speaker', id: speaker,
+          detail: `Script speaker '${speaker}' appears ${count}× but has no row in the localisation sheet.`,
+          affected: speaker,
+          fix: 'Add this character to the localisation sheet with a source name and localised name', rowIdx: null });
+      }
+    });
+  }
+
   return out;
 }
 
-function c2_checks(rows, idCol, srcCols, tgtCols) {
+function c2_checks(rows, idCol, srcCols, tgtCols, scriptEntities) {
   const out = [];
   const tgtCode = cfg.tgtLang.split('-')[0];
 
@@ -547,6 +683,28 @@ function c2_checks(rows, idCol, srcCols, tgtCols) {
           affected: v.substring(0,80), fix: 'Verify the text is correctly translated', rowIdx: row._row });
       }
     });
+
+    // Source character name used verbatim in target text — should be the localised name
+    if (scriptEntities && scriptEntities.speakers.size) {
+      tgtCols.forEach(col => {
+        const v = (row[col] || '').trim();
+        if (!v || isEmpty(v) || v.length < 5) return;
+        const vLow = v.toLowerCase();
+        scriptEntities.speakers.forEach((count, speaker) => {
+          if (speaker.length < 3) return;
+          const spkLow = speaker.toLowerCase();
+          // Whole-word match to avoid false positives inside longer words
+          const wordRe = new RegExp('\\b' + spkLow.replace(/[.*+?^${}()|[\]\\]/g,'\\$&') + '\\b', 'i');
+          if (wordRe.test(vLow)) {
+            out.push({ engine:'C2', severity:'medium', kind:'unlocalised_name_in_target', id,
+              detail: `Source character name '${speaker}' appears verbatim in '${col}' — target should use the localised name.`,
+              affected: v.substring(0, 90),
+              fix: `Replace '${speaker}' with its ${LANG_NAMES[cfg.tgtLang]||cfg.tgtLang} localised name`,
+              rowIdx: row._row });
+          }
+        });
+      });
+    }
   });
   return out;
 }
@@ -622,7 +780,7 @@ async function runVerifier() {
     const values = await loadSheetValues();
     if (!values.length) throw new Error('Sheet is empty or inaccessible');
     const { headers, rows } = parseRows(values);
-    const { idCol, tgtCols, srcCols } = detectCols(headers);
+    const { idCol, tgtCols, srcCols, scriptCol } = detectCols(headers);
 
     if (!tgtCols.length) {
       document.getElementById('colWarn').style.display = 'block';
@@ -632,22 +790,33 @@ async function runVerifier() {
       return;
     }
 
+    setStatus('busy', 'Reading source script…');
+    const scriptEntities = extractScriptEntities(rows, scriptCol);
+    const speakerCount = scriptEntities ? scriptEntities.speakers.size : 0;
+    const nounCount    = scriptEntities ? scriptEntities.properNouns.size : 0;
+    if (scriptCol) {
+      toast(`Script parsed: ${speakerCount} speakers, ${nounCount} recurring proper nouns`, 'ok');
+    }
+
     setStatus('busy', 'Running C0 checks…');
-    const c0 = c0_checks(rows, idCol, tgtCols);
+    const c0 = c0_checks(rows, idCol, tgtCols, srcCols, scriptEntities);
     setStatus('busy', 'Running C1 checks…');
-    const c1 = c1_checks(rows, idCol, tgtCols);
+    const c1 = c1_checks(rows, idCol, tgtCols, srcCols, scriptEntities);
     setStatus('busy', 'Running C2 checks…');
-    const c2 = c2_checks(rows, idCol, srcCols, tgtCols);
+    const c2 = c2_checks(rows, idCol, srcCols, tgtCols, scriptEntities);
     setStatus('busy', 'Running C3 checks…');
     const c3 = c3_checks(rows, idCol, srcCols, tgtCols);
 
     issues = [...c0, ...c1, ...c2, ...c3].map((iss, i) => ({ ...iss, _i: i }));
     fb = {};
 
-    cfg._batchRows  = rows.length;
-    cfg._idCol      = idCol;
-    cfg._tgtCols    = tgtCols;
-    cfg._srcCols    = srcCols;
+    cfg._batchRows     = rows.length;
+    cfg._idCol         = idCol;
+    cfg._tgtCols       = tgtCols;
+    cfg._srcCols       = srcCols;
+    cfg._scriptCol     = scriptCol;
+    cfg._speakerCount  = speakerCount;
+    cfg._nounCount     = nounCount;
     localStorage.setItem('lv_cfg', JSON.stringify(cfg));
 
     renderResults(rows.length);
@@ -682,8 +851,11 @@ function renderResults(batchRows) {
      <div class="sc c3"><strong>${c3}</strong>C3</div>
      <div class="sc"><strong>${issues.length}</strong>total issues</div>`;
 
+  const scriptInfo = cfg._scriptCol
+    ? ` &nbsp;·&nbsp; Script: <strong>${cfg._speakerCount} speakers</strong>, <strong>${cfg._nounCount} proper nouns</strong> extracted`
+    : ` &nbsp;·&nbsp; <em style="color:var(--yellow)">No script column set — C1 character checks limited</em>`;
   document.getElementById('statNote').innerHTML =
-    `<span class="chk">✓</span> C3 ran on ${batchRows} new mention(s). &nbsp;·&nbsp; Source: <strong>${srcName}</strong> → Target: <strong>${tgtName}</strong>`;
+    `<span class="chk">✓</span> C3 ran on ${batchRows} new mention(s). &nbsp;·&nbsp; Source: <strong>${srcName}</strong> → Target: <strong>${tgtName}</strong>${scriptInfo}`;
 
   const cs = document.getElementById('cfgSummary');
   cs.style.display = 'block';
