@@ -215,6 +215,35 @@ def health():
             "canon_session": bool(CANON_SESSION)}
 
 
+@app.get("/madeye-ping")
+def madeye_ping(user_email: str = ""):
+    """One cheap end-to-end call: proves key + base URL + budget + user_email work.
+
+    Returns {"ok": true, "model": ..., "reply": ...} on success, or
+    {"ok": false, "error": ...} with the exact Madeye failure (e.g. 401 bad key,
+    400 MADEYE_MISSING_USER, budget exceeded). Hit this once after deploy.
+    """
+    missing = [name for name, val in (
+        ("MADEYE_API_KEY", MADEYE_API_KEY),
+        ("MADEYE_BASE_URL", MADEYE_BASE_URL),
+        ("MADEYE_USER_EMAIL", user_email or MADEYE_USER_EMAIL),
+    ) if not val]
+    if missing:
+        return {"ok": False, "error": f"not configured: {', '.join(missing)}"}
+    try:
+        reply = _ask_madeye(
+            "Reply with the single word: pong.",
+            "ping",
+            max_tokens=8,
+            user_email=user_email,
+        )
+        return {"ok": True, "model": MADEYE_MODEL, "reply": reply.strip()}
+    except HTTPException as e:
+        return {"ok": False, "error": e.detail}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 @app.post("/chat")
 def chat(req: ChatRequest,
          x_proxy_secret: str = Header(default="")):
