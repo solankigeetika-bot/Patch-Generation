@@ -22,6 +22,7 @@ var ARGUS_BASE_URL_PROP = "ARGUS_BASE_URL";     // optional override
 var ARGUS_MODEL_PROP    = "ARGUS_MODEL";        // optional override
 var CANON_SESSION_PROP  = "CANON_SESSION";      // canon.pocketfm.ai __session cookie
 var SHOW_SLUG_PROP      = "SHOW_SLUG";          // canon.pocketfm.ai show slug
+var REFRESH_SECRET_PROP = "REFRESH_SECRET";     // shared secret for the token-sync web app
 var CANON_HOST          = "https://canon.pocketfm.ai";
 var ARGUS_BASE_URL_DEFAULT = "https://argus.pocketfm.org/api";
 // Model id as it appears in Argus's /api/models list.
@@ -41,6 +42,39 @@ function openSidebar() {
     .setTitle("Localization Verifier")
     .setWidth(380);
   SpreadsheetApp.getUi().showSidebar(html);
+}
+
+// ─── token-sync web app ───────────────────────────────────────────────────────
+// Deploy this script as a Web App (Deploy → New deployment → Web app,
+// Execute as: Me, Who has access: Anyone). The userscript on argus.pocketfm.org
+// POSTs the fresh 24h token here so ARGUS_API_KEY is always current.
+// Body (text/plain JSON): {"secret": "...", "token": "eyJ...", "canon": "eyJ..."}
+function doPost(e) {
+  var props = PropertiesService.getScriptProperties();
+  try {
+    var body = JSON.parse(e.postData.contents);
+    var expected = props.getProperty(REFRESH_SECRET_PROP);
+    if (!expected || body.secret !== expected) {
+      return _json({ ok: false, error: "unauthorized" });
+    }
+    var updated = [];
+    if (body.token) { props.setProperty(ARGUS_API_KEY_PROP, body.token); updated.push("token"); }
+    if (body.canon) { props.setProperty(CANON_SESSION_PROP, body.canon); updated.push("canon"); }
+    return _json({ ok: true, updated: updated });
+  } catch (err) {
+    return _json({ ok: false, error: String(err) });
+  }
+}
+
+function doGet() {
+  // health check so you can confirm the web app is live in a browser
+  return _json({ ok: true, service: "argus-token-sync" });
+}
+
+function _json(obj) {
+  return ContentService
+    .createTextOutput(JSON.stringify(obj))
+    .setMimeType(ContentService.MimeType.JSON);
 }
 
 // ─── sheet meta (used by sidebar for auto-detection) ─────────────────────────

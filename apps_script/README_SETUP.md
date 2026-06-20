@@ -25,6 +25,46 @@ Extensions → Apps Script
 ### 3a. Find the exact Argus model id
 In the Apps Script editor, click **Run → listArgusModels**. It logs the full model list to the Execution Log so you can copy the exact id (e.g. `as`, `claude-opus-4.8`, etc.) and set it as `ARGUS_MODEL`.
 
+---
+
+## Auto-refresh the Argus token (so you never paste it again)
+
+The Argus session token expires every ~24h. Instead of re-pasting it, install a
+one-time browser userscript that pushes the fresh token into Apps Script every
+time you open Argus. **Set this up once; then forget about it.**
+
+### A. Set a sync secret
+Project Settings → Script Properties → add:
+- `REFRESH_SECRET` = any long random string (e.g. mash the keyboard). You'll reuse it in step C.
+
+### B. Deploy the script as a Web App
+- Apps Script → **Deploy → New deployment** → gear → **Web app**
+- **Execute as:** Me
+- **Who has access:** Anyone
+- **Deploy** → authorize → **copy the Web App URL** (ends in `/exec`)
+- Sanity check: open that URL in a browser — it should show `{"ok":true,"service":"argus-token-sync"}`
+
+### C. Install the userscript
+- Install the **Tampermonkey** browser extension (Chrome/Edge/Firefox)
+- Tampermonkey → **Create a new script** → paste `argus_token_sync.user.js` from this folder
+- Fill in the two values at the top:
+  - `WEBAPP_URL` = the `/exec` URL from step B
+  - `SECRET`     = the same `REFRESH_SECRET` from step A
+- Save (Ctrl+S)
+
+### D. Done
+Open (or refresh) `argus.pocketfm.org` while logged in. The userscript silently
+pushes the current token into `ARGUS_API_KEY`. Open the browser console (F12) and
+you'll see `[Argus sync] token pushed to Sheets`. From now on, whenever the token
+rotates, just having Argus open in a tab keeps the chatbot authenticated.
+
+> Don't have/want Tampermonkey? Use a **bookmarklet** instead — same effect but
+> you click it manually when on Argus:
+> ```
+> javascript:(function(){var t=localStorage.getItem('token')||((document.cookie.match(/token=([^;]+)/)||[])[1]);fetch('WEBAPP_URL',{method:'POST',mode:'no-cors',headers:{'Content-Type':'text/plain'},body:JSON.stringify({secret:'SECRET',token:t})});alert('Argus token synced to Sheets');})();
+> ```
+> Replace `WEBAPP_URL` and `SECRET`, save as a bookmark, click it whenever on Argus.
+
 ### 4. Save and reload
 - Save (Ctrl+S) → close Apps Script tab
 - Reload your Google Sheet
