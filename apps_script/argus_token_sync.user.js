@@ -1,11 +1,13 @@
 // ==UserScript==
-// @name         Argus → Sheets token sync
+// @name         Argus + Canon → Sheets token sync
 // @namespace    pocketfm.localization
-// @version      1.0
-// @description  Auto-push the fresh Argus (Open WebUI) session token into the
-//               Localization Verifier Apps Script so the chatbot never needs a
-//               manual token paste. Runs every time you open/refresh Argus.
+// @version      1.1
+// @description  Auto-push the fresh Argus (Open WebUI) session token and the
+//               canon.pocketfm.ai __session cookie into the Localization
+//               Verifier Apps Script, so the chatbot and canon-aware answers
+//               never need a manual paste. Runs whenever you open either site.
 // @match        https://argus.pocketfm.org/*
+// @match        https://canon.pocketfm.ai/*
 // @grant        none
 // @run-at       document-idle
 // ==/UserScript==
@@ -22,34 +24,52 @@
   var SECRET     = "PASTE_SAME_SECRET_AS_REFRESH_SECRET_HERE";
   // ─────────────────────────────────────────────────────────────────────────────
 
-  function getToken() {
-    try {
-      var t = localStorage.getItem("token");
-      if (t) return t;
-    } catch (e) { /* ignore */ }
-    var m = document.cookie.match(/(?:^|;\s*)token=([^;]+)/);
+  function cookie(name) {
+    var m = document.cookie.match(new RegExp("(?:^|;\\s*)" + name + "=([^;]+)"));
     return m ? decodeURIComponent(m[1]) : "";
   }
 
-  var token = getToken();
-  if (!token) { return; }  // not logged in yet
+  var host = location.hostname;
+  var field, value, label;
 
-  // Only push when the token actually changed, or once an hour, to avoid spamming.
-  var lastTok  = localStorage.getItem("__argus_sync_tok");
-  var lastTime = parseInt(localStorage.getItem("__argus_sync_at") || "0", 10);
-  var fresh    = token !== lastTok || (Date.now() - lastTime) > 3600000;
-  if (!fresh) { return; }
+  if (host.indexOf("argus.pocketfm.org") !== -1) {
+    // Open WebUI keeps the session JWT in localStorage (preferred) or a cookie.
+    try { value = localStorage.getItem("token") || ""; } catch (e) { value = ""; }
+    if (!value) value = cookie("token");
+    field = "token"; label = "argus";
+  } else if (host.indexOf("canon.pocketfm.ai") !== -1) {
+    // NOTE: if __session is an httpOnly cookie, the page cannot read it and this
+    // will be empty — in that case set CANON_SESSION manually from DevTools.
+    value = cookie("__session");
+    field = "canon"; label = "canon";
+  } else {
+    return;
+  }
+
+  if (!value) {
+    console.warn("[" + label + " sync] no credential readable on this page");
+    return;
+  }
+
+  // Only push when the value changed, or once an hour, to avoid spamming.
+  var memKey = "__sync_" + field;
+  var lastVal  = localStorage.getItem(memKey + "_val");
+  var lastTime = parseInt(localStorage.getItem(memKey + "_at") || "0", 10);
+  if (value === lastVal && (Date.now() - lastTime) < 3600000) return;
+
+  var body = { secret: SECRET };
+  body[field] = value;
 
   fetch(WEBAPP_URL, {
     method: "POST",
     mode: "no-cors",                                  // fire-and-forget; no CORS needed
     headers: { "Content-Type": "text/plain;charset=utf-8" },
-    body: JSON.stringify({ secret: SECRET, token: token })
+    body: JSON.stringify(body)
   }).then(function () {
-    localStorage.setItem("__argus_sync_tok", token);
-    localStorage.setItem("__argus_sync_at", String(Date.now()));
-    console.log("[Argus sync] token pushed to Sheets");
+    localStorage.setItem(memKey + "_val", value);
+    localStorage.setItem(memKey + "_at", String(Date.now()));
+    console.log("[" + label + " sync] " + field + " pushed to Sheets");
   }).catch(function (err) {
-    console.warn("[Argus sync] push failed:", err);
+    console.warn("[" + label + " sync] push failed:", err);
   });
 })();
