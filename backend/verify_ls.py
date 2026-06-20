@@ -11,7 +11,7 @@ Reads an LSV3 workbook (Localization Details + Mention Mappings), then:
     * VERIFIED       mention is exactly the character's name-parts (+ standard
                      title) -> safe to auto-confirm, marked 100%
 
-  Layer 2 — LLM (Argus), one batched call per CHARACTER:
+  Layer 2 — LLM (Anthropic), one batched call per CHARACTER:
     Uses the character's own Description column as the story canon (family tree,
     aliases, married names, known script errors, register) to decide the correct
     localized mention + a confidence score + a one-line reason. Only the high-
@@ -23,16 +23,15 @@ Output: a copy of the workbook with these columns added to Mention Mappings:
 The human then reviews only the rows that are NOT already VERIFIED/100%.
 
 Usage:
-    pip install openpyxl openai python-dotenv
+    pip install openpyxl anthropic python-dotenv
     # Layer 1 only (no key needed):
     python verify_ls.py input.xlsx -o output.xlsx
-    # Layer 1 + 2 (set ARGUS_API_KEY in env or .env):
+    # Layer 1 + 2 (set ANTHROPIC_API_KEY in env or .env):
     python verify_ls.py input.xlsx -o output.xlsx --llm
 
 Env (for --llm):
-    ARGUS_API_KEY   required   Argus token or sk-... key
-    ARGUS_BASE_URL  optional   default https://argus.pocketfm.org/api
-    ARGUS_MODEL     optional   default claude-opus-4.8
+    ANTHROPIC_API_KEY  required   Anthropic API key
+    ANTHROPIC_MODEL    optional   default claude-opus-4-8
 """
 from __future__ import annotations
 
@@ -154,6 +153,10 @@ def deterministic(cid, orig, loc, chars):
     return ("NEEDS_REVIEW", "", 0, "not resolvable deterministically")
 
 
+def _de(name):
+    """French possessive prefix: 'd'' before vowel sound, 'de ' before consonant."""
+    return "d'" + name if name and name[0].lower() in "aeiou" else "de " + name
+
 def _name_parts(c, orig):
     """Resolve a mention using ONLY this character's own name parts + safe titles.
     Returns (suggestion, resolved_fully)."""
@@ -165,6 +168,15 @@ def _name_parts(c, orig):
             out.append(c["lf"]); named = True
         elif c["ol"] and tk == c["ol"] and c["ll"]:
             out.append(c["ll"]); named = True
+        # German genitive -s: "Jakobs" -> base "jakob" matches first name -> "de Hugo"
+        elif tk.endswith("s") and len(tk) > 2:
+            base = tk[:-1]
+            if c["of"] and base == c["of"] and c["lf"]:
+                out.append(_de(c["lf"])); named = True
+            elif c["ol"] and base == c["ol"] and c["ll"]:
+                out.append(_de(c["ll"])); named = True
+            else:
+                unresolved += 1
         elif tk in SAFE_TITLES:
             out.append(SAFE_TITLES[tk])
         elif tk in CONNECTORS:
@@ -177,15 +189,14 @@ def _name_parts(c, orig):
 
 
 # ─── Layer 2: LLM per character (uses Description as canon) ────────────────────
-def _argus():
-    from openai import OpenAI
-    key = os.environ.get("ARGUS_API_KEY", "")
+def _anthropic_client():
+    import anthropic
+    key = os.environ.get("ANTHROPIC_API_KEY", "")
     if not key:
-        sys.exit("ARGUS_API_KEY not set (needed for --llm). Put it in env or .env.")
-    base = os.environ.get("ARGUS_BASE_URL", "https://argus.pocketfm.org/api")
-    return OpenAI(api_key=key, base_url=base, max_retries=2)
+        sys.exit("ANTHROPIC_API_KEY not set (needed for --llm). Put it in env or .env.")
+    return anthropic.Anthropic(api_key=key)
 
-ARGUS_MODEL = os.environ.get("ARGUS_MODEL", "claude-opus-4.8")
+ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-opus-4-8")
 
 def llm_character(client, c, items, src, tgt):
     """One call resolving all unresolved mentions for a single character."""
@@ -211,13 +222,13 @@ def llm_character(client, c, items, src, tgt):
         f'STORY DESCRIPTION:\n{c["desc"][:4000]}\n\n'
         f'MENTIONS to verify:\n{listing}\n'
     )
-    resp = client.chat.completions.create(
-        model=ARGUS_MODEL,
-        messages=[{"role": "system", "content": system},
-                  {"role": "user", "content": user}],
-        max_tokens=2000, temperature=0.1,
+    resp = client.messages.create(
+        model=ANTHROPIC_MODEL,
+        max_tokens=2000,
+        system=system,
+        messages=[{"role": "user", "content": user}],
     )
-    raw = resp.choices[0].message.content or ""
+    raw = resp.content[0].text if resp.content else ""
     m = re.search(r"\{.*\}", raw, re.DOTALL)
     if not m:
         return {}
@@ -264,7 +275,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("input")
     ap.add_argument("-o", "--output", required=True)
-    ap.add_argument("--llm", action="store_true", help="run the LLM layer (needs ARGUS_API_KEY)")
+    ap.add_argument("--llm", action="store_true", help="run the LLM layer (needs ANTHROPIC_API_KEY)")
     ap.add_argument("--src", default="de/en")
     ap.add_argument("--tgt", default="fr")
     args = ap.parse_args()
@@ -292,7 +303,7 @@ def main():
 
     # Layer 2 — only for rows Layer 1 couldn't safely resolve
     if args.llm:
-        client = _argus()
+        client = _anthropic_client()
         todo = defaultdict(list)
         for r in results:
             if r["status"] in ("NEEDS_REVIEW", "MISSING", "MISMATCH"):
