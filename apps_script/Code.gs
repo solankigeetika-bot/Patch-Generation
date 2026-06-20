@@ -4,14 +4,21 @@
 //   1. Extensions → Apps Script → paste this file
 //   2. Paste Sidebar.html as a new HTML file named "Sidebar"
 //   3. In Project Settings → Script Properties, set:
-//        PROXY_URL      = https://your-internal-proxy.pocketfm.com
-//        PROXY_SECRET   = (same value as PROXY_SECRET in backend .env)
-//        SHOW_SLUG      = e.g. twists-of-love-revenge  (from canon.pocketfm.ai URL)
+//        ANTHROPIC_API_KEY = sk-ant-...        (for the chatbot)
+//        CANON_SESSION     = eyJ...            (canon.pocketfm.ai __session cookie)
+//        SHOW_SLUG         = twists-of-love-revenge  (from the canon URL)
 //   4. Reload the sheet → you'll see "Localization Verifier" in the menu
+//
+// NOTE: This is the "works today" path — chatbot uses the public Claude API and
+// fetches canon directly (canon.pocketfm.ai is publicly reachable). To switch to
+// MADEYE later, point askQuestion() at your internal proxy instead.
 
-var PROXY_URL_PROP    = "PROXY_URL";      // your deployed backend URL
-var PROXY_SECRET_PROP = "PROXY_SECRET";   // shared secret
-var SHOW_SLUG_PROP    = "SHOW_SLUG";      // canon.pocketfm.ai show slug
+var ANTHROPIC_API_KEY_PROP = "ANTHROPIC_API_KEY";
+var CANON_SESSION_PROP     = "CANON_SESSION";   // canon.pocketfm.ai __session cookie
+var SHOW_SLUG_PROP         = "SHOW_SLUG";       // canon.pocketfm.ai show slug
+var CANON_HOST             = "https://canon.pocketfm.ai";
+var CLAUDE_MODEL           = "claude-opus-4-8";
+var CLAUDE_API_URL         = "https://api.anthropic.com/v1/messages";
 
 // ─── menu ─────────────────────────────────────────────────────────────────────
 function onOpen() {
@@ -280,44 +287,129 @@ function writeFindingsToSheet(findings) {
   return { written: written };
 }
 
-// ─── chatbot — calls internal MADEYE proxy ────────────────────────────────────
-function askQuestion(question, sourceLang, targetLang) {
-  var props   = PropertiesService.getScriptProperties();
-  var baseUrl = props.getProperty(PROXY_URL_PROP);
-  var secret  = props.getProperty(PROXY_SECRET_PROP) || "";
-  var slug    = props.getProperty(SHOW_SLUG_PROP)    || "";
+// ─── canon fetch (canon.pocketfm.ai is publicly reachable) ────────────────────
+// Cached per-show for 6 hours so we don't refetch on every question.
+function getCanonContext() {
+  var props = PropertiesService.getScriptProperties();
+  var session = props.getProperty(CANON_SESSION_PROP);
+  var slug    = props.getProperty(SHOW_SLUG_PROP);
+  if (!session || !slug) return "";   // canon optional
 
-  if (!baseUrl) return { error: "Set PROXY_URL in Script Properties (your internal backend URL)." };
+  var cache = CacheService.getScriptCache();
+  var cacheKey = "canon_" + slug;
+  var cached = cache.get(cacheKey);
+  if (cached) return cached;
+
+  try {
+    var resp = UrlFetchApp.fetch(CANON_HOST + "/" + slug + "/", {
+      headers: { "Cookie": "__session=" + session },
+      muteHttpExceptions: true
+    });
+    if (resp.getResponseCode() !== 200) return "";
+    var html = resp.getContentText();
+    var ctx = extractCanonContext(html);
+    if (ctx) cache.put(cacheKey, ctx, 21600);  // 6 hours
+    return ctx;
+  } catch(e) {
+    return "";
+  }
+}
+
+// Pull WIKI_DATA out of the canon page and build a compact character summary.
+function extractCanonContext(html) {
+  // find the largest <script> block
+  var scripts = html.match(/<script[^>]*>[\s\S]*?<\/script>/gi) || [];
+  var big = "";
+  scripts.forEach(function(s) { if (s.length > big.length) big = s; });
+
+  var idx = big.indexOf("WIKI_DATA");
+  if (idx === -1) return "";
+  var braceStart = big.indexOf("{", idx);
+  if (braceStart === -1) return "";
+
+  // brace-match to extract the JSON object
+  var depth = 0, end = -1, inStr = false, esc = false;
+  for (var i = braceStart; i < big.length; i++) {
+    var c = big[i];
+    if (esc) { esc = false; continue; }
+    if (c === "\\") { esc = true; continue; }
+    if (c === '"') inStr = !inStr;
+    if (inStr) continue;
+    if (c === "{") depth++;
+    else if (c === "}") { depth--; if (depth === 0) { end = i + 1; break; } }
+  }
+  if (end === -1) return "";
+
+  var wiki;
+  try { wiki = JSON.parse(big.substring(braceStart, end)); }
+  catch(e) { return ""; }
+
+  var lines = ["Show: " + (wiki.show_title || "")];
+
+  // flatten characters (list or grouped)
+  var chars = wiki.characters;
+  var list = [];
+  if (Array.isArray(chars)) list = chars;
+  else if (chars && typeof chars === "object") {
+    Object.keys(chars).forEach(function(g) {
+      if (Array.isArray(chars[g])) list = list.concat(chars[g]);
+    });
+  }
+  list.slice(0, 50).forEach(function(c) {
+    var line = "  " + (c.name || "");
+    if (c.aliases && c.aliases.length) line += " (aka " + c.aliases.slice(0,3).join(", ") + ")";
+    if (c.role) line += " [" + c.role + "]";
+    if (c.family) line += " — " + c.family + " family";
+    if (c.description) line += ": " + String(c.description).substring(0, 120);
+    lines.push(line);
+  });
+
+  if (wiki.dynasty_hierarchy) lines.push("Families: " + String(wiki.dynasty_hierarchy).substring(0, 300));
+  return lines.join("\n");
+}
+
+// ─── chatbot — public Claude API + canon context ──────────────────────────────
+function askQuestion(question, sourceLang, targetLang) {
+  var props  = PropertiesService.getScriptProperties();
+  var apiKey = props.getProperty(ANTHROPIC_API_KEY_PROP);
+  if (!apiKey) return { error: "Set ANTHROPIC_API_KEY in Script Properties." };
 
   var data = getSheetData();
   if (data.error) return { error: data.error };
 
-  // build compact sheet context
-  var context = buildSheetContext(data.ld, sourceLang, targetLang);
+  var sheetCtx = buildSheetContext(data.ld, sourceLang, targetLang);
+  var canonCtx = getCanonContext();
+
+  var system =
+    "You are a localization expert assistant for PocketFM audiobook production.\n" +
+    "Source language: " + sourceLang + ". Target language: " + targetLang + ".\n" +
+    "Answer questions about characters, families, entities, and localization " +
+    "decisions concisely. Always ground answers in the CANON and SHEET below.\n\n" +
+    "--- CANON ---\n" + (canonCtx || "(not available)") + "\n\n" +
+    "--- LOCALIZATION SHEET ---\n" + sheetCtx;
 
   var payload = {
-    question:     question,
-    sheet_context: context,
-    source_lang:  sourceLang,
-    target_lang:  targetLang,
-    show_slug:    slug
+    model: CLAUDE_MODEL,
+    max_tokens: 1024,
+    system: system,
+    messages: [{ role: "user", content: question }]
   };
 
   var options = {
     method: "post",
     contentType: "application/json",
-    headers: { "X-Proxy-Secret": secret },
+    headers: { "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
     payload: JSON.stringify(payload),
     muteHttpExceptions: true
   };
 
   try {
-    var response = UrlFetchApp.fetch(baseUrl + "/chat", options);
+    var response = UrlFetchApp.fetch(CLAUDE_API_URL, options);
     var json = JSON.parse(response.getContentText());
-    if (json.detail) return { error: json.detail };
-    return { answer: json.answer || JSON.stringify(json) };
+    if (json.error) return { error: json.error.message };
+    return { answer: json.content[0].text };
   } catch(e) {
-    return { error: "Proxy unreachable: " + e.message };
+    return { error: "Claude API error: " + e.message };
   }
 }
 
