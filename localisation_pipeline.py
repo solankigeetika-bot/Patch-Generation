@@ -23,12 +23,12 @@ Usage:
     python localisation_pipeline.py --input ... --output ... --dry-run
 
 Configuration (never hardcode the key — use environment variables):
-    MADEYE_API_KEY     required for LLM proposition review
-    MADEYE_BASE_URL    e.g. https://madeye.internal.pocketfm.org
-    MADEYE_MODEL       model name served by the gateway (default: gpt-4o)
+    ARGUS_API_KEY     required for LLM proposition review
+    ARGUS_BASE_URL    e.g. https://argus.pocketfm.org/api
+    ARGUS_MODEL       model id served by Argus (default: claude-opus-4.8)
 
-NOTE: MADEYE lives on a private RFC-1918 IP; run this script from a host on the
-PocketFM internal network. Use --dry-run for all other environments.
+NOTE: Argus (argus.pocketfm.org) is publicly reachable, so this runs anywhere.
+Use --dry-run to skip the LLM step entirely.
 """
 
 from __future__ import annotations
@@ -1062,16 +1062,16 @@ def run(args) -> int:
     # ── Set up LLM ────────────────────────────────────────────────────────────
     client = cfg = None
     if not args.dry_run:
-        api_key  = os.environ.get("MADEYE_API_KEY")
-        base_url = os.environ.get("MADEYE_BASE_URL")
-        model    = args.model or os.environ.get("MADEYE_MODEL", "gpt-4o")
+        api_key  = os.environ.get("ARGUS_API_KEY")
+        base_url = os.environ.get("ARGUS_BASE_URL")
+        model    = args.model or os.environ.get("ARGUS_MODEL", "claude-opus-4.8")
         if not api_key or not base_url:
-            print("ERROR: set MADEYE_API_KEY and MADEYE_BASE_URL, or use --dry-run.",
+            print("ERROR: set ARGUS_API_KEY and ARGUS_BASE_URL, or use --dry-run.",
                   file=sys.stderr)
             return 2
         cfg    = LLMConfig(api_key=api_key, base_url=base_url, model=model)
         client = build_client(cfg)
-        print(f"\n  MADEYE: {base_url}  model={model}", file=sys.stderr)
+        print(f"\n  Argus: {base_url}  model={model}", file=sys.stderr)
 
     # ── Stage 2: Proposition review ───────────────────────────────────────────
     print("\nStage 2: Proposition review (deterministic)", file=sys.stderr)
@@ -1213,7 +1213,7 @@ def main() -> int:
     p.add_argument("--source-lang",  default="de")
     p.add_argument("--target-lang",  default="fr")
     p.add_argument("--model",        default=None,
-                   help="Override MADEYE_MODEL")
+                   help="Override ARGUS_MODEL")
     p.add_argument("--concurrency",  type=int, default=4,
                    help="Parallel LLM calls (default 4)")
     p.add_argument("--limit",        type=int, default=0,

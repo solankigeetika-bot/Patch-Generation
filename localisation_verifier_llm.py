@@ -3,23 +3,23 @@
 LLM-powered localization verifier for PocketFM character/entity sheets.
 
 Combines deterministic rule checks (C0-C3) with an LLM pass (via the OpenAI
-SDK pointed at PocketFM's internal MADEYE gateway) that judges localization
+SDK pointed at PocketFM's internal Argus (Open WebUI)) that judges localization
 quality the way a human reviewer would: cultural fit, mistranslation, source
 language leaking into the target, gender/name consistency, register, etc.
 
-The MADEYE gateway is OpenAI-compatible, so we use the official `openai` SDK
+The Argus (Open WebUI) is OpenAI-compatible, so we use the official `openai` SDK
 and just override `base_url`.
 
 Configuration (environment variables — never hardcode the key):
-    MADEYE_API_KEY     required   API key for the gateway
-    MADEYE_BASE_URL    required   e.g. https://madeye.internal.pocketfm.org
-    MADEYE_MODEL       optional   model name served by the gateway (default below)
+    ARGUS_API_KEY     required   Argus token or sk-... API key
+    ARGUS_BASE_URL    required   https://argus.pocketfm.org/api
+    ARGUS_MODEL       optional   model id served by Argus (default below)
 
 Usage:
     pip install openai
-    export MADEYE_API_KEY=sk-...
-    export MADEYE_BASE_URL=https://madeye.internal.pocketfm.org
-    export MADEYE_MODEL=gpt-4o            # whatever your gateway serves
+    export ARGUS_API_KEY=eyJ...           # Argus token or sk-... key
+    export ARGUS_BASE_URL=https://argus.pocketfm.org/api
+    export ARGUS_MODEL=claude-opus-4.8
 
     python localisation_verifier_llm.py \
         --input TOLR_1-100_source.csv \
@@ -30,9 +30,7 @@ Usage:
     python localisation_verifier_llm.py --input TOLR_1-100_source.csv \
         --output /tmp/out.csv --dry-run
 
-NOTE: MADEYE lives on a private (RFC-1918) IP, so this script must be run from
-a host with access to the PocketFM internal network. It cannot reach MADEYE
-from the public cloud sandbox.
+NOTE: Argus (argus.pocketfm.org) is publicly reachable, so this runs anywhere.
 """
 
 from __future__ import annotations
@@ -269,7 +267,7 @@ def llm_verify_row(client, cfg: LLMConfig, row: dict, src: str, tgt: str) -> lis
             time.sleep(2 ** attempt)
     return [Finding("LLM", "info", "llm_error",
                     f"LLM verification failed: {type(last_err).__name__}: {str(last_err)[:120]}",
-                    "Re-run; check MADEYE connectivity / model name.")]
+                    "Re-run; check Argus connectivity / model name.")]
 
 
 # ── Orchestration ─────────────────────────────────────────────────────────────
@@ -296,16 +294,16 @@ def run(args) -> int:
 
     client = cfg = None
     if not args.dry_run:
-        api_key = os.environ.get("MADEYE_API_KEY")
-        base_url = os.environ.get("MADEYE_BASE_URL")
-        model = args.model or os.environ.get("MADEYE_MODEL", "gpt-4o")
+        api_key = os.environ.get("ARGUS_API_KEY")
+        base_url = os.environ.get("ARGUS_BASE_URL")
+        model = args.model or os.environ.get("ARGUS_MODEL", "claude-opus-4.8")
         if not api_key or not base_url:
-            print("ERROR: set MADEYE_API_KEY and MADEYE_BASE_URL (or use --dry-run).",
+            print("ERROR: set ARGUS_API_KEY and ARGUS_BASE_URL (or use --dry-run).",
                   file=sys.stderr)
             return 2
         cfg = LLMConfig(api_key=api_key, base_url=base_url, model=model)
         client = build_client(cfg)
-        print(f"MADEYE: {base_url}  model={model}", file=sys.stderr)
+        print(f"Argus: {base_url}  model={model}", file=sys.stderr)
 
     # rule checks for every row (cheap)
     rule_results: list[list[Finding]] = [rule_checks(r, src, tgt) for r in rows]
@@ -358,12 +356,12 @@ def run(args) -> int:
 
 
 def main() -> int:
-    p = argparse.ArgumentParser(description="LLM-powered localization verifier (MADEYE/OpenAI SDK)")
+    p = argparse.ArgumentParser(description="LLM-powered localization verifier (Argus/OpenAI SDK)")
     p.add_argument("--input", required=True, help="source CSV (original sheet export)")
     p.add_argument("--output", required=True, help="verified CSV to write")
     p.add_argument("--source-lang", default="de", help="source language code (default de)")
     p.add_argument("--target-lang", default="fr", help="target language code (default fr)")
-    p.add_argument("--model", default=None, help="override MADEYE_MODEL")
+    p.add_argument("--model", default=None, help="override ARGUS_MODEL")
     p.add_argument("--concurrency", type=int, default=4, help="parallel LLM calls (default 4)")
     p.add_argument("--limit", type=int, default=0, help="cap number of main rows LLM-verified")
     p.add_argument("--dry-run", action="store_true",

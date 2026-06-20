@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
 """
-Localization Verifier — internal proxy backend.
+Localization Verifier — Argus proxy backend.
 
-Runs inside PocketFM's network so it can reach:
-  - MADEYE  at madeye.internal.pocketfm.org  (LLM)
-  - canon.pocketfm.ai                         (show canon)
+Holds ONE Argus credential and serves every localizer's sheet, so nobody
+pastes tokens. Argus is publicly reachable, so this can run on plain Cloud Run.
+Reaches:
+  - Argus  at argus.pocketfm.org/api   (LLM, OpenAI-compatible)
+  - canon.pocketfm.ai                  (show canon)
 
-Exposed via a public-facing URL (nginx / load balancer in front).
-Apps Script calls this proxy; the proxy forwards to MADEYE.
+Apps Script calls this proxy; the proxy forwards to Argus.
 
 Environment variables (put in .env or export):
-  MADEYE_API_KEY      required   API key for MADEYE gateway
-  MADEYE_BASE_URL     required   https://madeye.internal.pocketfm.org
-  MADEYE_MODEL        optional   model name (default: gpt-4o)
+  ARGUS_API_KEY       required   Argus token or sk-... API key
+  ARGUS_BASE_URL      required   https://argus.pocketfm.org/api
+  ARGUS_MODEL         optional   model id (default: claude-opus-4.8)
   PROXY_SECRET        required   shared secret Apps Script sends as X-Proxy-Secret
   CANON_SESSION       optional   canon.pocketfm.ai __session cookie (for canon fetch)
   PORT                optional   port to listen on (default: 8000)
@@ -41,12 +42,12 @@ from pydantic import BaseModel
 load_dotenv()
 
 # ─── config ───────────────────────────────────────────────────────────────────
-MADEYE_API_KEY   = os.environ.get("MADEYE_API_KEY", "")
-MADEYE_BASE_URL  = os.environ.get("MADEYE_BASE_URL", "https://madeye.internal.pocketfm.org")
-MADEYE_MODEL     = os.environ.get("MADEYE_MODEL", "gpt-4o")
-PROXY_SECRET     = os.environ.get("PROXY_SECRET", "")
-CANON_SESSION    = os.environ.get("CANON_SESSION", "")
-CANON_HOST       = "https://canon.pocketfm.ai"
+ARGUS_API_KEY   = os.environ.get("ARGUS_API_KEY", "")
+ARGUS_BASE_URL  = os.environ.get("ARGUS_BASE_URL", "https://argus.pocketfm.org/api")
+ARGUS_MODEL     = os.environ.get("ARGUS_MODEL", "claude-opus-4.8")
+PROXY_SECRET    = os.environ.get("PROXY_SECRET", "")
+CANON_SESSION   = os.environ.get("CANON_SESSION", "")
+CANON_HOST      = "https://canon.pocketfm.ai"
 
 app = FastAPI(title="Localization Verifier Proxy", version="1.0")
 
@@ -64,17 +65,17 @@ def _check_auth(secret: str):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
-# ─── MADEYE client ────────────────────────────────────────────────────────────
-def _madeye_client() -> OpenAI:
-    if not MADEYE_API_KEY:
-        raise HTTPException(status_code=503, detail="MADEYE_API_KEY not configured.")
-    return OpenAI(api_key=MADEYE_API_KEY, base_url=MADEYE_BASE_URL, max_retries=1)
+# ─── Argus client ─────────────────────────────────────────────────────────────
+def _argus_client() -> OpenAI:
+    if not ARGUS_API_KEY:
+        raise HTTPException(status_code=503, detail="ARGUS_API_KEY not configured.")
+    return OpenAI(api_key=ARGUS_API_KEY, base_url=ARGUS_BASE_URL, max_retries=1)
 
 
-def _ask_madeye(system: str, user: str, max_tokens: int = 1024) -> str:
-    client = _madeye_client()
+def _ask_argus(system: str, user: str, max_tokens: int = 1024) -> str:
+    client = _argus_client()
     resp = client.chat.completions.create(
-        model=MADEYE_MODEL,
+        model=ARGUS_MODEL,
         messages=[{"role": "system", "content": system},
                   {"role": "user",   "content": user}],
         max_tokens=max_tokens,
@@ -196,7 +197,7 @@ class CanonRequest(BaseModel):
 # ─── endpoints ────────────────────────────────────────────────────────────────
 @app.get("/health")
 def health():
-    return {"status": "ok", "madeye": bool(MADEYE_API_KEY),
+    return {"status": "ok", "argus": bool(ARGUS_API_KEY),
             "canon_session": bool(CANON_SESSION)}
 
 
@@ -223,7 +224,7 @@ Always ground your answers in these. Be concise and specific.
 {req.sheet_context}
 """
     try:
-        answer = _ask_madeye(system, req.question, max_tokens=512)
+        answer = _ask_argus(system, req.question, max_tokens=512)
         return {"answer": answer}
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
@@ -236,7 +237,7 @@ def verify_llm(req: LLMVerifyRequest,
 
     canon_ctx = _canon_context(req.show_slug)
 
-    # pass deterministic findings + sheet to MADEYE for Bucket D judgment
+    # pass deterministic findings + sheet to Argus for Bucket D judgment
     findings_text = "\n".join(
         f"- [{f.get('kind','?')}] Row {f.get('row','?')}: {f.get('detail','')}"
         for f in req.findings[:50]
@@ -263,7 +264,7 @@ Respond as JSON: {{"findings": [{{"row": ..., "kind": ..., "confirmed": true/fal
 {findings_text}
 """
     try:
-        raw = _ask_madeye(system, "Review the findings above.", max_tokens=2048)
+        raw = _ask_argus(system, "Review the findings above.", max_tokens=2048)
         # try to parse JSON out of the response
         m = re.search(r"\{.*\}", raw, re.DOTALL)
         if m:

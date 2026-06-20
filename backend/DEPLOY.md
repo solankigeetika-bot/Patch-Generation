@@ -4,14 +4,13 @@ The proxy holds **one** Argus credential and serves every localizer's sheet, so
 nobody pastes tokens. Argus is publicly reachable, so the proxy can run on plain
 **Cloud Run** — no VPC / internal network needed.
 
-The proxy is OpenAI-compatible, so the existing env vars (named `MADEYE_*`) point
-straight at Argus. Mapping:
+Env vars:
 
-| Env var | Value for Argus |
+| Env var | Value |
 |---|---|
-| `MADEYE_BASE_URL` | `https://argus.pocketfm.org/api` |
-| `MADEYE_API_KEY` | your Argus token (the `eyJ...` HS256 one) — or an `sk-...` API key if your admin enables them |
-| `MADEYE_MODEL` | `claude-opus-4.8` |
+| `ARGUS_BASE_URL` | `https://argus.pocketfm.org/api` |
+| `ARGUS_API_KEY` | your Argus token (the `eyJ...` one) — or an `sk-...` API key if your admin enables them |
+| `ARGUS_MODEL` | `claude-opus-4.8` |
 | `PROXY_SECRET` | any long random string (the sheet sends this; pick one) |
 | `CANON_SESSION` | canon.pocketfm.ai `__session` cookie (lets the proxy fetch canon) |
 
@@ -31,9 +30,9 @@ gcloud run deploy loc-proxy \
   --source . \
   --region asia-south1 \
   --allow-unauthenticated \
-  --set-env-vars MADEYE_BASE_URL=https://argus.pocketfm.org/api \
-  --set-env-vars MADEYE_MODEL=claude-opus-4.8 \
-  --set-env-vars MADEYE_API_KEY=PASTE_ARGUS_TOKEN \
+  --set-env-vars ARGUS_BASE_URL=https://argus.pocketfm.org/api \
+  --set-env-vars ARGUS_MODEL=claude-opus-4.8 \
+  --set-env-vars ARGUS_API_KEY=PASTE_ARGUS_TOKEN \
   --set-env-vars PROXY_SECRET=PASTE_YOUR_SECRET \
   --set-env-vars CANON_SESSION=PASTE_CANON_COOKIE
 ```
@@ -43,7 +42,7 @@ Cloud Run builds the Dockerfile, deploys, and prints a **Service URL** like
 ### 3. Verify it's live
 ```bash
 curl https://loc-proxy-xxxxx-el.a.run.app/health
-# {"status":"ok","madeye":true,"canon_session":true}
+# {"status":"ok","argus":true,"canon_session":true}
 ```
 
 ### 4. Point Apps Script at it
@@ -61,10 +60,10 @@ automatically — no `ARGUS_API_KEY` or `CANON_SESSION` needed in the sheet.
 
 ## Updating the Argus token later
 Until your admin enables non-expiring API keys, the Argus token in
-`MADEYE_API_KEY` expires (~24h). Refresh it in **one** place:
+`ARGUS_API_KEY` expires (~24h). Refresh it in **one** place:
 ```bash
 gcloud run services update loc-proxy --region asia-south1 \
-  --set-env-vars MADEYE_API_KEY=NEW_ARGUS_TOKEN
+  --set-env-vars ARGUS_API_KEY=NEW_ARGUS_TOKEN
 ```
 One update covers all localizers. (Ask me to add a `/refresh` endpoint to the
 proxy if you want this automated from a single browser instead.)
