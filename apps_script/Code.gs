@@ -333,28 +333,69 @@ function runVerifier(sourceLang, targetLang) {
   return { findings: findings, rowCount: ld.length, mmCount: mm.length };
 }
 
-// ─── write findings back to sheet ─────────────────────────────────────────────
+// ─── write findings + confidence scores back to sheet ─────────────────────────
+// Confidence is per-row: 100% = no issues, reduced by severity of each finding.
+// Severity weights: MISSING/SOURCE_NOT_LOCALIZED = -100, COLLISION = -40,
+//   INCONSISTENCY = -30, CULTURAL = -20, LLM_UNCONFIRMED = -15.
+function _confidenceScore(rowFindings) {
+  var penalty = 0;
+  var WEIGHTS = {
+    "MISSING_LOCALISATION": 100,
+    "SOURCE_NAME_NOT_LOCALIZED": 100,
+    "SAME_FIRST_NAME_COLLISION": 40,
+    "SAME_LAST_NAME_COLLISION": 40,
+    "CROSS_CHARACTER_INCONSISTENCY": 30,
+    "CULTURAL_CONTEXT_INAPPROPRIATE": 20,
+    "LLM_UNCONFIRMED": 15
+  };
+  rowFindings.forEach(function(f) {
+    penalty += (WEIGHTS[f.kind] || 20);
+  });
+  return Math.max(0, 100 - penalty);
+}
+
+function _confidenceColor(pct) {
+  if (pct === 100) return "#d9ead3";   // green
+  if (pct >= 70)  return "#fff2cc";   // yellow
+  if (pct >= 40)  return "#fce5cd";   // orange
+  return "#f4cccc";                   // red
+}
+
 function writeFindingsToSheet(findings) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var ldSheet = findSheet(ss, ["localization details", "localization detail", "ld"]);
   if (!ldSheet) return { error: "Sheet not found." };
 
+  var lastCol = ldSheet.getLastColumn();
+  var headers = ldSheet.getRange(1, 1, 1, lastCol).getValues()[0];
+
   // find or create "Localization Issues" column
-  var headers = ldSheet.getRange(1, 1, 1, ldSheet.getLastColumn()).getValues()[0];
   var issueColIdx = -1;
   for (var i = 0; i < headers.length; i++) {
     if (String(headers[i]).toLowerCase().indexOf("localization issues") !== -1 ||
         String(headers[i]).toLowerCase().indexOf("localisation issues") !== -1) {
-      issueColIdx = i + 1;
-      break;
+      issueColIdx = i + 1; break;
     }
   }
   if (issueColIdx === -1) {
-    issueColIdx = ldSheet.getLastColumn() + 1;
+    issueColIdx = lastCol + 1;
     ldSheet.getRange(1, issueColIdx).setValue("Localization Issues");
   }
 
-  // group findings by row
+  // find or create "Confidence Score" column (always right after Issues)
+  var confColIdx = -1;
+  var updatedHeaders = ldSheet.getRange(1, 1, 1, ldSheet.getLastColumn()).getValues()[0];
+  for (var j = 0; j < updatedHeaders.length; j++) {
+    if (String(updatedHeaders[j]).toLowerCase().indexOf("confidence score") !== -1) {
+      confColIdx = j + 1; break;
+    }
+  }
+  if (confColIdx === -1) {
+    confColIdx = issueColIdx + 1;
+    ldSheet.getRange(1, confColIdx).setValue("Confidence Score");
+  }
+
+  // group findings by row number
   var byRow = {};
   findings.forEach(function(f) {
     if (typeof f.row === "number") {
@@ -363,20 +404,38 @@ function writeFindingsToSheet(findings) {
     }
   });
 
-  // write
+  // write issues + confidence for every data row (row 2 onward)
+  var lastDataRow = ldSheet.getLastRow();
   var written = 0;
-  Object.keys(byRow).forEach(function(rowNum) {
-    var cell = ldSheet.getRange(parseInt(rowNum), issueColIdx);
-    var parts = byRow[rowNum].map(function(f) {
-      var text = f.kind + ": " + f.detail;
-      if (f.suggestion) text += " Suggested: '" + f.suggestion + "'.";
-      return text;
-    });
-    cell.setValue(parts.join(" | "));
-    cell.setBackground("#fff2cc");
-    written++;
-  });
-  return { written: written };
+  for (var r = 2; r <= lastDataRow; r++) {
+    var rowFindings = byRow[r] || [];
+    var pct = _confidenceScore(rowFindings);
+    var color = _confidenceColor(pct);
+
+    // issues cell
+    var issueCell = ldSheet.getRange(r, issueColIdx);
+    if (rowFindings.length > 0) {
+      var parts = rowFindings.map(function(f) {
+        var text = f.kind + ": " + f.detail;
+        if (f.suggestion) text += " → '" + f.suggestion + "'";
+        return text;
+      });
+      issueCell.setValue(parts.join(" | "));
+      issueCell.setBackground(color);
+      written++;
+    } else {
+      issueCell.setValue("✓ No issues");
+      issueCell.setBackground("#d9ead3");
+    }
+
+    // confidence cell
+    var confCell = ldSheet.getRange(r, confColIdx);
+    confCell.setValue(pct + "%");
+    confCell.setBackground(color);
+    confCell.setFontWeight(pct < 70 ? "bold" : "normal");
+  }
+
+  return { written: written, totalRows: lastDataRow - 1 };
 }
 
 // ─── canon fetch (canon.pocketfm.ai is publicly reachable) ────────────────────
