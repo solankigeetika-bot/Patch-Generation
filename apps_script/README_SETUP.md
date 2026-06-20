@@ -11,16 +11,19 @@ Extensions → Apps Script
 
 ### 3. Add your Script Properties
 - Apps Script → Project Settings (gear icon) → Script Properties → Add script property
-- Required for the chatbot:
-  - `ARGUS_API_KEY` = your Argus key (Argus → profile → Settings → Account → API Keys → Create new key)
+- Optional (chatbot may work without a key if Argus allows open access):
+  - `ARGUS_API_KEY` = Argus key from Settings → Account → API Keys. Omit if Argus lets you in without one.
 - Required for canon-aware answers:
   - `CANON_SESSION` = your `__session` cookie from canon.pocketfm.ai (DevTools → Application → Cookies)
-  - `SHOW_SLUG` = the show slug from the canon URL (e.g. `twists-of-love-revenge`)
-- Optional overrides (defaults shown):
-  - `ARGUS_BASE_URL` = `https://argus.pocketfm.org/api`
-  - `ARGUS_MODEL` = `claude-opus-4.8`
+  - `SHOW_SLUG` = show slug from the canon URL (e.g. `twists-of-love-revenge`)
+- Optional model/URL overrides:
+  - `ARGUS_BASE_URL` = `https://argus.pocketfm.org/api` (default)
+  - `ARGUS_MODEL` = exact model id from Argus (default `claude-opus-4.8` — see step 3a to look it up)
 
-> The deterministic verifier checks run with **no key at all**. Only the chatbot needs `ARGUS_API_KEY`.
+> The deterministic verifier checks run with **no key at all**.
+
+### 3a. Find the exact Argus model id
+In the Apps Script editor, click **Run → listArgusModels**. It logs the full model list to the Execution Log so you can copy the exact id (e.g. `as`, `claude-opus-4.8`, etc.) and set it as `ARGUS_MODEL`.
 
 ### 4. Save and reload
 - Save (Ctrl+S) → close Apps Script tab

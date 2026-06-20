@@ -17,13 +17,15 @@
 // directly from canon.pocketfm.ai (publicly reachable). The deterministic
 // verifier needs no API key at all.
 
-var ARGUS_API_KEY_PROP  = "ARGUS_API_KEY";
+var ARGUS_API_KEY_PROP  = "ARGUS_API_KEY";      // optional — Argus may allow open access
 var ARGUS_BASE_URL_PROP = "ARGUS_BASE_URL";     // optional override
 var ARGUS_MODEL_PROP    = "ARGUS_MODEL";        // optional override
 var CANON_SESSION_PROP  = "CANON_SESSION";      // canon.pocketfm.ai __session cookie
 var SHOW_SLUG_PROP      = "SHOW_SLUG";          // canon.pocketfm.ai show slug
 var CANON_HOST          = "https://canon.pocketfm.ai";
 var ARGUS_BASE_URL_DEFAULT = "https://argus.pocketfm.org/api";
+// Model id as it appears in Argus's /api/models list.
+// "as" is the browser UI shorthand; check via listArgusModels() if unsure.
 var ARGUS_MODEL_DEFAULT    = "claude-opus-4.8";
 
 // ─── menu ─────────────────────────────────────────────────────────────────────
@@ -375,14 +377,14 @@ function extractCanonContext(html) {
 }
 
 // ─── chatbot — Argus (Open WebUI, OpenAI-compatible) + canon context ──────────
+// ARGUS_API_KEY is optional: if Argus is configured for open/auto access the
+// Authorization header is simply omitted. Set the property only if Argus
+// enforces key auth for your account.
 function askQuestion(question, sourceLang, targetLang) {
-  var props  = PropertiesService.getScriptProperties();
-  var apiKey = props.getProperty(ARGUS_API_KEY_PROP);
-  if (!apiKey) return { error: "Set ARGUS_API_KEY in Script Properties." };
-
-  var baseUrl = props.getProperty(ARGUS_BASE_URL_PROP) || ARGUS_BASE_URL_DEFAULT;
+  var props   = PropertiesService.getScriptProperties();
+  var apiKey  = props.getProperty(ARGUS_API_KEY_PROP);  // may be null
+  var baseUrl = (props.getProperty(ARGUS_BASE_URL_PROP) || ARGUS_BASE_URL_DEFAULT).replace(/\/+$/, "");
   var model   = props.getProperty(ARGUS_MODEL_PROP)    || ARGUS_MODEL_DEFAULT;
-  baseUrl = baseUrl.replace(/\/+$/, "");  // strip trailing slash
 
   var data = getSheetData();
   if (data.error) return { error: data.error };
@@ -398,6 +400,9 @@ function askQuestion(question, sourceLang, targetLang) {
     "--- CANON ---\n" + (canonCtx || "(not available)") + "\n\n" +
     "--- LOCALIZATION SHEET ---\n" + sheetCtx;
 
+  var headers = { "Content-Type": "application/json" };
+  if (apiKey) headers["Authorization"] = "Bearer " + apiKey;
+
   var payload = {
     model: model,
     messages: [
@@ -411,7 +416,7 @@ function askQuestion(question, sourceLang, targetLang) {
   var options = {
     method: "post",
     contentType: "application/json",
-    headers: { "Authorization": "Bearer " + apiKey },
+    headers: headers,
     payload: JSON.stringify(payload),
     muteHttpExceptions: true
   };
@@ -428,6 +433,19 @@ function askQuestion(question, sourceLang, targetLang) {
   } catch(e) {
     return { error: "Argus API error: " + e.message };
   }
+}
+
+// ─── helper — fetch Argus model list (run from Apps Script editor to find IDs) ─
+// Call this once from the Apps Script editor (Run → listArgusModels) to see
+// the exact model ids available in your Argus instance, then set ARGUS_MODEL.
+function listArgusModels() {
+  var props   = PropertiesService.getScriptProperties();
+  var apiKey  = props.getProperty(ARGUS_API_KEY_PROP);
+  var baseUrl = (props.getProperty(ARGUS_BASE_URL_PROP) || ARGUS_BASE_URL_DEFAULT).replace(/\/+$/, "");
+  var headers = {};
+  if (apiKey) headers["Authorization"] = "Bearer " + apiKey;
+  var resp = UrlFetchApp.fetch(baseUrl + "/models", { headers: headers, muteHttpExceptions: true });
+  Logger.log(resp.getContentText());
 }
 
 // ─── build sheet context string ───────────────────────────────────────────────
