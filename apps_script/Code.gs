@@ -1,9 +1,10 @@
-// ─── Localization Verifier — Google Apps Script ───────────────────────────────
-// Bound to your Google Sheet.
-// Setup:
-//   1. Extensions → Apps Script → paste this file
-//   2. Paste Sidebar.html as a new HTML file named "Sidebar"
-//   3. In Project Settings → Script Properties, set:
+// ─── Localization Verifier — Google Apps Script (Editor Add-on) ───────────────
+// Packaged as a Sheets Editor Add-on: install once on your account and it shows
+// up under Extensions → Localization Verifier in EVERY spreadsheet you open.
+// Nothing is pasted per-sheet. See INSTALL_ADDON.md for the install steps.
+// Setup (one time, in the add-on's Apps Script project):
+//   1. Files present: Code.gs, Sidebar.html, appsscript.json (manifest)
+//   2. In Project Settings → Script Properties, set:
 //        ARGUS_API_KEY = sk-...               (Argus / Open WebUI API key)
 //        CANON_SESSION = eyJ...               (canon.pocketfm.ai __session cookie)
 //        SHOW_SLUG     = twists-of-love-revenge  (from the canon URL)
@@ -33,12 +34,20 @@ var ARGUS_BASE_URL_DEFAULT = "https://argus.pocketfm.org/api";
 // "as" is the browser UI shorthand; check via listArgusModels() if unsure.
 var ARGUS_MODEL_DEFAULT    = "claude-opus-4.8";
 
-// ─── menu ─────────────────────────────────────────────────────────────────────
-function onOpen() {
+// ─── menu (Editor Add-on) ─────────────────────────────────────────────────────
+// As an add-on this lives under Extensions → Localization Verifier in EVERY
+// spreadsheet you open — nothing is pasted per-sheet. onOpen/onInstall are the
+// add-on lifecycle triggers; createAddonMenu() puts items under the Extensions
+// menu rather than a sheet-specific top-level menu.
+function onOpen(e) {
   SpreadsheetApp.getUi()
-    .createMenu("Localization Verifier")
+    .createAddonMenu()
     .addItem("Open Assistant", "openSidebar")
     .addToUi();
+}
+
+function onInstall(e) {
+  onOpen(e);
 }
 
 function openSidebar() {

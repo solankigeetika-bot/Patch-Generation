@@ -1,0 +1,22 @@
+{
+  "timeZone": "Asia/Kolkata",
+  "dependencies": {},
+  "exceptionLogging": "STACKDRIVER",
+  "runtimeVersion": "V8",
+  "oauthScopes": [
+    "https://www.googleapis.com/auth/spreadsheets.currentonly",
+    "https://www.googleapis.com/auth/script.container.ui",
+    "https://www.googleapis.com/auth/script.external_request"
+  ],
+  "addOns": {
+    "common": {
+      "name": "Localization Verifier",
+      "logoUrl": "https://www.gstatic.com/images/branding/product/2x/sheets_2020q4_48dp.png",
+      "homepageTrigger": {
+        "runFunction": "openSidebar",
+        "enabled": false
+      }
+    },
+    "sheets": {}
+  }
+}
