@@ -11,7 +11,7 @@ Reads an LSV3 workbook (Localization Details + Mention Mappings), then:
     * VERIFIED       mention is exactly the character's name-parts (+ standard
                      title) -> safe to auto-confirm, marked 100%
 
-  Layer 2 — LLM (Anthropic), one batched call per CHARACTER:
+  Layer 2 — LLM (Madeye), one batched call per CHARACTER:
     Uses the character's own Description column as the story canon (family tree,
     aliases, married names, known script errors, register) to decide the correct
     localized mention + a confidence score + a one-line reason. Only the high-
@@ -23,15 +23,17 @@ Output: a copy of the workbook with these columns added to Mention Mappings:
 The human then reviews only the rows that are NOT already VERIFIED/100%.
 
 Usage:
-    pip install openpyxl anthropic python-dotenv
+    pip install openpyxl openai python-dotenv
     # Layer 1 only (no key needed):
     python verify_ls.py input.xlsx -o output.xlsx
-    # Layer 1 + 2 (set ANTHROPIC_API_KEY in env or .env):
+    # Layer 1 + 2 (set MADEYE_API_KEY in env or .env):
     python verify_ls.py input.xlsx -o output.xlsx --llm
 
 Env (for --llm):
-    ANTHROPIC_API_KEY  required   Anthropic API key
-    ANTHROPIC_MODEL    optional   default claude-opus-4-8
+    MADEYE_API_KEY     required   Madeye API key (sent as Bearer token)
+    MADEYE_BASE_URL    required   Madeye OpenAI-compatible base URL
+    MADEYE_MODEL       optional   model id (default claude-opus-4-8)
+    MADEYE_USER_EMAIL  required   your @pocketfm.com email (Madeye needs metadata.user_email)
 """
 from __future__ import annotations
 
@@ -44,6 +46,12 @@ import unicodedata
 from collections import defaultdict
 
 import openpyxl
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 # ─── normalisation + small dictionaries ───────────────────────────────────────
 def norm(s) -> str:
@@ -189,14 +197,19 @@ def _name_parts(c, orig):
 
 
 # ─── Layer 2: LLM per character (uses Description as canon) ────────────────────
-def _anthropic_client():
-    import anthropic
-    key = os.environ.get("ANTHROPIC_API_KEY", "")
+def _madeye_client():
+    from openai import OpenAI
+    key = os.environ.get("MADEYE_API_KEY", "")
     if not key:
-        sys.exit("ANTHROPIC_API_KEY not set (needed for --llm). Put it in env or .env.")
-    return anthropic.Anthropic(api_key=key)
+        sys.exit("MADEYE_API_KEY not set (needed for --llm). Put it in env or .env.")
+    base = os.environ.get("MADEYE_BASE_URL", "")
+    if not base:
+        sys.exit("MADEYE_BASE_URL not set (needed for --llm). Put it in env or .env.")
+    return OpenAI(api_key=key, base_url=base, max_retries=2)
 
-ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-opus-4-8")
+MADEYE_MODEL = os.environ.get("MADEYE_MODEL", "claude-opus-4-8")
+# Madeye rejects requests without metadata.user_email (400 MADEYE_MISSING_USER).
+MADEYE_USER_EMAIL = os.environ.get("MADEYE_USER_EMAIL", "")
 
 def llm_character(client, c, items, src, tgt):
     """One call resolving all unresolved mentions for a single character."""
@@ -222,13 +235,14 @@ def llm_character(client, c, items, src, tgt):
         f'STORY DESCRIPTION:\n{c["desc"][:4000]}\n\n'
         f'MENTIONS to verify:\n{listing}\n'
     )
-    resp = client.messages.create(
-        model=ANTHROPIC_MODEL,
-        max_tokens=2000,
-        system=system,
-        messages=[{"role": "user", "content": user}],
+    resp = client.chat.completions.create(
+        model=MADEYE_MODEL,
+        messages=[{"role": "system", "content": system},
+                  {"role": "user", "content": user}],
+        max_tokens=2000, temperature=0.1,
+        extra_body={"metadata": {"user_email": MADEYE_USER_EMAIL}},
     )
-    raw = resp.content[0].text if resp.content else ""
+    raw = resp.choices[0].message.content or ""
     m = re.search(r"\{.*\}", raw, re.DOTALL)
     if not m:
         return {}
@@ -275,7 +289,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("input")
     ap.add_argument("-o", "--output", required=True)
-    ap.add_argument("--llm", action="store_true", help="run the LLM layer (needs ANTHROPIC_API_KEY)")
+    ap.add_argument("--llm", action="store_true", help="run the LLM layer (needs MADEYE_API_KEY)")
     ap.add_argument("--src", default="de/en")
     ap.add_argument("--tgt", default="fr")
     args = ap.parse_args()
@@ -303,7 +317,10 @@ def main():
 
     # Layer 2 — only for rows Layer 1 couldn't safely resolve
     if args.llm:
-        client = _anthropic_client()
+        if not MADEYE_USER_EMAIL:
+            sys.exit("MADEYE_USER_EMAIL not set — Madeye rejects requests without "
+                     "metadata.user_email (400 MADEYE_MISSING_USER).")
+        client = _madeye_client()
         todo = defaultdict(list)
         for r in results:
             if r["status"] in ("NEEDS_REVIEW", "MISSING", "MISMATCH"):
