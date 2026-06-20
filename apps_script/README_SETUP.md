@@ -61,7 +61,7 @@ rotates, just having Argus open in a tab keeps the chatbot authenticated.
 > Don't have/want Tampermonkey? Use a **bookmarklet** instead — same effect but
 > you click it manually when on Argus:
 > ```
-> javascript:(function(){var t=localStorage.getItem('token')||((document.cookie.match(/token=([^;]+)/)||[])[1]);fetch('WEBAPP_URL',{method:'POST',mode:'no-cors',headers:{'Content-Type':'text/plain'},body:JSON.stringify({secret:'SECRET',token:t})});alert('Argus token synced to Sheets');})();
+> javascript:(function(){var t=localStorage.getItem('token')||((document.cookie.match(/token=([^;]+)/)||[])[1]);fetch('WEBAPP_URL',{method:'POST',mode:'no-cors',credentials:'include',headers:{'Content-Type':'text/plain'},body:JSON.stringify({secret:'SECRET',token:t})});alert('Argus token synced to Sheets');})();
 > ```
 > Replace `WEBAPP_URL` and `SECRET`, save as a bookmark, click it whenever on Argus.
 

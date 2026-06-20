@@ -63,6 +63,9 @@
   fetch(WEBAPP_URL, {
     method: "POST",
     mode: "no-cors",                                  // fire-and-forget; no CORS needed
+    credentials: "include",                           // send Google cookies so a
+                                                      // domain-restricted (/a/macros/<domain>/)
+                                                      // web app authenticates as you
     headers: { "Content-Type": "text/plain;charset=utf-8" },
     body: JSON.stringify(body)
   }).then(function () {
