@@ -4,21 +4,27 @@
 //   1. Extensions → Apps Script → paste this file
 //   2. Paste Sidebar.html as a new HTML file named "Sidebar"
 //   3. In Project Settings → Script Properties, set:
-//        ANTHROPIC_API_KEY = sk-ant-...        (for the chatbot)
-//        CANON_SESSION     = eyJ...            (canon.pocketfm.ai __session cookie)
-//        SHOW_SLUG         = twists-of-love-revenge  (from the canon URL)
+//        ARGUS_API_KEY = sk-...               (Argus / Open WebUI API key)
+//        CANON_SESSION = eyJ...               (canon.pocketfm.ai __session cookie)
+//        SHOW_SLUG     = twists-of-love-revenge  (from the canon URL)
+//      Optional overrides:
+//        ARGUS_BASE_URL = https://argus.pocketfm.org/api   (default)
+//        ARGUS_MODEL    = claude-opus-4.8                  (default)
 //   4. Reload the sheet → you'll see "Localization Verifier" in the menu
 //
-// NOTE: This is the "works today" path — chatbot uses the public Claude API and
-// fetches canon directly (canon.pocketfm.ai is publicly reachable). To switch to
-// MADEYE later, point askQuestion() at your internal proxy instead.
+// NOTE: The chatbot talks to Argus (PocketFM's Open WebUI), which is
+// OpenAI-compatible, so we use the /chat/completions endpoint. Canon is fetched
+// directly from canon.pocketfm.ai (publicly reachable). The deterministic
+// verifier needs no API key at all.
 
-var ANTHROPIC_API_KEY_PROP = "ANTHROPIC_API_KEY";
-var CANON_SESSION_PROP     = "CANON_SESSION";   // canon.pocketfm.ai __session cookie
-var SHOW_SLUG_PROP         = "SHOW_SLUG";       // canon.pocketfm.ai show slug
-var CANON_HOST             = "https://canon.pocketfm.ai";
-var CLAUDE_MODEL           = "claude-opus-4-8";
-var CLAUDE_API_URL         = "https://api.anthropic.com/v1/messages";
+var ARGUS_API_KEY_PROP  = "ARGUS_API_KEY";
+var ARGUS_BASE_URL_PROP = "ARGUS_BASE_URL";     // optional override
+var ARGUS_MODEL_PROP    = "ARGUS_MODEL";        // optional override
+var CANON_SESSION_PROP  = "CANON_SESSION";      // canon.pocketfm.ai __session cookie
+var SHOW_SLUG_PROP      = "SHOW_SLUG";          // canon.pocketfm.ai show slug
+var CANON_HOST          = "https://canon.pocketfm.ai";
+var ARGUS_BASE_URL_DEFAULT = "https://argus.pocketfm.org/api";
+var ARGUS_MODEL_DEFAULT    = "claude-opus-4.8";
 
 // ─── menu ─────────────────────────────────────────────────────────────────────
 function onOpen() {
@@ -368,11 +374,15 @@ function extractCanonContext(html) {
   return lines.join("\n");
 }
 
-// ─── chatbot — public Claude API + canon context ──────────────────────────────
+// ─── chatbot — Argus (Open WebUI, OpenAI-compatible) + canon context ──────────
 function askQuestion(question, sourceLang, targetLang) {
   var props  = PropertiesService.getScriptProperties();
-  var apiKey = props.getProperty(ANTHROPIC_API_KEY_PROP);
-  if (!apiKey) return { error: "Set ANTHROPIC_API_KEY in Script Properties." };
+  var apiKey = props.getProperty(ARGUS_API_KEY_PROP);
+  if (!apiKey) return { error: "Set ARGUS_API_KEY in Script Properties." };
+
+  var baseUrl = props.getProperty(ARGUS_BASE_URL_PROP) || ARGUS_BASE_URL_DEFAULT;
+  var model   = props.getProperty(ARGUS_MODEL_PROP)    || ARGUS_MODEL_DEFAULT;
+  baseUrl = baseUrl.replace(/\/+$/, "");  // strip trailing slash
 
   var data = getSheetData();
   if (data.error) return { error: data.error };
@@ -389,27 +399,34 @@ function askQuestion(question, sourceLang, targetLang) {
     "--- LOCALIZATION SHEET ---\n" + sheetCtx;
 
   var payload = {
-    model: CLAUDE_MODEL,
+    model: model,
+    messages: [
+      { role: "system", content: system },
+      { role: "user",   content: question }
+    ],
     max_tokens: 1024,
-    system: system,
-    messages: [{ role: "user", content: question }]
+    temperature: 0.2
   };
 
   var options = {
     method: "post",
     contentType: "application/json",
-    headers: { "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
+    headers: { "Authorization": "Bearer " + apiKey },
     payload: JSON.stringify(payload),
     muteHttpExceptions: true
   };
 
   try {
-    var response = UrlFetchApp.fetch(CLAUDE_API_URL, options);
+    var response = UrlFetchApp.fetch(baseUrl + "/chat/completions", options);
+    var code = response.getResponseCode();
     var json = JSON.parse(response.getContentText());
-    if (json.error) return { error: json.error.message };
-    return { answer: json.content[0].text };
+    if (code !== 200 || json.error) {
+      var msg = (json.error && (json.error.message || json.error)) || ("HTTP " + code);
+      return { error: "Argus API error: " + msg };
+    }
+    return { answer: json.choices[0].message.content };
   } catch(e) {
-    return { error: "Claude API error: " + e.message };
+    return { error: "Argus API error: " + e.message };
   }
 }
 

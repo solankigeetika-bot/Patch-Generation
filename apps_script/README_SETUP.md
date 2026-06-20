@@ -9,9 +9,18 @@ Extensions → Apps Script
 - Replace the default `Code.gs` content with `Code.gs` from this folder
 - Click **+** (New file) → HTML → name it exactly **Sidebar** → paste `Sidebar.html`
 
-### 3. Add your API key
-- Apps Script → Project Settings (gear icon) → Script Properties
-- Add property: `ANTHROPIC_API_KEY` = your Claude API key (sk-ant-...)
+### 3. Add your Script Properties
+- Apps Script → Project Settings (gear icon) → Script Properties → Add script property
+- Required for the chatbot:
+  - `ARGUS_API_KEY` = your Argus key (Argus → profile → Settings → Account → API Keys → Create new key)
+- Required for canon-aware answers:
+  - `CANON_SESSION` = your `__session` cookie from canon.pocketfm.ai (DevTools → Application → Cookies)
+  - `SHOW_SLUG` = the show slug from the canon URL (e.g. `twists-of-love-revenge`)
+- Optional overrides (defaults shown):
+  - `ARGUS_BASE_URL` = `https://argus.pocketfm.org/api`
+  - `ARGUS_MODEL` = `claude-opus-4.8`
+
+> The deterministic verifier checks run with **no key at all**. Only the chatbot needs `ARGUS_API_KEY`.
 
 ### 4. Save and reload
 - Save (Ctrl+S) → close Apps Script tab
@@ -41,7 +50,7 @@ Localization Verifier → Open Assistant
 - "Write Issues to Sheet" button → writes flagged rows to the Localization Issues column (highlighted yellow)
 
 **Section 3 — Ask Questions**
-- Chat with Claude about the characters and entities in your sheet
+- Chat (via Argus) about the characters and entities in your sheet
 - Uses the actual sheet data as context
 - Example questions:
   - "Who are all characters in the Williams family?"
@@ -52,5 +61,5 @@ Localization Verifier → Open Assistant
 
 ## Requires
 - A Google Sheet with tabs named "Localization Details" (or similar) and optionally "Mention Mappings"
-- An Anthropic API key (for the chatbot section)
+- An Argus API key (for the chatbot section only)
 - The deterministic verifier checks run without any API key
