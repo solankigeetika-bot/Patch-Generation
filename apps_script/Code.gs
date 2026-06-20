@@ -4,12 +4,14 @@
 //   1. Extensions → Apps Script → paste this file
 //   2. Paste Sidebar.html as a new HTML file named "Sidebar"
 //   3. In Project Settings → Script Properties, set:
-//        ANTHROPIC_API_KEY  = sk-ant-...   (or your proxy key)
+//        PROXY_URL      = https://your-internal-proxy.pocketfm.com
+//        PROXY_SECRET   = (same value as PROXY_SECRET in backend .env)
+//        SHOW_SLUG      = e.g. twists-of-love-revenge  (from canon.pocketfm.ai URL)
 //   4. Reload the sheet → you'll see "Localization Verifier" in the menu
 
-var ANTHROPIC_API_KEY_PROP = "ANTHROPIC_API_KEY";
-var CLAUDE_MODEL = "claude-opus-4-8";          // change to claude-sonnet-4-6 for speed
-var CLAUDE_API_URL = "https://api.anthropic.com/v1/messages";
+var PROXY_URL_PROP    = "PROXY_URL";      // your deployed backend URL
+var PROXY_SECRET_PROP = "PROXY_SECRET";   // shared secret
+var SHOW_SLUG_PROP    = "SHOW_SLUG";      // canon.pocketfm.ai show slug
 
 // ─── menu ─────────────────────────────────────────────────────────────────────
 function onOpen() {
@@ -278,49 +280,57 @@ function writeFindingsToSheet(findings) {
   return { written: written };
 }
 
-// ─── chatbot ──────────────────────────────────────────────────────────────────
+// ─── chatbot — calls internal MADEYE proxy ────────────────────────────────────
 function askQuestion(question, sourceLang, targetLang) {
-  var props = PropertiesService.getScriptProperties();
-  var apiKey = props.getProperty(ANTHROPIC_API_KEY_PROP);
-  if (!apiKey) return { error: "Set ANTHROPIC_API_KEY in Script Properties." };
+  var props   = PropertiesService.getScriptProperties();
+  var baseUrl = props.getProperty(PROXY_URL_PROP);
+  var secret  = props.getProperty(PROXY_SECRET_PROP) || "";
+  var slug    = props.getProperty(SHOW_SLUG_PROP)    || "";
+
+  if (!baseUrl) return { error: "Set PROXY_URL in Script Properties (your internal backend URL)." };
 
   var data = getSheetData();
   if (data.error) return { error: data.error };
 
-  // build a compact sheet summary for context
-  var ldSample = data.ld.slice(0, 80);  // first 80 rows as context
-  var context = "Localization sheet: " + sourceLang + " → " + targetLang + ".\n";
-  context += "Rows (Original Name | Localized Name | Type):\n";
-  ldSample.forEach(function(row) {
-    var orig = row["Original Name"] || row["original name"] || row["original_name"] || "";
-    var loc  = row["Localized Name"] || row["localized name"] || row["localised name"] || "";
-    var type = row["Type"] || row["type"] || "";
-    if (orig) context += "  " + orig + " → " + loc + " [" + type + "]\n";
-  });
+  // build compact sheet context
+  var context = buildSheetContext(data.ld, sourceLang, targetLang);
 
   var payload = {
-    model: CLAUDE_MODEL,
-    max_tokens: 1024,
-    system: "You are a localization expert assistant for PocketFM audiobook production. " +
-            "You have the localization sheet context below. Answer questions about " +
-            "character names, families, entities, and localization decisions concisely. " +
-            "Always ground your answers in the sheet data provided.\n\n" + context,
-    messages: [{ role: "user", content: question }]
+    question:     question,
+    sheet_context: context,
+    source_lang:  sourceLang,
+    target_lang:  targetLang,
+    show_slug:    slug
   };
 
   var options = {
     method: "post",
     contentType: "application/json",
-    headers: {
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01"
-    },
+    headers: { "X-Proxy-Secret": secret },
     payload: JSON.stringify(payload),
     muteHttpExceptions: true
   };
 
-  var response = UrlFetchApp.fetch(CLAUDE_API_URL, options);
-  var json = JSON.parse(response.getContentText());
-  if (json.error) return { error: json.error.message };
-  return { answer: json.content[0].text };
+  try {
+    var response = UrlFetchApp.fetch(baseUrl + "/chat", options);
+    var json = JSON.parse(response.getContentText());
+    if (json.detail) return { error: json.detail };
+    return { answer: json.answer || JSON.stringify(json) };
+  } catch(e) {
+    return { error: "Proxy unreachable: " + e.message };
+  }
+}
+
+// ─── build sheet context string ───────────────────────────────────────────────
+function buildSheetContext(ld, sourceLang, targetLang) {
+  var context = "Localization sheet: " + sourceLang + " → " + targetLang + ".\n";
+  context += "Rows (Original Name → Localized Name [Type]):\n";
+  var sample = ld.slice(0, 100);
+  sample.forEach(function(row) {
+    var orig = row["Original Name"] || row["original name"] || row["original_name"] || "";
+    var loc  = row["Localized Name"] || row["localized name"] || row["localised name"] || "";
+    var type = row["Type"] || row["type"] || "";
+    if (orig) context += "  " + orig + " → " + loc + " [" + type + "]\n";
+  });
+  return context;
 }
