@@ -17,6 +17,10 @@
 // directly from canon.pocketfm.ai (publicly reachable). The deterministic
 // verifier needs no API key at all.
 
+// ── Scalable path (recommended): route through the internal proxy ─────────────
+var PROXY_URL_PROP      = "PROXY_URL";          // e.g. https://loc-proxy.pocketfm.org
+var PROXY_SECRET_PROP   = "PROXY_SECRET";       // shared secret (matches proxy's PROXY_SECRET)
+// ── Direct-to-Argus path (fallback if no proxy is deployed) ───────────────────
 var ARGUS_API_KEY_PROP  = "ARGUS_API_KEY";      // optional — Argus may allow open access
 var ARGUS_BASE_URL_PROP = "ARGUS_BASE_URL";     // optional override
 var ARGUS_MODEL_PROP    = "ARGUS_MODEL";        // optional override
@@ -81,6 +85,43 @@ function _json(obj) {
 function getSheetMeta() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   return { sheetName: ss.getName() };
+}
+
+// ─── token status / save (called directly from the sidebar, no web app) ───────
+// Lets you paste the Argus token straight into the sidebar once a day.
+function getTokenStatus() {
+  var props = PropertiesService.getScriptProperties();
+  var tok = props.getProperty(ARGUS_API_KEY_PROP) || "";
+  var info = { hasToken: !!tok, expiresLabel: "" };
+  if (tok) {
+    var exp = _jwtExp(tok);
+    if (exp) {
+      var mins = Math.round((exp * 1000 - Date.now()) / 60000);
+      info.expiresLabel = mins > 0
+        ? ("valid ~" + (mins >= 60 ? Math.round(mins / 60) + "h" : mins + "m"))
+        : "expired";
+    }
+  }
+  return info;
+}
+
+function saveArgusToken(token) {
+  token = (token || "").trim().replace(/^Bearer\s+/i, "");
+  if (!token) return { ok: false, error: "Empty token." };
+  PropertiesService.getScriptProperties().setProperty(ARGUS_API_KEY_PROP, token);
+  return getTokenStatus();
+}
+
+// Decode a JWT's exp claim without verifying the signature.
+function _jwtExp(jwt) {
+  try {
+    var parts = jwt.split(".");
+    if (parts.length < 2) return 0;
+    var b64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    while (b64.length % 4) b64 += "=";
+    var json = Utilities.newBlob(Utilities.base64Decode(b64)).getDataAsString();
+    return JSON.parse(json).exp || 0;
+  } catch (e) { return 0; }
 }
 
 // ─── read sheet data ──────────────────────────────────────────────────────────
@@ -410,20 +451,28 @@ function extractCanonContext(html) {
   return lines.join("\n");
 }
 
-// ─── chatbot — Argus (Open WebUI, OpenAI-compatible) + canon context ──────────
-// ARGUS_API_KEY is optional: if Argus is configured for open/auto access the
-// Authorization header is simply omitted. Set the property only if Argus
-// enforces key auth for your account.
+// ─── chatbot ──────────────────────────────────────────────────────────────────
+// Two paths, chosen automatically:
+//   1. If PROXY_URL is set → call the internal/Cloud-Run proxy (scalable; the
+//      proxy holds the Argus credential and fetches canon server-side).
+//   2. Otherwise → call Argus directly (fallback; needs ARGUS_API_KEY here).
 function askQuestion(question, sourceLang, targetLang) {
-  var props   = PropertiesService.getScriptProperties();
+  var props = PropertiesService.getScriptProperties();
+
+  var data = getSheetData();
+  if (data.error) return { error: data.error };
+  var sheetCtx = buildSheetContext(data.ld, sourceLang, targetLang);
+
+  var proxyUrl = props.getProperty(PROXY_URL_PROP);
+  if (proxyUrl) {
+    return _askViaProxy(proxyUrl, props, question, sourceLang, targetLang, sheetCtx);
+  }
+
+  // ── direct-to-Argus fallback ───────────────────────────────────────────────
   var apiKey  = props.getProperty(ARGUS_API_KEY_PROP);  // may be null
   var baseUrl = (props.getProperty(ARGUS_BASE_URL_PROP) || ARGUS_BASE_URL_DEFAULT).replace(/\/+$/, "");
   var model   = props.getProperty(ARGUS_MODEL_PROP)    || ARGUS_MODEL_DEFAULT;
 
-  var data = getSheetData();
-  if (data.error) return { error: data.error };
-
-  var sheetCtx = buildSheetContext(data.ld, sourceLang, targetLang);
   var canonCtx = getCanonContext();
 
   var system =
@@ -466,6 +515,41 @@ function askQuestion(question, sourceLang, targetLang) {
     return { answer: json.choices[0].message.content };
   } catch(e) {
     return { error: "Argus API error: " + e.message };
+  }
+}
+
+// ─── chatbot via proxy (scalable path) ────────────────────────────────────────
+// The proxy holds the Argus credential and fetches canon server-side, so the
+// sheet only sends the question + a compact sheet summary + the show slug.
+function _askViaProxy(proxyUrl, props, question, sourceLang, targetLang, sheetCtx) {
+  var secret = props.getProperty(PROXY_SECRET_PROP) || "";
+  var slug   = props.getProperty(SHOW_SLUG_PROP) || "";
+  var url    = proxyUrl.replace(/\/+$/, "") + "/chat";
+
+  var options = {
+    method: "post",
+    contentType: "application/json",
+    headers: { "X-Proxy-Secret": secret },
+    payload: JSON.stringify({
+      question: question,
+      sheet_context: sheetCtx,
+      source_lang: sourceLang,
+      target_lang: targetLang,
+      show_slug: slug
+    }),
+    muteHttpExceptions: true
+  };
+
+  try {
+    var response = UrlFetchApp.fetch(url, options);
+    var code = response.getResponseCode();
+    var json = JSON.parse(response.getContentText());
+    if (code !== 200) {
+      return { error: "Proxy error (" + code + "): " + (json.detail || json.error || "") };
+    }
+    return { answer: json.answer };
+  } catch(e) {
+    return { error: "Proxy error: " + e.message };
   }
 }
 
