@@ -333,6 +333,89 @@ function runVerifier(sourceLang, targetLang) {
   return { findings: findings, rowCount: ld.length, mmCount: mm.length };
 }
 
+// ─── Mention Mappings verifier ────────────────────────────────────────────────
+// Checks the "Mention Mappings" tab (Original Mention → Localized Mention)
+// against the master dictionary in "Localization Details". Deterministic; no
+// token required. Produces a concrete suggested localized mention per row.
+function verifyMentions(sourceLang, targetLang) {
+  var data = getSheetData();
+  if (data.error) return { error: data.error };
+  var ld = data.ld, mm = data.mm;
+  if (!mm || !mm.length) return { findings: [], rowCount: 0, note: "No Mention Mappings rows found." };
+
+  function norm(s) { return (s || "").trim().toLowerCase().replace(/\s+/g, " "); }
+  function col(row, names) {
+    var keys = Object.keys(row);
+    for (var ni = 0; ni < names.length; ni++) {
+      var t = names[ni].toLowerCase();
+      for (var ki = 0; ki < keys.length; ki++) {
+        if (keys[ki].toLowerCase() === t) return row[keys[ki]] || "";
+      }
+    }
+    return "";
+  }
+  function escapeRe(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
+
+  // Build master replacement list from Localization Details, longest original
+  // first so multi-word names are replaced before their parts.
+  var pairs = [];
+  ld.forEach(function(row) {
+    var orig = col(row, ["Original Name","original name","original_name"]);
+    var loc  = col(row, ["Localized Name","localized name","localised name","localized_name"]);
+    if (orig && loc && norm(orig) !== norm(loc)) pairs.push([orig, loc]);
+  });
+  pairs.sort(function(a, b) { return b[0].length - a[0].length; });
+
+  // Apply the dictionary to an original mention → expected localized mention.
+  function expectedLocalized(origMention) {
+    var out = origMention;
+    pairs.forEach(function(p) {
+      var re = new RegExp("\\b" + escapeRe(p[0]) + "\\b", "gi");
+      out = out.replace(re, p[1]);
+    });
+    return out;
+  }
+
+  var findings = [];
+  var seen = {};   // norm(original mention) → first localized mention seen
+
+  mm.forEach(function(row, i) {
+    var orig = col(row, ["Original Mention","original mention","original_mention"]);
+    var loc  = col(row, ["Localized Mention","localized mention","localised mention","localized_mention"]);
+    if (!orig) return;
+    var rowNum = i + 2;
+    var expected = expectedLocalized(orig);
+
+    // 1. missing
+    if (!loc) {
+      findings.push({ tab: "Mention Mappings", row: rowNum, kind: "MISSING_LOCALISATION",
+        detail: "'" + orig + "' has no localized mention.", suggestion: expected });
+      return;
+    }
+    // 2. untranslated (a name that should have changed didn't)
+    if (norm(orig) === norm(loc) && norm(expected) !== norm(orig)) {
+      findings.push({ tab: "Mention Mappings", row: rowNum, kind: "SOURCE_NAME_NOT_LOCALIZED",
+        detail: "'" + loc + "' is unchanged from source.", suggestion: expected });
+    }
+    // 3. mismatch vs master dictionary
+    else if (norm(expected) !== norm(orig) && norm(loc) !== norm(expected)) {
+      findings.push({ tab: "Mention Mappings", row: rowNum, kind: "MENTION_MASTER_MISMATCH",
+        detail: "'" + loc + "' doesn't match the master dictionary.", suggestion: expected });
+    }
+    // 4. cross-mention inconsistency
+    var key = norm(orig);
+    if (seen[key] === undefined) {
+      seen[key] = loc;
+    } else if (norm(seen[key]) !== norm(loc)) {
+      findings.push({ tab: "Mention Mappings", row: rowNum, kind: "CROSS_MENTION_INCONSISTENCY",
+        detail: "'" + orig + "' is localized as '" + loc + "' here but '" + seen[key] + "' elsewhere.",
+        suggestion: seen[key] });
+    }
+  });
+
+  return { findings: findings, rowCount: mm.length };
+}
+
 // ─── write findings + confidence scores back to sheet ─────────────────────────
 // Confidence is per-row: 100% = no issues, reduced by severity of each finding.
 // Severity weights: MISSING/SOURCE_NOT_LOCALIZED = -100, COLLISION = -40,
@@ -436,6 +519,89 @@ function writeFindingsToSheet(findings) {
   }
 
   return { written: written, totalRows: lastDataRow - 1 };
+}
+
+// ─── write Mention Mappings corrections back to that tab ──────────────────────
+// Adds three columns to "Mention Mappings": Mention Issues, Suggested Localized
+// Mention, Confidence Score. Findings must be the output of verifyMentions().
+function writeMentionFindingsToSheet(findings) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var mmSheet = findSheet(ss, ["mention mappings", "mention mapping", "mm"]);
+  if (!mmSheet) return { error: "Cannot find 'Mention Mappings' tab." };
+
+  function ensureCol(label) {
+    var hdrs = mmSheet.getRange(1, 1, 1, mmSheet.getLastColumn()).getValues()[0];
+    for (var i = 0; i < hdrs.length; i++) {
+      if (String(hdrs[i]).toLowerCase() === label.toLowerCase()) return i + 1;
+    }
+    var idx = mmSheet.getLastColumn() + 1;
+    mmSheet.getRange(1, idx).setValue(label);
+    return idx;
+  }
+  var issueCol = ensureCol("Mention Issues");
+  var sugCol   = ensureCol("Suggested Localized Mention");
+  var confCol  = ensureCol("Confidence Score");
+
+  var byRow = {};
+  findings.forEach(function(f) {
+    if (typeof f.row === "number") {
+      if (!byRow[f.row]) byRow[f.row] = [];
+      byRow[f.row].push(f);
+    }
+  });
+
+  var lastDataRow = mmSheet.getLastRow();
+  var written = 0;
+  for (var r = 2; r <= lastDataRow; r++) {
+    var rf = byRow[r] || [];
+    var pct = _confidenceScore(rf);
+    var color = _confidenceColor(pct);
+
+    var issueCell = mmSheet.getRange(r, issueCol);
+    var sugCell   = mmSheet.getRange(r, sugCol);
+    if (rf.length > 0) {
+      issueCell.setValue(rf.map(function(f) { return f.kind + ": " + f.detail; }).join(" | "));
+      issueCell.setBackground(color);
+      // first finding with a suggestion drives the suggested correction
+      var sug = "";
+      rf.forEach(function(f) { if (!sug && f.suggestion) sug = f.suggestion; });
+      sugCell.setValue(sug);
+      if (sug) sugCell.setBackground(color);
+      written++;
+    } else {
+      issueCell.setValue("✓ No issues");
+      issueCell.setBackground("#d9ead3");
+      sugCell.setValue("");
+    }
+
+    var confCell = mmSheet.getRange(r, confCol);
+    confCell.setValue(pct + "%");
+    confCell.setBackground(color);
+    confCell.setFontWeight(pct < 70 ? "bold" : "normal");
+  }
+
+  return { written: written, totalRows: lastDataRow - 1 };
+}
+
+// ─── one-click runners (no sidebar, no token needed) ──────────────────────────
+// Select one of these in the editor's function dropdown and click Run. The
+// deterministic checks + Confidence Score get written straight to the tab.
+function verifyAndWriteDetails() {
+  var res = runVerifier("en", "fr");
+  if (res.error) { Logger.log("ERROR: " + res.error); return res; }
+  var out = writeFindingsToSheet(res.findings);
+  Logger.log("Localization Details: " + res.findings.length + " findings across "
+    + (out.totalRows || 0) + " rows.");
+  return out;
+}
+
+function verifyAndWriteMentions() {
+  var res = verifyMentions("en", "fr");
+  if (res.error) { Logger.log("ERROR: " + res.error); return res; }
+  var out = writeMentionFindingsToSheet(res.findings);
+  Logger.log("Mention Mappings: " + res.findings.length + " findings across "
+    + (out.totalRows || 0) + " rows.");
+  return out;
 }
 
 // ─── canon fetch (canon.pocketfm.ai is publicly reachable) ────────────────────
