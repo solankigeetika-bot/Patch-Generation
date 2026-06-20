@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Google Sans', Arial, sans-serif; font-size: 13px;
+         background: #f8f9fa; color: #202124; }
+
+  .header { background: #1a1a2e; color: #fff; padding: 14px 16px; display: flex;
+            align-items: center; gap: 10px; }
+  .header .logo { font-size: 18px; }
+  .header .title { font-weight: 600; font-size: 14px; }
+  .header .subtitle { font-size: 11px; color: #9aa0b0; margin-top: 2px; }
+
+  .section { background: #fff; margin: 10px; border-radius: 8px;
+             border: 1px solid #e0e0e0; overflow: hidden; }
+  .section-header { padding: 10px 14px; background: #f1f3f4; border-bottom: 1px solid #e0e0e0;
+                    font-weight: 600; font-size: 12px; color: #444;
+                    display: flex; align-items: center; gap: 8px; cursor: pointer; }
+  .section-body { padding: 12px 14px; }
+
+  .lang-row { display: flex; align-items: center; gap: 8px; }
+  select { flex: 1; padding: 6px 8px; border: 1px solid #ccc; border-radius: 6px;
+           font-size: 12px; background: #fff; }
+  .arrow { color: #666; font-size: 16px; }
+
+  .btn { width: 100%; padding: 9px; border: none; border-radius: 6px;
+         font-size: 13px; font-weight: 600; cursor: pointer; margin-top: 10px;
+         transition: background 0.15s; }
+  .btn-primary { background: #1a73e8; color: #fff; }
+  .btn-primary:hover { background: #1557b0; }
+  .btn-primary:disabled { background: #ccc; cursor: default; }
+  .btn-write { background: #188038; color: #fff; margin-top: 6px; }
+  .btn-write:hover { background: #0f5827; }
+  .btn-write:disabled { background: #ccc; cursor: default; }
+
+  .results { max-height: 220px; overflow-y: auto; margin-top: 10px; }
+  .finding { padding: 8px 10px; margin-bottom: 6px; border-radius: 6px;
+             font-size: 12px; line-height: 1.5; }
+  .finding.MISSING_LOCALISATION { background: #fce8e6; border-left: 3px solid #d93025; }
+  .finding.SOURCE_NAME_NOT_LOCALIZED { background: #fce8e6; border-left: 3px solid #d93025; }
+  .finding.SAME_FIRST_NAME_COLLISION { background: #fef7e0; border-left: 3px solid #f9ab00; }
+  .finding.SAME_LAST_NAME_COLLISION { background: #fef7e0; border-left: 3px solid #f9ab00; }
+  .finding.CROSS_CHARACTER_INCONSISTENCY { background: #e8f0fe; border-left: 3px solid #1a73e8; }
+  .finding.CULTURAL_CONTEXT_INAPPROPRIATE { background: #f3e8fd; border-left: 3px solid #9334e6; }
+  .kind { font-weight: 700; font-size: 11px; }
+  .row-tag { float: right; font-size: 10px; color: #888; }
+
+  .stats { display: flex; gap: 8px; margin-top: 10px; }
+  .stat { flex: 1; text-align: center; padding: 8px; background: #f1f3f4;
+          border-radius: 6px; }
+  .stat .num { font-size: 20px; font-weight: 700; color: #1a73e8; }
+  .stat .label { font-size: 10px; color: #666; margin-top: 2px; }
+
+  .chat-log { max-height: 200px; overflow-y: auto; margin-bottom: 10px; }
+  .msg { margin-bottom: 8px; }
+  .msg.user .bubble { background: #e8f0fe; border-radius: 12px 12px 4px 12px;
+                       padding: 8px 11px; font-size: 12px; display: inline-block;
+                       max-width: 90%; }
+  .msg.bot .bubble { background: #f1f3f4; border-radius: 12px 12px 12px 4px;
+                      padding: 8px 11px; font-size: 12px; display: inline-block;
+                      max-width: 90%; }
+  .msg.bot.thinking .bubble { color: #999; font-style: italic; }
+  .chat-input { display: flex; gap: 6px; }
+  .chat-input input { flex: 1; padding: 8px 10px; border: 1px solid #ccc;
+                      border-radius: 20px; font-size: 12px; outline: none; }
+  .chat-input input:focus { border-color: #1a73e8; }
+  .chat-input button { padding: 8px 14px; background: #1a73e8; color: #fff;
+                        border: none; border-radius: 20px; font-size: 12px;
+                        cursor: pointer; }
+  .chat-input button:disabled { background: #ccc; cursor: default; }
+
+  .spinner { display: inline-block; width: 14px; height: 14px;
+             border: 2px solid #ddd; border-top-color: #1a73e8;
+             border-radius: 50%; animation: spin 0.7s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .empty { text-align: center; color: #999; font-size: 12px; padding: 20px 0; }
+  .error-msg { background: #fce8e6; color: #d93025; padding: 8px 10px;
+               border-radius: 6px; font-size: 12px; margin-top: 8px; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="logo">⚡</div>
+  <div>
+    <div class="title">Localization Verifier</div>
+    <div class="subtitle">PocketFM · LSV3 Agent</div>
+  </div>
+</div>
+
+<!-- ── Section 1: Languages ─────────────────────────────────────────── -->
+<div class="section">
+  <div class="section-header">🌐 Source &amp; Target Language</div>
+  <div class="section-body">
+    <div class="lang-row">
+      <select id="srcLang">
+        <option value="en">English</option>
+        <option value="de">German</option>
+        <option value="fr">French</option>
+        <option value="zh">Chinese</option>
+        <option value="ko">Korean</option>
+        <option value="hi">Hindi</option>
+      </select>
+      <div class="arrow">→</div>
+      <select id="tgtLang">
+        <option value="fr">French</option>
+        <option value="de">German</option>
+        <option value="en">English</option>
+        <option value="es">Spanish</option>
+        <option value="pt">Portuguese</option>
+        <option value="hi">Hindi</option>
+      </select>
+    </div>
+    <div id="langDetected" style="font-size:11px;color:#666;margin-top:6px;"></div>
+  </div>
+</div>
+
+<!-- ── Section 2: Run Verifier ──────────────────────────────────────── -->
+<div class="section">
+  <div class="section-header">▶ Run Verifier</div>
+  <div class="section-body">
+    <button class="btn btn-primary" id="btnVerify" onclick="runVerifier()">
+      Run All Checks
+    </button>
+    <div id="verifyStatus" style="font-size:12px;color:#666;margin-top:8px;display:none;"></div>
+    <div class="stats" id="statsRow" style="display:none;">
+      <div class="stat"><div class="num" id="statTotal">0</div><div class="label">Issues found</div></div>
+      <div class="stat"><div class="num" id="statRows">0</div><div class="label">Rows checked</div></div>
+      <div class="stat"><div class="num" id="statMM">0</div><div class="label">Mentions</div></div>
+    </div>
+    <div class="results" id="findingsList"></div>
+    <button class="btn btn-write" id="btnWrite" onclick="writeBack()"
+            style="display:none;">
+      Write Issues to Sheet
+    </button>
+    <div id="writeStatus"></div>
+  </div>
+</div>
+
+<!-- ── Section 3: Ask Questions ─────────────────────────────────────── -->
+<div class="section">
+  <div class="section-header">💬 Ask About Characters / Entities</div>
+  <div class="section-body">
+    <div class="chat-log" id="chatLog">
+      <div class="empty">Ask anything about the show — characters, families, naming decisions.</div>
+    </div>
+    <div class="chat-input">
+      <input type="text" id="chatInput" placeholder="e.g. Who is Susan Drew?"
+             onkeydown="if(event.key==='Enter') sendChat()" />
+      <button id="btnSend" onclick="sendChat()">Send</button>
+    </div>
+  </div>
+</div>
+
+<script>
+var lastFindings = [];
+
+// ── language detection from sheet name ──────────────────────────────────────
+window.onload = function() {
+  google.script.run
+    .withSuccessHandler(function(info) {
+      if (info && info.sheetName) {
+        var name = info.sheetName.toLowerCase();
+        var srcEl = document.getElementById('srcLang');
+        var tgtEl = document.getElementById('tgtLang');
+        // pattern: "ShowName_Eng>FR_LSV3" or "Show_DE_FR"
+        var m = name.match(/\b(eng|en|de|fr|zh|ko|hi)\s*[>_-]+\s*(en|fr|de|zh|ko|hi)\b/i);
+        if (m) {
+          setSelectVal(srcEl, m[1].substring(0,2).toLowerCase());
+          setSelectVal(tgtEl, m[2].toLowerCase());
+          document.getElementById('langDetected').textContent =
+            'Auto-detected from sheet name';
+        }
+      }
+    })
+    .getSheetMeta();
+};
+
+function setSelectVal(el, val) {
+  for (var i = 0; i < el.options.length; i++) {
+    if (el.options[i].value === val) { el.selectedIndex = i; return; }
+  }
+}
+
+// ── verifier ─────────────────────────────────────────────────────────────────
+function runVerifier() {
+  var btn = document.getElementById('btnVerify');
+  var status = document.getElementById('verifyStatus');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Running…';
+  status.style.display = 'block';
+  status.textContent = 'Reading sheet…';
+
+  var src = document.getElementById('srcLang').value;
+  var tgt = document.getElementById('tgtLang').value;
+
+  google.script.run
+    .withSuccessHandler(function(result) {
+      btn.disabled = false;
+      btn.textContent = 'Run All Checks';
+      if (result.error) {
+        status.textContent = '⚠ ' + result.error;
+        return;
+      }
+      lastFindings = result.findings || [];
+      renderFindings(lastFindings, result.rowCount, result.mmCount);
+    })
+    .withFailureHandler(function(err) {
+      btn.disabled = false;
+      btn.textContent = 'Run All Checks';
+      status.textContent = '⚠ Error: ' + err.message;
+    })
+    .runVerifier(src, tgt);
+}
+
+function renderFindings(findings, rowCount, mmCount) {
+  var status = document.getElementById('verifyStatus');
+  var list   = document.getElementById('findingsList');
+  var stats  = document.getElementById('statsRow');
+  var btnW   = document.getElementById('btnWrite');
+
+  document.getElementById('statTotal').textContent = findings.length;
+  document.getElementById('statRows').textContent  = rowCount || 0;
+  document.getElementById('statMM').textContent    = mmCount  || 0;
+  stats.style.display = 'flex';
+
+  if (findings.length === 0) {
+    status.textContent = '✓ No issues found.';
+    list.innerHTML = '<div class="empty">All checks passed.</div>';
+    btnW.style.display = 'none';
+    return;
+  }
+
+  status.textContent = findings.length + ' issue(s) found.';
+  btnW.style.display = 'block';
+
+  list.innerHTML = findings.map(function(f) {
+    var cls = f.kind || 'INFO';
+    var rowLabel = (f.row && f.row !== '—') ? 'Row ' + f.row : '—';
+    var sugg = f.suggestion ? '<br><span style="color:#188038">→ ' + f.suggestion + '</span>' : '';
+    return '<div class="finding ' + cls + '">' +
+           '<span class="kind">' + cls + '</span>' +
+           '<span class="row-tag">' + rowLabel + '</span><br>' +
+           f.detail + sugg + '</div>';
+  }).join('');
+}
+
+function writeBack() {
+  var btn = document.getElementById('btnWrite');
+  btn.disabled = true;
+  btn.textContent = 'Writing…';
+  google.script.run
+    .withSuccessHandler(function(res) {
+      btn.disabled = false;
+      btn.textContent = 'Write Issues to Sheet';
+      var s = document.getElementById('writeStatus');
+      if (res.error) {
+        s.innerHTML = '<div class="error-msg">' + res.error + '</div>';
+      } else {
+        s.innerHTML = '<div style="color:#188038;font-size:12px;margin-top:6px">' +
+                      '✓ ' + res.written + ' row(s) updated.</div>';
+      }
+    })
+    .writeFindingsToSheet(lastFindings);
+}
+
+// ── chatbot ──────────────────────────────────────────────────────────────────
+function sendChat() {
+  var input = document.getElementById('chatInput');
+  var q = input.value.trim();
+  if (!q) return;
+
+  var log = document.getElementById('chatLog');
+  // clear placeholder
+  if (log.querySelector('.empty')) log.innerHTML = '';
+
+  // user bubble
+  log.innerHTML += '<div class="msg user"><div class="bubble">' + escHtml(q) + '</div></div>';
+  input.value = '';
+
+  // thinking bubble
+  var thinkId = 'think_' + Date.now();
+  log.innerHTML += '<div class="msg bot thinking" id="' + thinkId + '">' +
+                   '<div class="bubble">Thinking…</div></div>';
+  log.scrollTop = log.scrollHeight;
+
+  var src = document.getElementById('srcLang').value;
+  var tgt = document.getElementById('tgtLang').value;
+  var btnSend = document.getElementById('btnSend');
+  btnSend.disabled = true;
+
+  google.script.run
+    .withSuccessHandler(function(res) {
+      btnSend.disabled = false;
+      var el = document.getElementById(thinkId);
+      if (el) el.remove();
+      var answer = res.error ? '⚠ ' + res.error : res.answer;
+      log.innerHTML += '<div class="msg bot"><div class="bubble">' +
+                       escHtml(answer) + '</div></div>';
+      log.scrollTop = log.scrollHeight;
+    })
+    .withFailureHandler(function(err) {
+      btnSend.disabled = false;
+      var el = document.getElementById(thinkId);
+      if (el) el.remove();
+      log.innerHTML += '<div class="msg bot"><div class="bubble">⚠ ' +
+                       escHtml(err.message) + '</div></div>';
+    })
+    .askQuestion(q, src, tgt);
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+                  .replace(/\n/g,'<br>');
+}
+</script>
+</body>
+</html>
