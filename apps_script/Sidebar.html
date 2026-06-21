@@ -95,6 +95,12 @@
                       border-radius:6px; font-family:Consolas,monospace; font-size:11px;
                       resize:vertical; }
   .mini-note { font-size:11px; color:#666; line-height:1.45; margin-top:5px; }
+  .field-label { display:block; font-size:11px; font-weight:600; color:#555; margin-top:8px; }
+  .text-input { width:100%; padding:8px 9px; border:1px solid #ccc; border-radius:6px;
+                font-size:12px; outline:none; }
+  .text-input:focus { border-color:#1a73e8; }
+  .button-row { display:flex; gap:8px; }
+  .button-row .btn { flex:1; }
 </style>
 </head>
 <body>
@@ -144,6 +150,9 @@
     <button class="btn btn-primary" id="btnVerify" onclick="runVerifier()">
       Verify Original vs Localized Mentions
     </button>
+    <button class="btn btn-write" id="btnCulture" onclick="runCulturalCheck()">
+      Run Opus Cultural Check
+    </button>
     <div id="verifyStatus" style="font-size:12px;color:#666;margin-top:8px;display:none;"></div>
     <div class="stats" id="statsRow" style="display:none;">
       <div class="stat"><div class="num" id="statTotal">0</div><div class="label">Issues found</div></div>
@@ -159,7 +168,27 @@
   </div>
 </div>
 
-<!-- ── Section 3: Connect Story Canon ───────────────────────────────── -->
+<!-- ── Section 3: Controlled Replacement ─────────────────────────────── -->
+<div class="section">
+  <div class="section-header">↔ Replace Across LS</div>
+  <div class="section-body">
+    <div class="mini-note">
+      Updates target-side fields only: Localized Mention, Suggested Localized Mention,
+      Localized Name, and localized first/last name columns.
+    </div>
+    <label class="field-label" for="replaceFind">Replace</label>
+    <input class="text-input" id="replaceFind" placeholder="e.g. Émilie Lempereur">
+    <label class="field-label" for="replaceWith">With</label>
+    <input class="text-input" id="replaceWith" placeholder="e.g. Aurore Montclair">
+    <div class="button-row">
+      <button class="btn btn-primary" id="btnPreviewReplace" onclick="previewReplace()">Preview</button>
+      <button class="btn btn-write" id="btnApplyReplace" onclick="applyReplace()">Apply</button>
+    </div>
+    <div id="replaceStatus" class="mini-note"></div>
+  </div>
+</div>
+
+<!-- ── Section 4: Connect Story Canon ───────────────────────────────── -->
 <div class="section">
   <div class="section-header">🔗 Connect Story Canon</div>
   <div class="section-body">
@@ -179,7 +208,7 @@
   </div>
 </div>
 
-<!-- ── Section 4: Ask Questions ─────────────────────────────────────── -->
+<!-- ── Section 5: Ask Questions ─────────────────────────────────────── -->
 <div class="section">
   <div class="section-header">💬 Ask About Characters / Entities</div>
   <div class="section-body">
@@ -228,20 +257,29 @@ function setSelectVal(el, val) {
 
 // ── verifier ─────────────────────────────────────────────────────────────────
 function runVerifier() {
-  var btn = document.getElementById('btnVerify');
+  runCheck('all');
+}
+
+function runCulturalCheck() {
+  runCheck('culture');
+}
+
+function runCheck(mode) {
+  var btn = document.getElementById(mode === 'culture' ? 'btnCulture' : 'btnVerify');
   var status = document.getElementById('verifyStatus');
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner"></span> Running…';
   status.style.display = 'block';
-  status.textContent = 'Reading Mention Mappings…';
+  status.textContent = mode === 'culture'
+    ? 'Running Opus cultural check…'
+    : 'Reading Mention Mappings…';
 
   var src = document.getElementById('srcLang').value;
   var tgt = document.getElementById('tgtLang').value;
-
-  google.script.run
+  var scriptRunner = google.script.run
     .withSuccessHandler(function(result) {
       btn.disabled = false;
-      btn.textContent = 'Verify Original vs Localized Mentions';
+      btn.textContent = mode === 'culture' ? 'Run Opus Cultural Check' : 'Verify Original vs Localized Mentions';
       if (result.error) {
         status.textContent = '⚠ ' + result.error;
         return;
@@ -251,10 +289,15 @@ function runVerifier() {
     })
     .withFailureHandler(function(err) {
       btn.disabled = false;
-      btn.textContent = 'Verify Original vs Localized Mentions';
+      btn.textContent = mode === 'culture' ? 'Run Opus Cultural Check' : 'Verify Original vs Localized Mentions';
       status.textContent = '⚠ Error: ' + err.message;
-    })
-    .runVerifier(src, tgt);
+    });
+
+  if (mode === 'culture') {
+    scriptRunner.runCulturalVerifier(src, tgt);
+  } else {
+    scriptRunner.runVerifier(src, tgt);
+  }
 }
 
 function renderFindings(findings, rowCount, mmCount, warning, canon, llm) {
@@ -316,6 +359,51 @@ function writeBack() {
       }
     })
     .writeMentionFindingsToSheet(lastFindings);
+}
+
+function previewReplace() {
+  runReplacement(true);
+}
+
+function applyReplace() {
+  runReplacement(false);
+}
+
+function runReplacement(preview) {
+  var from = document.getElementById('replaceFind').value.trim();
+  var to = document.getElementById('replaceWith').value.trim();
+  var status = document.getElementById('replaceStatus');
+  var btn = document.getElementById(preview ? 'btnPreviewReplace' : 'btnApplyReplace');
+  if (!from || !to) {
+    status.textContent = 'Enter both replacement values.';
+    return;
+  }
+  btn.disabled = true;
+  status.textContent = preview ? 'Scanning…' : 'Applying…';
+  var scriptRunner = google.script.run
+    .withSuccessHandler(function(res) {
+      btn.disabled = false;
+      if (res.error) {
+        status.textContent = '⚠ ' + res.error;
+        return;
+      }
+      var detail = (res.details || []).map(function(d) {
+        return d.sheet + ' / ' + d.column + ': ' + d.cells;
+      }).join('; ');
+      status.textContent = (preview ? 'Preview: ' : 'Applied: ') +
+        (res.changedCells || 0) + ' cell(s), ' + (res.changedRows || 0) +
+        ' row(s). ' + detail;
+    })
+    .withFailureHandler(function(err) {
+      btn.disabled = false;
+      status.textContent = '⚠ Error: ' + err.message;
+    });
+
+  if (preview) {
+    scriptRunner.previewReplacement(from, to);
+  } else {
+    scriptRunner.applyReplacement(from, to);
+  }
 }
 
 function loadCanonBookmarklet() {

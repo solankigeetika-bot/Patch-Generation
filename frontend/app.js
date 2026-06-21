@@ -555,13 +555,19 @@ function buildCanonBookmarklet(base, secret) {
   const endpoint = base.replace(/\/$/, "") + "/update-canon-session";
   return "javascript:(function(){"
     + "var W=" + JSON.stringify(endpoint) + ",S=" + JSON.stringify(secret) + ";"
-    + "if(location.hostname.indexOf('canon')<0){alert('Open canon.pocketfm.ai first.');return;}"
-    + "var m=document.cookie.match(/(?:^|;\\s*)__session=([^;]+)/);"
-    + "if(!m){alert('__session is HttpOnly or missing. Use LS Verifier Settings manual canon paste.');return;}"
-    + "fetch(W,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({secret:S,canon:decodeURIComponent(m[1])})})"
-    + ".then(function(r){return r.json();})"
+    + "if(location.hostname.indexOf('canon')<0){alert('Open canon.pocketfm.ai first, then click this bookmark.');return;}"
+    + "function ext(name){var scripts=[].slice.call(document.scripts).map(function(s){return s.textContent||'';}).sort(function(a,b){return b.length-a.length;});"
+    + "for(var si=0;si<scripts.length;si++){var txt=scripts[si],idx=txt.indexOf(name);if(idx<0)continue;var st=txt.indexOf('{',idx);if(st<0)continue;var d=0,end=-1,str=false,esc=false;"
+    + "for(var i=st;i<txt.length;i++){var c=txt[i];if(esc){esc=false;continue;}if(c==='\\\\'){esc=true;continue;}if(c==='\\\"')str=!str;if(str)continue;if(c==='{')d++;else if(c==='}'){d--;if(d===0){end=i+1;break;}}}"
+    + "if(end>0){try{return JSON.parse(txt.slice(st,end));}catch(e){}}}return null;}"
+    + "var wiki=(window.WIKI_DATA&&typeof window.WIKI_DATA==='object')?window.WIKI_DATA:ext('WIKI_DATA');"
+    + "var show=(window.SHOW_DATA&&typeof window.SHOW_DATA==='object')?window.SHOW_DATA:ext('SHOW_DATA');"
+    + "if(!wiki){alert('Story Canon data not found on this page. Open the show canon page, wait for it to load, then click again.');return;}"
+    + "var slug=(location.pathname.split('/').filter(Boolean)[0]||'');"
+    + "fetch(W,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({secret:S,slug:slug,url:location.href,wiki:wiki,show:show})})"
+    + ".then(function(r){return r.json().then(function(d){if(!r.ok)throw new Error(d.detail||d.error||r.status);return d;});})"
     + ".then(function(d){alert(d.message||'Story Canon connected ✓');})"
-    + ".catch(function(e){alert('Failed: '+e);});"
+    + ".catch(function(e){alert('Failed to connect Story Canon: '+e.message);});"
     + "})();";
 }
 

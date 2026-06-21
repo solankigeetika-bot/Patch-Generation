@@ -33,6 +33,7 @@ var ARGUS_MODEL_PROP    = "ARGUS_MODEL";
 var CANON_SESSION_PROP  = "CANON_SESSION";      // canon.pocketfm.ai __session cookie
 var SHOW_SLUG_PROP      = "SHOW_SLUG";          // canon.pocketfm.ai show slug
 var REFRESH_SECRET_PROP = "REFRESH_SECRET";     // shared secret for the token-sync web app
+var LAST_VERIFIER_SOURCE_PROP = "LAST_VERIFIER_SOURCE";
 var CANON_HOST          = "https://canon.pocketfm.ai";
 var MADEYE_MODEL_DEFAULT = "claude-opus-4-7";
 
@@ -128,17 +129,27 @@ function getCanonBookmarklet() {
     };
   }
   var endpoint = backend + "/update-canon-session";
-  var code = "javascript:(function(){"
-    + "var W=" + JSON.stringify(endpoint) + ",S=" + JSON.stringify(secret) + ";"
-    + "if(location.hostname.indexOf('canon')<0){alert('Open canon.pocketfm.ai first.');return;}"
-    + "var m=document.cookie.match(/(?:^|;\\s*)__session=([^;]+)/);"
-    + "if(!m){alert('__session is HttpOnly or missing. Use manual canon paste in LS Verifier.');return;}"
-    + "fetch(W,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({secret:S,canon:decodeURIComponent(m[1])})})"
-    + ".then(function(r){return r.json();})"
-    + ".then(function(d){alert(d.message||'Story Canon connected ✓');})"
-    + ".catch(function(e){alert('Failed: '+e);});"
-    + "})();";
+  var code = _buildCanonBookmarkletCode(endpoint, secret);
   return { ok: true, bookmarklet: code, backend: backend };
+}
+
+function _buildCanonBookmarkletCode(endpoint, secret) {
+  return "javascript:(function(){"
+    + "var W=" + JSON.stringify(endpoint) + ",S=" + JSON.stringify(secret) + ";"
+    + "if(location.hostname.indexOf('canon')<0){alert('Open canon.pocketfm.ai first, then click this bookmark.');return;}"
+    + "function ext(name){var scripts=[].slice.call(document.scripts).map(function(s){return s.textContent||'';}).sort(function(a,b){return b.length-a.length;});"
+    + "for(var si=0;si<scripts.length;si++){var txt=scripts[si],idx=txt.indexOf(name);if(idx<0)continue;var st=txt.indexOf('{',idx);if(st<0)continue;var d=0,end=-1,str=false,esc=false;"
+    + "for(var i=st;i<txt.length;i++){var c=txt[i];if(esc){esc=false;continue;}if(c==='\\\\'){esc=true;continue;}if(c==='\\\"')str=!str;if(str)continue;if(c==='{')d++;else if(c==='}'){d--;if(d===0){end=i+1;break;}}}"
+    + "if(end>0){try{return JSON.parse(txt.slice(st,end));}catch(e){}}}return null;}"
+    + "var wiki=(window.WIKI_DATA&&typeof window.WIKI_DATA==='object')?window.WIKI_DATA:ext('WIKI_DATA');"
+    + "var show=(window.SHOW_DATA&&typeof window.SHOW_DATA==='object')?window.SHOW_DATA:ext('SHOW_DATA');"
+    + "if(!wiki){alert('Story Canon data not found on this page. Open the show canon page, wait for it to load, then click again.');return;}"
+    + "var slug=(location.pathname.split('/').filter(Boolean)[0]||'');"
+    + "fetch(W,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({secret:S,slug:slug,url:location.href,wiki:wiki,show:show})})"
+    + ".then(function(r){return r.json().then(function(d){if(!r.ok)throw new Error(d.detail||d.error||r.status);return d;});})"
+    + ".then(function(d){alert(d.message||'Story Canon connected ✓');})"
+    + ".catch(function(e){alert('Failed to connect Story Canon: '+e.message);});"
+    + "})();";
 }
 
 function saveMadeyeKey(token) {
@@ -231,6 +242,7 @@ function sheetToObjects(sheet) {
 // Secondary/admin check. The default localizer workflow is Mention Mappings.
 // Returns array of findings: [{row, id, type, detail, suggestion}]
 function runDetailsVerifier(sourceLang, targetLang) {
+  PropertiesService.getScriptProperties().setProperty(LAST_VERIFIER_SOURCE_PROP, "Localization Details");
   var data = getSheetData();
   if (data.error) return { error: data.error };
   if (!data.ld || !data.ld.length) {
@@ -391,15 +403,30 @@ function runDetailsVerifier(sourceLang, targetLang) {
 // Primary localizer workflow: verify Original Mention vs Localized Mention in
 // the Mention Mappings tab. Kept as runVerifier() because the sidebar calls it.
 function runVerifier(sourceLang, targetLang) {
+  PropertiesService.getScriptProperties().setProperty(LAST_VERIFIER_SOURCE_PROP, "Mention Mappings");
   return verifyMentionsAgent(sourceLang, targetLang);
 }
 
 // Backend agent path: deterministic checks + Story Canon + Madeye reasoning.
 // Falls back to local deterministic checks when no backend URL is configured.
 function verifyMentionsAgent(sourceLang, targetLang) {
+  return verifyMentionsAgentWithMode(sourceLang, targetLang, "all");
+}
+
+function runCulturalVerifier(sourceLang, targetLang) {
+  PropertiesService.getScriptProperties().setProperty(LAST_VERIFIER_SOURCE_PROP, "Mention Mappings");
+  return verifyMentionsAgentWithMode(sourceLang, targetLang, "culture");
+}
+
+function verifyMentionsAgentWithMode(sourceLang, targetLang, checkMode) {
   var props = PropertiesService.getScriptProperties();
   var proxyUrl = _backendUrl(props);
-  if (!proxyUrl) return verifyMentions(sourceLang, targetLang);
+  if (!proxyUrl) {
+    if (checkMode === "culture") {
+      return { error: "Cultural check needs BACKEND_URL so Opus 4.7 can review the sheet." };
+    }
+    return verifyMentions(sourceLang, targetLang);
+  }
 
   var data = getSheetData();
   if (data.error) return { error: data.error };
@@ -412,7 +439,8 @@ function verifyMentionsAgent(sourceLang, targetLang) {
     target_lang: targetLang || "fr",
     show_slug: props.getProperty(SHOW_SLUG_PROP) || "",
     user_email: _activeUserEmail(props),
-    run_llm: true
+    run_llm: true,
+    check_mode: checkMode || "all"
   };
   var options = {
     method: "post",
@@ -439,6 +467,97 @@ function verifyMentionsAgent(sourceLang, targetLang) {
   } catch(e) {
     return { error: "Backend agent error: " + e.message };
   }
+}
+
+// ─── controlled replacement workflow ─────────────────────────────────────────
+// Updates target-side LS fields only. Source and English translation columns are
+// intentionally untouched.
+function previewReplacement(findText, replaceText) {
+  return replaceInRelevantLocalizedFields(findText, replaceText, true);
+}
+
+function applyReplacement(findText, replaceText) {
+  return replaceInRelevantLocalizedFields(findText, replaceText, false);
+}
+
+function replaceInRelevantLocalizedFields(findText, replaceText, previewOnly) {
+  findText = String(findText || "").trim();
+  replaceText = String(replaceText || "").trim();
+  if (!findText) return { error: "Enter text to replace." };
+  if (!replaceText) return { error: "Enter replacement text." };
+
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var targets = [
+    {
+      sheet: findSheet(ss, ["mention mappings", "mention mapping", "mm"]),
+      columns: ["Localized Mention", "Suggested Localized Mention"]
+    },
+    {
+      sheet: findSheet(ss, ["localization details", "localization detail", "ld"]),
+      columns: ["Localized Name", "Localised Name", "First Name (Localized)",
+                "First Name (Localised)", "Last Name (Localized)", "Last Name (Localised)"]
+    }
+  ];
+
+  var re = _replacementRegex(findText);
+  var changedCells = 0;
+  var changedRows = {};
+  var details = [];
+
+  targets.forEach(function(target) {
+    if (!target.sheet) return;
+    var sheet = target.sheet;
+    var values = sheet.getDataRange().getValues();
+    if (values.length < 2) return;
+    var headers = values[0].map(function(h) { return String(h).trim(); });
+    var colIndexes = [];
+    headers.forEach(function(h, idx) {
+      target.columns.forEach(function(wanted) {
+        if (h.toLowerCase() === wanted.toLowerCase()) colIndexes.push(idx);
+      });
+    });
+    if (!colIndexes.length) return;
+
+    colIndexes.forEach(function(cidx) {
+      var colChanged = 0;
+      for (var r = 1; r < values.length; r++) {
+        var before = String(values[r][cidx] || "");
+        if (!before || !re.test(before)) {
+          re.lastIndex = 0;
+          continue;
+        }
+        re.lastIndex = 0;
+        var after = before.replace(re, replaceText);
+        if (after === before) continue;
+        colChanged++;
+        changedCells++;
+        changedRows[sheet.getName() + ":" + (r + 1)] = true;
+        if (!previewOnly) {
+          sheet.getRange(r + 1, cidx + 1).setValue(after).setBackground("#d9ead3");
+        }
+      }
+      if (colChanged) {
+        details.push({ sheet: sheet.getName(), column: headers[cidx], cells: colChanged });
+      }
+    });
+  });
+
+  return {
+    ok: true,
+    preview: !!previewOnly,
+    find: findText,
+    replacement: replaceText,
+    changedCells: changedCells,
+    changedRows: Object.keys(changedRows).length,
+    details: details
+  };
+}
+
+function _replacementRegex(findText) {
+  var escaped = findText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  var startsWord = /^[A-Za-zÀ-ÿ0-9]/.test(findText);
+  var endsWord = /[A-Za-zÀ-ÿ0-9]$/.test(findText);
+  return new RegExp((startsWord ? "\\b" : "") + escaped + (endsWord ? "\\b" : ""), "gi");
 }
 
 // ─── Mention Mappings verifier ────────────────────────────────────────────────
@@ -567,6 +686,10 @@ function _confidenceColor(pct) {
 }
 
 function writeFindingsToSheet(findings) {
+  var props = PropertiesService.getScriptProperties();
+  if (props.getProperty(LAST_VERIFIER_SOURCE_PROP) === "Mention Mappings") {
+    return writeMentionFindingsToSheet(findings || []);
+  }
   if (findings && findings.length) {
     var mentionFinding = findings.some(function(f) {
       return f.tab === "Mention Mappings" ||

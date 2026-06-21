@@ -7,7 +7,7 @@ Serves the static frontend at / and all API endpoints:
   POST /correction            — save a human correction to the shared dictionary
   POST /finalize/{job_id}     — apply accepted decisions → return corrected .xlsx
   GET  /download/{job_id}     — download the annotated .xlsx (engine output)
-  POST /update-canon-session  — bookmarklet endpoint: store canon __session cookie
+  POST /update-canon-session  — bookmarklet endpoint: store canon data/session
   GET  /health                — service health
   GET  /madeye-ping           — end-to-end Madeye connectivity check
   POST /chat                  — story Q&A (canon + sheet context)
@@ -68,11 +68,21 @@ PROXY_SECRET      = os.environ.get("PROXY_SECRET", "")
 CANON_HOST        = os.environ.get("CANON_HOST", "https://canon.pocketfm.ai").rstrip("/")
 LLM_VERIFY_LIMIT  = int(os.environ.get("LLM_VERIFY_LIMIT", "80"))
 
-# CANON_SESSION: env var, then persisted file (bookmarklet writes this)
+# CANON_SESSION: env var, then persisted file (legacy bookmarklet writes this).
+# CANON_SNAPSHOT: latest Story Canon page data pushed by the bookmarklet. This
+# mirrors the CMS tools: run inside the internal app, capture the app data, and
+# hand the verifier a server-side snapshot it can reuse.
 _CANON_SESSION_FILE = Path("canon_session.txt")
+_CANON_SNAPSHOT_FILE = Path("canon_snapshot.json")
 CANON_SESSION = os.environ.get("CANON_SESSION", "")
 if not CANON_SESSION and _CANON_SESSION_FILE.exists():
     CANON_SESSION = _CANON_SESSION_FILE.read_text().strip()
+CANON_SNAPSHOT: dict[str, Any] = {}
+if _CANON_SNAPSHOT_FILE.exists():
+    try:
+        CANON_SNAPSHOT = json.loads(_CANON_SNAPSHOT_FILE.read_text())
+    except Exception:
+        CANON_SNAPSHOT = {}
 
 
 # ─── app ──────────────────────────────────────────────────────────────────────
@@ -124,9 +134,49 @@ _canon_cache: dict[str, dict] = {}
 _canon_graph_cache: dict[str, Any] = {}
 
 
+def _snapshot_slug(snapshot: dict) -> str:
+    slug = str((snapshot or {}).get("slug") or "").strip().strip("/")
+    if slug:
+        return slug
+    try:
+        path = str(snapshot.get("url") or "")
+        m = re.search(r"canon\.pocketfm\.ai/([^/?#]+)/?", path)
+        return m.group(1).strip("/") if m else ""
+    except Exception:
+        return ""
+
+
+def _snapshot_matches(slug: str, snapshot: dict) -> bool:
+    """Blank slug means use the last connected canon snapshot."""
+    if not snapshot or not snapshot.get("wiki"):
+        return False
+    wanted = (slug or "").strip().strip("/").lower()
+    if not wanted:
+        return True
+    snap_slug = _snapshot_slug(snapshot).lower()
+    if wanted == snap_slug:
+        return True
+    title = str((snapshot.get("wiki") or {}).get("show_title") or "").lower()
+    return bool(title and wanted in re.sub(r"[^a-z0-9]+", "-", title).strip("-"))
+
+
+def _snapshot_result(snapshot: dict) -> dict:
+    return {
+        "wiki": snapshot.get("wiki") or {},
+        "show": snapshot.get("show"),
+        "slug": _snapshot_slug(snapshot),
+        "url": snapshot.get("url") or "",
+        "source": "bookmarklet_snapshot",
+    }
+
+
 def _fetch_canon(slug: str) -> dict:
+    if _snapshot_matches(slug, CANON_SNAPSHOT):
+        return _snapshot_result(CANON_SNAPSHOT)
     if slug in _canon_cache:
         return _canon_cache[slug]
+    if not slug:
+        return {}
     if not CANON_SESSION:
         return {}
     url = f"{CANON_HOST}/{slug}/"
@@ -143,7 +193,20 @@ def _fetch_canon(slug: str) -> dict:
 
 def _canon_graph(slug: str):
     """Return the structured Story Canon graph for a show slug, if configured."""
-    if not slug or not CANON_SESSION or CanonGraph is None:
+    if CanonGraph is None:
+        return None
+    if _snapshot_matches(slug, CANON_SNAPSHOT):
+        key = "snapshot|" + (_snapshot_slug(CANON_SNAPSHOT) or "latest")
+        if key in _canon_graph_cache:
+            return _canon_graph_cache[key]
+        try:
+            graph = CanonGraph(CANON_SNAPSHOT.get("wiki") or {},
+                               CANON_SNAPSHOT.get("show"))
+        except Exception:
+            return None
+        _canon_graph_cache[key] = graph
+        return graph
+    if not slug or not CANON_SESSION:
         return None
     key = f"{CANON_HOST}|{slug}"
     if key in _canon_graph_cache:
@@ -176,11 +239,11 @@ def _extract_from_html(html: str):
 
 
 def _canon_context(slug: str, focus_names: Optional[list[str]] = None) -> str:
-    if not slug:
-        return ""
     graph = _canon_graph(slug)
     if graph:
         return _canon_graph_context(graph, focus_names or [])
+    if not slug and not _snapshot_matches(slug, CANON_SNAPSHOT):
+        return ""
 
     data = _fetch_canon(slug)
     wiki = data.get("wiki", {})
@@ -336,6 +399,7 @@ class MentionVerifyRequest(BaseModel):
     show_slug: str = ""
     user_email: str = ""
     run_llm: bool = True
+    check_mode: str = "all"  # all | culture
 
 
 class CanonRequest(BaseModel):
@@ -344,7 +408,12 @@ class CanonRequest(BaseModel):
 
 class CanonSessionUpdate(BaseModel):
     secret: str
-    canon: str
+    canon: str = ""
+    slug: str = ""
+    url: str = ""
+    wiki: Optional[dict[str, Any]] = None
+    show: Optional[dict[str, Any]] = None
+    html: str = ""
 
 
 # ─── mention verification engine for Apps Script ──────────────────────────────
@@ -464,7 +533,10 @@ def _source_identity(row: dict, idx: dict, graph) -> tuple[str, str]:
     return orig_mention, ""
 
 
-def _base_mention_findings(ld_rows: list[dict], mm_rows: list[dict], graph) -> list[dict]:
+def _base_mention_findings(ld_rows: list[dict], mm_rows: list[dict], graph,
+                           target_lang: str = "fr",
+                           include_mechanical: bool = True,
+                           include_culture: bool = True) -> list[dict]:
     pairs = _dictionary_pairs(ld_rows)
     idx = _ld_indexes(ld_rows, graph)
     findings: list[dict] = []
@@ -481,7 +553,7 @@ def _base_mention_findings(ld_rows: list[dict], mm_rows: list[dict], graph) -> l
             continue
 
         expected = _expected_localized(orig, pairs)
-        if not loc:
+        if include_mechanical and not loc:
             findings.append({
                 "tab": "Mention Mappings", "row": row_num,
                 "kind": "MISSING_LOCALISATION",
@@ -490,14 +562,14 @@ def _base_mention_findings(ld_rows: list[dict], mm_rows: list[dict], graph) -> l
             })
             continue
 
-        if _norm_text(orig) == _norm_text(loc) and _norm_text(expected) != _norm_text(orig):
+        if include_mechanical and _norm_text(orig) == _norm_text(loc) and _norm_text(expected) != _norm_text(orig):
             findings.append({
                 "tab": "Mention Mappings", "row": row_num,
                 "kind": "SOURCE_NAME_NOT_LOCALIZED",
                 "detail": f"'{loc}' is unchanged from source.",
                 "suggestion": expected, "confidence": 0, "source": "deterministic",
             })
-        elif _norm_text(expected) != _norm_text(orig) and _norm_text(loc) != _norm_text(expected):
+        elif include_mechanical and _norm_text(expected) != _norm_text(orig) and _norm_text(loc) != _norm_text(expected):
             findings.append({
                 "tab": "Mention Mappings", "row": row_num,
                 "kind": "MENTION_MASTER_MISMATCH",
@@ -505,20 +577,74 @@ def _base_mention_findings(ld_rows: list[dict], mm_rows: list[dict], graph) -> l
                 "suggestion": expected, "confidence": 70, "source": "deterministic",
             })
 
-        key = _norm_text(orig)
-        if key not in seen:
-            seen[key] = loc
-        elif _norm_text(seen[key]) != _norm_text(loc):
-            findings.append({
-                "tab": "Mention Mappings", "row": row_num,
-                "kind": "CROSS_MENTION_INCONSISTENCY",
-                "detail": f"'{orig}' is localized as '{loc}' here but '{seen[key]}' elsewhere.",
-                "suggestion": seen[key], "confidence": 60, "source": "deterministic",
-            })
+        if include_mechanical:
+            key = _norm_text(orig)
+            if key not in seen:
+                seen[key] = loc
+            elif _norm_text(seen[key]) != _norm_text(loc):
+                findings.append({
+                    "tab": "Mention Mappings", "row": row_num,
+                    "kind": "CROSS_MENTION_INCONSISTENCY",
+                    "detail": f"'{orig}' is localized as '{loc}' here but '{seen[key]}' elsewhere.",
+                    "suggestion": seen[key], "confidence": 60, "source": "deterministic",
+                })
 
-        _add_canon_family_finding(findings, row_num, row, loc, idx, graph)
+        if include_culture:
+            _add_target_culture_finding(findings, row_num, row, loc, target_lang)
+        if include_mechanical:
+            _add_canon_family_finding(findings, row_num, row, loc, idx, graph)
 
     return _dedupe_findings(findings)
+
+
+def _target_lang_key(lang: str) -> str:
+    low = (lang or "").strip().lower()
+    if low.startswith("fr") or "french" in low:
+        return "fr"
+    return low[:2]
+
+
+def _target_culture_terms(target_lang: str) -> list[tuple[str, str]]:
+    if _target_lang_key(target_lang) != "fr":
+        return []
+    return [
+        (r"\bschwesterchen\b", "petite soeur"),
+        (r"\bschwester\b", "soeur"),
+        (r"\bschwagerin\b|\bschwägerin\b", "belle-soeur"),
+        (r"\bgrossvater\b|\bgroßvater\b", "grand-pere"),
+        (r"\bgrossmutter\b|\bgroßmutter\b", "grand-mere"),
+        (r"\boma\b", "grand-mere"),
+        (r"\bopa\b", "grand-pere"),
+        (r"\bschatz\b|\bliebling\b", "cheri/cherie"),
+        (r"\bherr\b|\bmr\.?\b", "Monsieur"),
+        (r"\bfrau\b|\bmrs\.?\b|\bms\.?\b", "Madame"),
+        (r"\bmiss\b", "Mademoiselle"),
+    ]
+
+
+def _add_target_culture_finding(findings: list[dict], row_num: int, row: dict,
+                                loc: str, target_lang: str) -> None:
+    if not loc:
+        return
+    original = _cell(row, ["Original Mention", "original mention", "original_mention"])
+    english = _cell(row, ["English Translated Mention", "english translated mention"])
+    for pattern, suggestion_hint in _target_culture_terms(target_lang):
+        if not re.search(pattern, loc, flags=re.I):
+            continue
+        findings.append({
+            "tab": "Mention Mappings",
+            "row": row_num,
+            "kind": "TARGET_CULTURE_MISMATCH",
+            "detail": (
+                f"'{loc}' contains a source-language or unnatural address term "
+                f"for {target_lang} audio."
+            ),
+            "suggestion": suggestion_hint,
+            "confidence": 65,
+            "source": "deterministic_culture",
+            "evidence": f"{original} | {loc} | {english}",
+        })
+        return
 
 
 def _add_canon_family_finding(findings: list[dict], row_num: int, row: dict,
@@ -624,7 +750,39 @@ def _llm_mention_findings(req: MentionVerifyRequest, base_findings: list[dict],
         for r in candidates
     )
 
-    system = f"""You are a senior localization verifier for PocketFM audio.
+    if (req.check_mode or "").lower() == "culture":
+        system = f"""You are a senior French localization verifier for PocketFM audio dramas.
+Source language: {req.source_lang}. Target language: {req.target_lang}.
+
+Review ONLY cultural appropriateness, spoken naturalness, register, and target-language fit.
+You do NOT need Story Canon for this pass. Do not invent story facts. Use only the supplied
+rows and dictionary context.
+
+Flag only if there is a concrete issue and a direct replacement for the Localized Mention cell.
+
+Check:
+A. Source-language leakage: German/English/source terms surviving in French.
+B. French register/title naturalness: Madame, Monsieur, Mademoiselle, kinship, roles.
+C. Gender and kinship agreement using Gender and English Translated Mention.
+D. Audio clarity: too clunky, ambiguous, or mixed-language when spoken.
+E. Cultural substitution: city/institution/title/social-role choices that sound wrong for French audio.
+F. Over-literal translation that technically means the source but sounds unnatural.
+
+Do NOT flag proper names just because they are foreign.
+Do NOT require a word-for-word translation.
+If unsure, do not flag.
+
+Return STRICTLY JSON:
+{{"findings":[{{"row":31,"kind":"TARGET_CULTURE_MISMATCH","detail":"one sentence","suggestion":"replacement localized mention","confidence":88}}]}}
+
+--- LOCALIZATION DETAILS DICTIONARY ---
+{dictionary or "(not available)"}
+
+--- DETERMINISTIC CULTURE FINDINGS ---
+{deterministic or "(none)"}
+"""
+    else:
+        system = f"""You are a senior localization verifier for PocketFM audio.
 Source language: {req.source_lang}. Target language: {req.target_lang}.
 
 Use Story Canon as the source of truth for character identity, family trees,
@@ -697,6 +855,8 @@ def health():
         "madeye": bool(MADEYE_API_KEY and MADEYE_BASE_URL),
         "user_email": bool(MADEYE_USER_EMAIL),
         "canon_session": bool(CANON_SESSION),
+        "canon_snapshot": bool(CANON_SNAPSHOT.get("wiki")),
+        "canon_slug": _snapshot_slug(CANON_SNAPSHOT),
         "canon_host": CANON_HOST,
         "llm_verify_limit": LLM_VERIFY_LIMIT,
     }
@@ -723,18 +883,52 @@ def madeye_ping(user_email: str = ""):
 
 @app.post("/update-canon-session")
 def update_canon_session(req: CanonSessionUpdate):
-    """Bookmarklet endpoint: push canon __session cookie to the backend."""
+    """Bookmarklet endpoint: push Story Canon data or a legacy session cookie."""
     if PROXY_SECRET and req.secret != PROXY_SECRET:
         raise HTTPException(401, "Invalid secret")
-    global CANON_SESSION
-    CANON_SESSION = req.canon.strip()
-    try:
-        _CANON_SESSION_FILE.write_text(CANON_SESSION)
-    except Exception:
-        pass
+
+    global CANON_SESSION, CANON_SNAPSHOT
+    updated = []
+
+    wiki = req.wiki or None
+    show = req.show
+    if not wiki and req.html:
+        wiki, show_from_html = _extract_from_html(req.html)
+        show = show or show_from_html
+    if wiki:
+        CANON_SNAPSHOT = {
+            "slug": req.slug.strip().strip("/"),
+            "url": req.url.strip(),
+            "wiki": wiki,
+            "show": show,
+            "captured_at": datetime.now(timezone.utc).isoformat(),
+        }
+        try:
+            _CANON_SNAPSHOT_FILE.write_text(json.dumps(CANON_SNAPSHOT, ensure_ascii=False))
+        except Exception:
+            pass
+        updated.append("story data")
+
+    if req.canon.strip():
+        CANON_SESSION = req.canon.strip()
+        try:
+            _CANON_SESSION_FILE.write_text(CANON_SESSION)
+        except Exception:
+            pass
+        updated.append("session")
+
+    if not updated:
+        raise HTTPException(400, "No Story Canon data found on this page.")
+
     _canon_cache.clear()  # invalidate stale canon cache
     _canon_graph_cache.clear()
-    return {"status": "ok", "message": "Canon session updated ✓"}
+    return {
+        "status": "ok",
+        "message": "Story Canon connected ✓",
+        "updated": updated,
+        "slug": _snapshot_slug(CANON_SNAPSHOT),
+        "characters": len((CANON_SNAPSHOT.get("wiki") or {}).get("characters") or []),
+    }
 
 
 @app.post("/verify")
@@ -934,7 +1128,15 @@ def verify_mentions(req: MentionVerifyRequest, x_proxy_secret: str = Header(defa
             focus.append(orig)
     canon_ctx = _canon_context(req.show_slug, focus)
 
-    base_findings = _base_mention_findings(req.ld, req.mm, graph)
+    culture_only = (req.check_mode or "").lower() == "culture"
+    base_findings = _base_mention_findings(
+        req.ld,
+        req.mm,
+        graph,
+        target_lang=req.target_lang,
+        include_mechanical=not culture_only,
+        include_culture=True,
+    )
     llm_findings, warning = _llm_mention_findings(req, base_findings, canon_ctx)
     findings = _dedupe_findings(base_findings + llm_findings)
     llm_ran = bool(
