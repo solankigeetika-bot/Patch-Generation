@@ -601,7 +601,116 @@ def _target_lang_key(lang: str) -> str:
     low = (lang or "").strip().lower()
     if low.startswith("fr") or "french" in low:
         return "fr"
+    if low.startswith("hi") or "hindi" in low:
+        return "hi"
+    if low.startswith("es") or "spanish" in low:
+        return "es"
+    if low.startswith("pt") or "portuguese" in low:
+        return "pt"
+    if low.startswith("id") or "indonesian" in low or "bahasa" in low:
+        return "id"
+    if low.startswith("ar") or "arabic" in low:
+        return "ar"
+    if low.startswith("zh") or "chinese" in low or "mandarin" in low:
+        return "zh"
+    if low.startswith("ko") or "korean" in low:
+        return "ko"
+    if low.startswith("ja") or "japanese" in low:
+        return "ja"
+    if low.startswith("de") or "german" in low:
+        return "de"
+    if low.startswith("en") or "english" in low:
+        return "en"
     return low[:2]
+
+
+def _natural_reader_prompt(target_lang: str) -> str:
+    """Target-language listener lens for the cultural Opus pass."""
+    key = _target_lang_key(target_lang)
+    profiles = {
+        "fr": (
+            "Natural French audiobook listener lens:\n"
+            "- The line should sound like idiomatic spoken French, not translated German/English.\n"
+            "- Use natural French address and relationship terms: Monsieur, Madame, Mademoiselle, "
+            "mere, pere, soeur, frere, grand-pere, grand-mere, cher/chere only when the relationship and tone fit.\n"
+            "- Avoid source leftovers such as Herr, Frau, Oma, Opa, Schatz, Liebling, Mr/Mrs/Miss.\n"
+            "- Prefer culturally plausible French city/institution/title choices unless the story intentionally preserves a foreign setting.\n"
+            "- Respect gender, number, elision, accents, and formal/informal register."
+        ),
+        "hi": (
+            "Natural Hindi audio listener lens:\n"
+            "- The line should sound natural when spoken to a Hindi listener, not like a literal English/German translation.\n"
+            "- Use relationship and respect terms naturally: maa, papa/pitaji, didi, bhai, dada/dadi, nana/nani, ji, sir/ma'am only where tone fits.\n"
+            "- Avoid awkward untranslated source terms unless they are established proper names or intentionally foreign.\n"
+            "- Preserve family hierarchy, gendered forms, honorific respect, and everyday spoken phrasing."
+        ),
+        "es": (
+            "Natural Spanish audio listener lens:\n"
+            "- The line should sound like natural spoken Spanish for the intended market, not literal English/German.\n"
+            "- Use Senor, Senora, Senorita, madre, padre, hermana, hermano, abuelo, abuela, querido/querida only when tone fits.\n"
+            "- Avoid source leftovers such as Herr, Frau, Oma, Opa, Schatz, Mr/Mrs/Miss.\n"
+            "- Respect gender, number, accents, and formal/informal register."
+        ),
+        "pt": (
+            "Natural Portuguese audio listener lens:\n"
+            "- The line should sound like natural spoken Portuguese for the intended market.\n"
+            "- Use Senhor, Senhora, mae, pai, irma, irmao, avo, querido/querida only when tone fits.\n"
+            "- Avoid source leftovers and over-literal phrasing.\n"
+            "- Respect gender, number, accents, and social register."
+        ),
+        "id": (
+            "Natural Indonesian audio listener lens:\n"
+            "- The line should sound like natural spoken Indonesian, not a direct English/German calque.\n"
+            "- Use relationship and address terms naturally: Pak, Bu, Ibu, Bapak, kak, adik, saudara, kakek, nenek, sayang only where tone fits.\n"
+            "- Avoid source leftovers unless intentionally foreign.\n"
+            "- Keep names clear for audio listeners and avoid clunky mixed-language phrasing."
+        ),
+        "ar": (
+            "Natural Arabic audio listener lens:\n"
+            "- The line should sound natural in Arabic audio, not mechanically translated.\n"
+            "- Use culturally natural family/address terms and appropriate respect/formality.\n"
+            "- Avoid source leftovers unless intentionally foreign.\n"
+            "- Respect gender agreement, titles, and spoken clarity."
+        ),
+        "zh": (
+            "Natural Chinese audio listener lens:\n"
+            "- The line should sound natural in spoken Chinese and be clear without visual context.\n"
+            "- Use relationship/title terms naturally and avoid literal Western address forms when they sound awkward.\n"
+            "- Preserve character distinction in audio and avoid mixed-language leftovers unless intentional."
+        ),
+        "ko": (
+            "Natural Korean audio listener lens:\n"
+            "- The line should sound natural in Korean audio and respect relationship hierarchy.\n"
+            "- Use titles, kinship, and honorific/register choices naturally.\n"
+            "- Avoid source leftovers and overly literal translations unless intentional."
+        ),
+        "ja": (
+            "Natural Japanese audio listener lens:\n"
+            "- The line should sound natural in Japanese audio and respect social hierarchy/register.\n"
+            "- Use titles, kinship, and suffixes only where context supports them.\n"
+            "- Avoid source leftovers and literal phrasing that would sound unnatural when spoken."
+        ),
+        "de": (
+            "Natural German audio listener lens:\n"
+            "- The line should sound like idiomatic spoken German, not literal English.\n"
+            "- Use Herr, Frau, Familie, Mutter, Vater, Schwester, Bruder, Opa/Oma, Schatz only when relationship and register fit.\n"
+            "- Respect case, gender, compound nouns, and formal/informal address."
+        ),
+        "en": (
+            "Natural English audio listener lens:\n"
+            "- The line should sound like natural spoken English, not a literal translation.\n"
+            "- Use Mr., Mrs., Ms., Miss, mother, father, sister, brother, grandfather, grandmother, dear/darling only where tone fits.\n"
+            "- Avoid foreign leftovers unless intentionally preserved by the story."
+        ),
+    }
+    return profiles.get(key, (
+        f"Natural {target_lang or 'target-language'} audio listener lens:\n"
+        "- Judge the localized mention as a native target-language audiobook listener would hear it.\n"
+        "- It should sound idiomatic, culturally natural, and clear when spoken aloud.\n"
+        "- Avoid source-language leftovers, awkward literal translations, and mixed-language phrasing unless the story intentionally preserves them.\n"
+        "- Respect target-language gender, number, titles, kinship terms, honorifics, and formal/informal register.\n"
+        "- Preserve proper names when appropriate, but make relationship/title/common-noun parts natural for the target audience."
+    ))
 
 
 def _target_culture_terms(target_lang: str) -> list[tuple[str, str]]:
@@ -751,21 +860,25 @@ def _llm_mention_findings(req: MentionVerifyRequest, base_findings: list[dict],
     )
 
     if (req.check_mode or "").lower() == "culture":
-        system = f"""You are a senior French localization verifier for PocketFM audio dramas.
+        natural_reader = _natural_reader_prompt(req.target_lang)
+        system = f"""You are a senior localization verifier and native naturalness judge for PocketFM audio dramas.
 Source language: {req.source_lang}. Target language: {req.target_lang}.
 
 Review ONLY cultural appropriateness, spoken naturalness, register, and target-language fit.
 You do NOT need Story Canon for this pass. Do not invent story facts. Use only the supplied
 rows and dictionary context.
 
+--- TARGET NATURAL READER PROMPT ---
+{natural_reader}
+
 Flag only if there is a concrete issue and a direct replacement for the Localized Mention cell.
 
 Check:
-A. Source-language leakage: German/English/source terms surviving in French.
-B. French register/title naturalness: Madame, Monsieur, Mademoiselle, kinship, roles.
+A. Source-language leakage: source terms surviving in the target-language localized mention.
+B. Target-language register/title naturalness: titles, honorifics, kinship, roles, and relationship terms.
 C. Gender and kinship agreement using Gender and English Translated Mention.
 D. Audio clarity: too clunky, ambiguous, or mixed-language when spoken.
-E. Cultural substitution: city/institution/title/social-role choices that sound wrong for French audio.
+E. Cultural substitution: city/institution/title/social-role choices that sound wrong for target-language audio.
 F. Over-literal translation that technically means the source but sounds unnatural.
 
 Do NOT flag proper names just because they are foreign.

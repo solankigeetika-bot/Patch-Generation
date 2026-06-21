@@ -1,0 +1,47 @@
+{
+  "manifest_version": 3,
+  "name": "LS Verifier Agent",
+  "description": "PocketFM LS verifier for Google Sheets and Story Canon.",
+  "version": "0.1.0",
+  "action": {
+    "default_title": "LS Verifier"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "permissions": [
+    "activeTab",
+    "identity",
+    "identity.email",
+    "sidePanel",
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://docs.google.com/spreadsheets/*",
+    "https://sheets.googleapis.com/*",
+    "https://canon.pocketfm.ai/*",
+    "https://*/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*"
+  ],
+  "oauth2": {
+    "client_id": "PASTE_CHROME_EXTENSION_OAUTH_CLIENT_ID.apps.googleusercontent.com",
+    "scopes": [
+      "openid",
+      "email",
+      "profile",
+      "https://www.googleapis.com/auth/spreadsheets"
+    ]
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://canon.pocketfm.ai/*"],
+      "js": ["content_canon.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

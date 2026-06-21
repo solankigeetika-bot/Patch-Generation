@@ -1,0 +1,95 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LS Verifier Agent</title>
+  <link rel="stylesheet" href="sidepanel.css">
+</head>
+<body>
+  <header>
+    <div>
+      <h1>LS Verifier</h1>
+      <p>PocketFM localization agent</p>
+    </div>
+    <button id="refreshBtn" title="Refresh active sheet">↻</button>
+  </header>
+
+  <section class="card">
+    <h2>Connection</h2>
+    <label>Backend URL</label>
+    <input id="backendUrl" placeholder="https://confidentiality-...trycloudflare.com">
+    <label>Proxy Secret</label>
+    <input id="proxySecret" type="password" placeholder="Shared backend proxy secret">
+    <div class="row">
+      <button id="saveSettings">Save</button>
+      <button id="healthBtn">Health</button>
+    </div>
+    <div id="connectionStatus" class="status"></div>
+  </section>
+
+  <section class="card">
+    <h2>Sheet</h2>
+    <div id="sheetStatus" class="status">Open a Google Sheet.</div>
+    <div class="grid2">
+      <label>Source</label>
+      <label>Target</label>
+      <select id="sourceLang">
+        <option value="en">English</option>
+        <option value="de">German</option>
+        <option value="fr">French</option>
+        <option value="hi">Hindi</option>
+        <option value="es">Spanish</option>
+        <option value="id">Indonesian</option>
+      </select>
+      <select id="targetLang">
+        <option value="fr">French</option>
+        <option value="hi">Hindi</option>
+        <option value="es">Spanish</option>
+        <option value="id">Indonesian</option>
+        <option value="en">English</option>
+        <option value="de">German</option>
+      </select>
+    </div>
+    <div class="row">
+      <button id="loadSheetBtn">Load Sheet</button>
+      <button id="writeBtn" disabled>Write Issues</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Checks</h2>
+    <button id="runAllBtn">Run All Checks</button>
+    <button id="runCultureBtn">Run Opus Cultural Check</button>
+    <div id="runStatus" class="status"></div>
+    <div id="stats" class="stats hidden">
+      <div><strong id="issueCount">0</strong><span>Issues</span></div>
+      <div><strong id="rowCount">0</strong><span>Rows</span></div>
+      <div><strong id="mentionCount">0</strong><span>Mentions</span></div>
+    </div>
+    <div id="findings"></div>
+  </section>
+
+  <section class="card">
+    <h2>Replace Across LS</h2>
+    <label>Replace</label>
+    <input id="replaceFind" placeholder="e.g. Emilie Lempereur">
+    <label>With</label>
+    <input id="replaceWith" placeholder="e.g. Aurore Montclair">
+    <div class="row">
+      <button id="previewReplaceBtn">Preview</button>
+      <button id="applyReplaceBtn">Apply</button>
+    </div>
+    <div id="replaceStatus" class="status"></div>
+  </section>
+
+  <section class="card">
+    <h2>Story Canon</h2>
+    <p class="hint">Open a Story Canon tab, then click Connect.</p>
+    <button id="connectCanonBtn">Connect Story Canon</button>
+    <div id="canonStatus" class="status"></div>
+  </section>
+
+  <script src="sidepanel.js"></script>
+</body>
+</html>
