@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LS Verifier</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- ── Top bar ── -->
+  <header>
+    <div class="header-left">
+      <h1>LS Verifier</h1>
+      <span class="canon-status" id="canonStatus">
+        <span class="dot grey"></span> Canon not connected
+      </span>
+    </div>
+    <button class="btn-ghost" id="settingsToggle">⚙ Settings</button>
+  </header>
+
+  <!-- ── Settings panel ── -->
+  <section id="settingsPanel" class="settings-panel hidden">
+    <h3>Settings</h3>
+
+    <div class="setting-group">
+      <label>Backend URL</label>
+      <input id="backendUrl" type="text" placeholder="http://localhost:8000"
+             value="">
+      <small>Leave blank to use the same host as this page.</small>
+    </div>
+
+    <div class="setting-group">
+      <label>Your email (for LLM calls)</label>
+      <input id="userEmail" type="email" placeholder="you@pocketfm.com">
+    </div>
+
+    <div class="setting-group">
+      <label>Manual canon cookie paste (if bookmarklet can't read it)</label>
+      <input id="manualCanon" type="text" placeholder="eyJhbGci...">
+      <button class="btn-sm" id="pushCanonBtn">Push to backend</button>
+      <span id="canonPushStatus"></span>
+    </div>
+
+    <details>
+      <summary>Install the canon bookmarklet</summary>
+      <ol>
+        <li>Copy the bookmarklet code from <code>apps_script/canon_bookmarklet.md</code>.</li>
+        <li>Fill in your <strong>backend URL</strong> and <strong>PROXY_SECRET</strong> in the one-liner.</li>
+        <li>Add it to your bookmarks bar.</li>
+        <li>Go to <strong>canon.pocketfm.ai</strong>, log in, click the bookmarklet.</li>
+        <li>The green dot above will light up automatically on next verify.</li>
+      </ol>
+      <p>If <code>__session</code> is HttpOnly the bookmarklet will alert you — use the
+         manual paste field above instead.</p>
+    </details>
+
+    <button class="btn-sm" id="settingsSave">Save</button>
+  </section>
+
+  <!-- ── Verify form ── -->
+  <main>
+    <section class="verify-form card">
+      <div class="form-row">
+        <div class="dropzone" id="dropzone">
+          <input type="file" id="fileInput" accept=".xlsx" hidden>
+          <p>Drag &amp; drop <strong>.xlsx</strong> here<br>or <button class="btn-link" id="browseBtn">browse</button></p>
+          <p id="fileName" class="file-name hidden"></p>
+        </div>
+
+        <div class="form-options">
+          <div class="field">
+            <label for="showSlug">Story canon slug</label>
+            <input id="showSlug" type="text" placeholder="e.g. tolr-season-1">
+          </div>
+          <div class="field">
+            <label for="srcLang">Source language</label>
+            <input id="srcLang" type="text" value="de/en">
+          </div>
+          <div class="field">
+            <label for="tgtLang">Target language</label>
+            <input id="tgtLang" type="text" value="fr">
+          </div>
+          <label class="checkbox-label">
+            <input type="checkbox" id="useLlm"> Use LLM (Layer 2)
+          </label>
+          <button class="btn-primary" id="verifyBtn">Verify</button>
+        </div>
+      </div>
+
+      <div id="progressBar" class="progress hidden">
+        <div class="progress-fill" id="progressFill"></div>
+        <span id="progressLabel">Verifying…</span>
+      </div>
+    </section>
+
+    <!-- ── Summary strip ── -->
+    <section id="summary" class="summary-strip hidden">
+      <div class="stat" id="statTotal"></div>
+      <div class="stat green" id="statAuto"></div>
+      <div class="stat orange" id="statReview"></div>
+      <div class="canon-badge" id="canonBadge"></div>
+      <div class="summary-actions">
+        <button class="btn-sm" id="applyAllBtn">Apply all high-confidence</button>
+        <button class="btn-sm btn-download" id="downloadAnnotated">Download annotated</button>
+        <button class="btn-primary" id="finalizeBtn">Finalize &amp; download corrected</button>
+      </div>
+    </section>
+
+    <!-- ── Results ── -->
+    <section id="results" class="results hidden">
+      <div id="groupCanonConflict" class="result-group hidden">
+        <h2 class="group-title orange">⚠ Canon Conflicts</h2>
+        <div class="cards" id="cardsCanonConflict"></div>
+      </div>
+      <div id="groupNameChanged" class="result-group hidden">
+        <h2 class="group-title purple">↪ Name Changes</h2>
+        <div class="cards" id="cardsNameChanged"></div>
+      </div>
+      <div id="groupHighConf" class="result-group hidden">
+        <h2 class="group-title green">✓ High-Confidence (≥85%)</h2>
+        <div class="cards" id="cardsHighConf"></div>
+      </div>
+      <div id="groupReview" class="result-group hidden">
+        <h2 class="group-title orange">? Review Required</h2>
+        <div class="cards" id="cardsReview"></div>
+      </div>
+      <div id="groupAlias" class="result-group hidden">
+        <h2 class="group-title yellow">~ Alias / Contextual</h2>
+        <div class="cards" id="cardsAlias"></div>
+      </div>
+    </section>
+
+    <!-- ── Q&A ── -->
+    <section id="qaSection" class="qa-section card hidden">
+      <h3>Ask about the story</h3>
+      <div id="qaMessages" class="qa-messages"></div>
+      <div class="qa-input-row">
+        <input id="qaInput" type="text" placeholder="e.g. Who is Henri's mother?">
+        <button class="btn-sm" id="qaBtn">Ask</button>
+      </div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
