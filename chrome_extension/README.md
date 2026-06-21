@@ -33,21 +33,22 @@ the browser.
 5. Open a Google Sheet.
 6. Click the LS Verifier extension icon.
 7. Fill:
-   - Backend URL: currently the working tunnel URL
+   - Backend URL: `http://127.0.0.1:8000` for local testing, or your deployed
+     HTTPS backend URL for sharing
    - Proxy Secret: backend shared proxy secret
 8. Click **Load Sheet**, then **Run All Checks** or **Run Opus Cultural Check**.
 
 ## Google OAuth requirement
 
-Before this works as a packaged/internal extension, replace the placeholder in
-`manifest.json`:
+The OAuth client in `manifest.json` is configured for this pinned Chrome
+extension ID:
 
-```json
-"client_id": "PASTE_CHROME_EXTENSION_OAUTH_CLIENT_ID.apps.googleusercontent.com"
+```text
+eafhnjhcebpgkpdgfgjigiohfckkdgbo
 ```
 
-The OAuth client must be a **Chrome Extension** OAuth client in Google Cloud and
-must include this extension ID once the extension is packed/published.
+If you create a new extension package with a different ID, create a new
+**Chrome Extension** OAuth client in Google Cloud and replace the `client_id`.
 
 Required scopes:
 
@@ -66,3 +67,10 @@ curl "https://YOUR_BACKEND/madeye-ping?user_email=solanki.geetika@pocketfm.com"
 
 `https://ls-verifier.vercel.app` is stable but currently cannot reach internal
 Madeye, so it is not valid for the Opus path unless Madeye networking changes.
+
+For local testing, start the backend and use:
+
+```bash
+scripts/start-backend.sh
+curl "http://127.0.0.1:8000/madeye-ping?user_email=solanki.geetika@pocketfm.com"
+```

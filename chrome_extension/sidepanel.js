@@ -1,9 +1,12 @@
 "use strict";
 
 const DEFAULTS = {
-  backendUrl: "https://confidentiality-latino-nelson-depend.trycloudflare.com",
+  backendUrl: "http://127.0.0.1:8000",
   proxySecret: "",
 };
+const DEAD_DEFAULT_BACKENDS = new Set([
+  "https://confidentiality-latino-nelson-depend.trycloudflare.com",
+]);
 
 const state = {
   spreadsheetId: "",
@@ -18,7 +21,14 @@ const $ = (id) => document.getElementById(id);
 
 document.addEventListener("DOMContentLoaded", async () => {
   const settings = await getSettings();
-  $("backendUrl").value = settings.backendUrl || DEFAULTS.backendUrl;
+  const migratedBackend = DEAD_DEFAULT_BACKENDS.has(cleanBaseUrl(settings.backendUrl));
+  const backendUrl = migratedBackend
+    ? DEFAULTS.backendUrl
+    : settings.backendUrl || DEFAULTS.backendUrl;
+  if (migratedBackend) {
+    await setSettings({ ...settings, backendUrl });
+  }
+  $("backendUrl").value = backendUrl;
   $("proxySecret").value = settings.proxySecret || "";
 
   $("saveSettings").addEventListener("click", saveSettingsFromUi);

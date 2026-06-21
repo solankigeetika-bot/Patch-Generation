@@ -785,9 +785,26 @@ def _add_canon_family_finding(findings: list[dict], row_num: int, row: dict,
 
 
 def _dedupe_findings(findings: list[dict]) -> list[dict]:
-    out = []
+    out: list[dict] = []
     seen = set()
     for f in findings:
+        if f.get("kind") == "TARGET_CULTURE_MISMATCH":
+            row = str(f.get("row", ""))
+            existing_idx = next((
+                i for i, item in enumerate(out)
+                if str(item.get("row", "")) == row
+                and item.get("kind") == "TARGET_CULTURE_MISMATCH"
+            ), None)
+            if existing_idx is not None:
+                existing = out[existing_idx]
+                existing_is_llm = existing.get("source") == "llm_story_canon"
+                incoming_is_llm = f.get("source") == "llm_story_canon"
+                if incoming_is_llm and not existing_is_llm:
+                    out[existing_idx] = f
+                elif incoming_is_llm == existing_is_llm:
+                    if int(f.get("confidence") or 0) > int(existing.get("confidence") or 0):
+                        out[existing_idx] = f
+                continue
         key = (str(f.get("row", "")), str(f.get("kind", "")),
                _norm_text(f.get("suggestion", "")))
         if key in seen:
@@ -802,20 +819,36 @@ def _candidate_rows_for_llm(mm_rows: list[dict], findings: list[dict], limit: in
     candidates = []
     used = set()
 
+    def row_context(row: dict) -> dict:
+        context = {
+            "type": _cell(row, ["Type", "type"]),
+            "id": _cell(row, ["ID", "id"]),
+            "canonical_name": _cell(row, ["Canonical Name", "canonical name", "canonical_name"]),
+            "original_mention": _cell(row, ["Original Mention", "original mention", "original_mention"]),
+            "localized_mention": _cell(row, [
+                "Localized Mention", "Localised Mention", "localized mention",
+                "localised mention", "localized_mention",
+            ]),
+            "english_translated_mention": _cell(row, [
+                "English Translated Mention", "english translated mention",
+                "english_translated_mention",
+            ]),
+            "gender": _cell(row, ["Gender", "gender"]),
+            "chapter_numbers": _cell(row, [
+                "Chapter Numbers", "chapter numbers", "chapter_numbers",
+            ]),
+            "is_new": _cell(row, ["Is New", "is new", "is_new"]),
+        }
+        return {k: v for k, v in context.items() if v}
+
     def add(i: int, row: dict, reason: str):
         row_num = i + 2
         if row_num in used or len(candidates) >= limit:
             return
         used.add(row_num)
-        candidates.append({
-            "row": row_num,
-            "orig": _cell(row, ["Original Mention", "original mention", "original_mention"]),
-            "loc": _cell(row, [
-                "Localized Mention", "Localised Mention", "localized mention",
-                "localised mention", "localized_mention",
-            ]),
-            "reason": reason,
-        })
+        item = {"row": row_num, "candidate_reason": reason}
+        item.update(row_context(row))
+        candidates.append(item)
 
     for i, row in enumerate(mm_rows):
         if i + 2 in finding_rows:
@@ -853,11 +886,7 @@ def _llm_mention_findings(req: MentionVerifyRequest, base_findings: list[dict],
         f"suggestion={f.get('suggestion') or ''}"
         for f in base_findings[:160]
     )
-    rows = "\n".join(
-        f'- row {r["row"]}: original="{r["orig"]}" localized="{r["loc"]}" '
-        f'candidate_reason="{r["reason"]}"'
-        for r in candidates
-    )
+    rows = "\n".join(json.dumps(r, ensure_ascii=False) for r in candidates)
 
     if (req.check_mode or "").lower() == "culture":
         natural_reader = _natural_reader_prompt(req.target_lang)
@@ -880,6 +909,10 @@ C. Gender and kinship agreement using Gender and English Translated Mention.
 D. Audio clarity: too clunky, ambiguous, or mixed-language when spoken.
 E. Cultural substitution: city/institution/title/social-role choices that sound wrong for target-language audio.
 F. Over-literal translation that technically means the source but sounds unnatural.
+G. Geography/institution swaps: flag when a source real-world place or institution anchor is replaced
+   by an unrelated city/country/institution that does not fit the target market or provided context
+   (for example, Houston -> Frankfurt for French audio) unless the row/dictionary clearly establishes
+   that exact substitution as intentional.
 
 Do NOT flag proper names just because they are foreign.
 Do NOT require a word-for-word translation.
