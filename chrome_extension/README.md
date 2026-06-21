@@ -76,3 +76,16 @@ For local testing, start the backend and use:
 scripts/start-backend.sh
 curl "http://127.0.0.1:8000/madeye-ping?user_email=solanki.geetika@pocketfm.com"
 ```
+
+For HTTPS testing from Chrome or Google surfaces, start a temporary Cloudflare
+backend URL:
+
+```bash
+scripts/start-https-tunnel.sh
+cat .backend-url
+```
+
+That URL is a quick-tunnel URL. It is good for direct testing, but not a
+permanent shareable production URL. For a stable URL, use
+`scripts/setup-cloudflare-tunnel.sh` with a real Cloudflare hostname, or deploy
+inside infrastructure that can reach internal Madeye.
