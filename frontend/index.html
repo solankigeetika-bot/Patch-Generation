@@ -35,24 +35,31 @@
     </div>
 
     <div class="setting-group">
+      <label>Proxy secret</label>
+      <input id="proxySecret" type="password" placeholder="PROXY_SECRET from backend deploy">
+      <small>Stored only in this browser. Used for canon connect and manual canon push.</small>
+    </div>
+
+    <div class="setting-group">
       <label>Manual canon cookie paste (if bookmarklet can't read it)</label>
       <input id="manualCanon" type="text" placeholder="eyJhbGci...">
       <button class="btn-sm" id="pushCanonBtn">Push to backend</button>
       <span id="canonPushStatus"></span>
     </div>
 
-    <details>
-      <summary>Install the canon bookmarklet</summary>
-      <ol>
-        <li>Copy the bookmarklet code from <code>apps_script/canon_bookmarklet.md</code>.</li>
-        <li>Fill in your <strong>backend URL</strong> and <strong>PROXY_SECRET</strong> in the one-liner.</li>
-        <li>Add it to your bookmarks bar.</li>
-        <li>Go to <strong>canon.pocketfm.ai</strong>, log in, click the bookmarklet.</li>
-        <li>The green dot above will light up automatically on next verify.</li>
-      </ol>
-      <p>If <code>__session</code> is HttpOnly the bookmarklet will alert you — use the
-         manual paste field above instead.</p>
-    </details>
+    <div class="bookmarklet-box">
+      <label>Story Canon bookmarklet</label>
+      <div class="bookmarklet-actions">
+        <a id="canonBookmarkletLink" class="bookmarklet-link" href="#">Connect Story Canon</a>
+        <button class="btn-sm" id="copyBookmarkletBtn">Copy bookmarklet</button>
+      </div>
+      <textarea id="bookmarkletCode" readonly></textarea>
+      <small>
+        Drag the blue link to your bookmarks bar, or copy the code into a new bookmark URL.
+        Then open canon.pocketfm.ai, log in, and click the bookmark.
+      </small>
+      <div id="bookmarkletStatus" class="mini-status"></div>
+    </div>
 
     <button class="btn-sm" id="settingsSave">Save</button>
   </section>

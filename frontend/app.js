@@ -33,6 +33,7 @@ document.addEventListener("DOMContentLoaded", () => {
   if (s.backendUrl)  document.getElementById("backendUrl").value  = s.backendUrl;
   if (s.userEmail)   document.getElementById("userEmail").value   = s.userEmail;
   if (s.showSlug)    document.getElementById("showSlug").value    = s.showSlug;
+  if (s.proxySecret) document.getElementById("proxySecret").value = s.proxySecret;
 
   document.getElementById("settingsToggle").addEventListener("click", () => {
     document.getElementById("settingsPanel").classList.toggle("hidden");
@@ -42,8 +43,19 @@ document.addEventListener("DOMContentLoaded", () => {
     settings.backendUrl = document.getElementById("backendUrl").value.trim();
     settings.userEmail  = document.getElementById("userEmail").value.trim();
     settings.showSlug   = document.getElementById("showSlug").value.trim();
+    settings.proxySecret = document.getElementById("proxySecret").value.trim();
     saveSettings(settings);
+    renderCanonBookmarklet();
     document.getElementById("settingsPanel").classList.add("hidden");
+  });
+
+  ["backendUrl", "proxySecret"].forEach(id => {
+    document.getElementById(id).addEventListener("input", () => {
+      settings.backendUrl = document.getElementById("backendUrl").value.trim();
+      settings.proxySecret = document.getElementById("proxySecret").value.trim();
+      saveSettings(settings);
+      renderCanonBookmarklet();
+    });
   });
 
   // sync slug field → settings on change
@@ -57,6 +69,8 @@ document.addEventListener("DOMContentLoaded", () => {
   setupSummaryActions();
   setupQA();
   setupCanonPush();
+  setupCanonBookmarklet();
+  renderCanonBookmarklet();
 });
 
 // ─── dropzone ────────────────────────────────────────────────────────────────
@@ -471,7 +485,7 @@ async function askQuestion() {
 function setupCanonPush() {
   document.getElementById("pushCanonBtn").addEventListener("click", async () => {
     const val    = document.getElementById("manualCanon").value.trim();
-    const secret = prompt("Enter your PROXY_SECRET:");
+    const secret = (settings.proxySecret || document.getElementById("proxySecret").value || "").trim();
     if (!val || !secret) return;
 
     const status = document.getElementById("canonPushStatus");
@@ -493,6 +507,62 @@ function setupCanonPush() {
       status.textContent = "✗ " + e.message;
     }
   });
+}
+
+function setupCanonBookmarklet() {
+  document.getElementById("copyBookmarkletBtn").addEventListener("click", async () => {
+    const code = document.getElementById("bookmarkletCode").value;
+    const status = document.getElementById("bookmarkletStatus");
+    if (!code || code.indexOf("PASTE_") !== -1) {
+      status.textContent = "Enter backend URL and proxy secret first.";
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(code);
+      status.textContent = "Copied. Create a bookmark and paste this as the URL.";
+    } catch (e) {
+      document.getElementById("bookmarkletCode").select();
+      status.textContent = "Select/copy the code from the box.";
+    }
+  });
+}
+
+function renderCanonBookmarklet() {
+  const codeEl = document.getElementById("bookmarkletCode");
+  const linkEl = document.getElementById("canonBookmarkletLink");
+  const status = document.getElementById("bookmarkletStatus");
+  if (!codeEl || !linkEl) return;
+
+  const base = (backendUrl() || window.location.origin).replace(/\/$/, "");
+  const secret = (settings.proxySecret || "").trim();
+  if (!base || !secret) {
+    const placeholder = "Enter Backend URL and Proxy secret, then Save.";
+    codeEl.value = placeholder;
+    linkEl.href = "#";
+    linkEl.classList.add("disabled");
+    status.textContent = "";
+    return;
+  }
+
+  const bookmarklet = buildCanonBookmarklet(base, secret);
+  codeEl.value = bookmarklet;
+  linkEl.href = bookmarklet;
+  linkEl.classList.remove("disabled");
+  status.textContent = "Ready. Drag the blue link to your bookmarks bar.";
+}
+
+function buildCanonBookmarklet(base, secret) {
+  const endpoint = base.replace(/\/$/, "") + "/update-canon-session";
+  return "javascript:(function(){"
+    + "var W=" + JSON.stringify(endpoint) + ",S=" + JSON.stringify(secret) + ";"
+    + "if(location.hostname.indexOf('canon')<0){alert('Open canon.pocketfm.ai first.');return;}"
+    + "var m=document.cookie.match(/(?:^|;\\s*)__session=([^;]+)/);"
+    + "if(!m){alert('__session is HttpOnly or missing. Use LS Verifier Settings manual canon paste.');return;}"
+    + "fetch(W,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({secret:S,canon:decodeURIComponent(m[1])})})"
+    + ".then(function(r){return r.json();})"
+    + ".then(function(d){alert(d.message||'Story Canon connected ✓');})"
+    + ".catch(function(e){alert('Failed: '+e);});"
+    + "})();";
 }
 
 // ─── utils ────────────────────────────────────────────────────────────────────

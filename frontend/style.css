@@ -64,6 +64,47 @@ details summary { cursor: pointer; color: #2C6FBD; font-size: 13px; margin-top: 
 details ol { padding-left: 18px; margin-top: 8px; line-height: 1.7; }
 details p  { margin-top: 8px; color: #666; }
 
+.bookmarklet-box {
+  margin: 14px 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: #FAFAFA;
+}
+.bookmarklet-box label { display: block; font-weight: 600; margin-bottom: 8px; }
+.bookmarklet-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.bookmarklet-link {
+  display: inline-block;
+  padding: 6px 10px;
+  border-radius: 4px;
+  background: #2C6FBD;
+  color: #fff;
+  text-decoration: none;
+  font-size: 13px;
+  font-weight: 600;
+}
+.bookmarklet-link.disabled {
+  pointer-events: none;
+  background: #A0B8D8;
+}
+.bookmarklet-box textarea {
+  width: 100%;
+  min-height: 70px;
+  margin: 8px 0;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  resize: vertical;
+  font-family: 'Consolas', monospace;
+  font-size: 12px;
+}
+.mini-status {
+  min-height: 18px;
+  margin-top: 6px;
+  color: #666;
+  font-size: 12px;
+}
+
 /* ─── main layout ── */
 main {
   max-width: 1100px;
