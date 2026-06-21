@@ -23,11 +23,11 @@ Usage:
     python localisation_pipeline.py --input ... --output ... --dry-run
 
 Configuration (never hardcode the key — use environment variables):
-    ARGUS_API_KEY     required for LLM proposition review
-    ARGUS_BASE_URL    e.g. https://argus.pocketfm.org/api
-    ARGUS_MODEL       model id served by Argus (default: claude-opus-4.8)
+    MADEYE_API_KEY      required for LLM proposition review
+    MADEYE_BASE_URL     Madeye base URL from the provisioned secret
+    MADEYE_MODEL        model alias (default: claude-opus-4-7)
+    MADEYE_USER_EMAIL   required; sent as metadata.user_email
 
-NOTE: Argus (argus.pocketfm.org) is publicly reachable, so this runs anywhere.
 Use --dry-run to skip the LLM step entirely.
 """
 
@@ -43,6 +43,12 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Optional
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 import openpyxl
 from openpyxl.styles import PatternFill, Font
@@ -935,12 +941,13 @@ class LLMConfig:
     api_key:     str
     base_url:    str
     model:       str
+    user_email:  str = ""
     max_retries: int = 4
 
 
 def build_client(cfg: LLMConfig):
     from openai import OpenAI
-    return OpenAI(api_key=cfg.api_key, base_url=cfg.base_url, max_retries=0)
+    return OpenAI(api_key=cfg.api_key, base_url=cfg.base_url, max_retries=0, timeout=60.0)
 
 
 def llm_review_row(client, cfg: LLMConfig, row: dict, universe: Universe,
@@ -968,10 +975,16 @@ def llm_review_row(client, cfg: LLMConfig, row: dict, universe: Universe,
     last_err = None
     for attempt in range(cfg.max_retries):
         try:
-            resp = client.chat.completions.create(
-                model=cfg.model, messages=messages, temperature=0.0,
-                response_format={"type": "json_object"},
-            )
+            request = {
+                "model": cfg.model,
+                "messages": messages,
+                "response_format": {"type": "json_object"},
+            }
+            if "opus-4-7" not in cfg.model:
+                request["temperature"] = 0.0
+            if cfg.user_email:
+                request["extra_body"] = {"metadata": {"user_email": cfg.user_email}}
+            resp = client.chat.completions.create(**request)
             data = json.loads(resp.choices[0].message.content or "{}")
             return [
                 Finding("LLM",
@@ -1062,16 +1075,21 @@ def run(args) -> int:
     # ── Set up LLM ────────────────────────────────────────────────────────────
     client = cfg = None
     if not args.dry_run:
-        api_key  = os.environ.get("ARGUS_API_KEY")
-        base_url = os.environ.get("ARGUS_BASE_URL")
-        model    = args.model or os.environ.get("ARGUS_MODEL", "claude-opus-4.8")
+        api_key  = os.environ.get("MADEYE_API_KEY") or os.environ.get("ARGUS_API_KEY")
+        base_url = os.environ.get("MADEYE_BASE_URL") or os.environ.get("ARGUS_BASE_URL")
+        model    = args.model or os.environ.get("MADEYE_MODEL") or os.environ.get("ARGUS_MODEL") or "claude-opus-4-7"
+        user_email = os.environ.get("MADEYE_USER_EMAIL", "")
         if not api_key or not base_url:
-            print("ERROR: set ARGUS_API_KEY and ARGUS_BASE_URL, or use --dry-run.",
+            print("ERROR: set MADEYE_API_KEY and MADEYE_BASE_URL, or use --dry-run.",
                   file=sys.stderr)
             return 2
-        cfg    = LLMConfig(api_key=api_key, base_url=base_url, model=model)
+        if not user_email:
+            print("ERROR: set MADEYE_USER_EMAIL; Madeye requires metadata.user_email.",
+                  file=sys.stderr)
+            return 2
+        cfg    = LLMConfig(api_key=api_key, base_url=base_url, model=model, user_email=user_email)
         client = build_client(cfg)
-        print(f"\n  Argus: {base_url}  model={model}", file=sys.stderr)
+        print(f"\n  Madeye: {base_url}  model={model}", file=sys.stderr)
 
     # ── Stage 2: Proposition review ───────────────────────────────────────────
     print("\nStage 2: Proposition review (deterministic)", file=sys.stderr)
@@ -1202,7 +1220,7 @@ def main() -> int:
         epilog=__doc__,
     )
     p.add_argument("--input",    required=True,
-                   help="Source xlsx (needs Localization Details + Mention Mappings tabs)")
+                   help="Source xlsx; Mention Mappings drives mention checks, Localization Details adds dictionary/proposition context")
     p.add_argument("--output",   required=True,
                    help="Output xlsx with all verifications filled in")
     p.add_argument("--master",   default=None,
@@ -1213,7 +1231,7 @@ def main() -> int:
     p.add_argument("--source-lang",  default="de")
     p.add_argument("--target-lang",  default="fr")
     p.add_argument("--model",        default=None,
-                   help="Override ARGUS_MODEL")
+                   help="Override MADEYE_MODEL")
     p.add_argument("--concurrency",  type=int, default=4,
                    help="Parallel LLM calls (default 4)")
     p.add_argument("--limit",        type=int, default=0,

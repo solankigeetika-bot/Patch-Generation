@@ -2,7 +2,8 @@
 """
 Localization-sheet verifier (the 3-4h -> 30min tool).
 
-Reads an LSV3 workbook (Localization Details + Mention Mappings), then:
+Reads an LSV3 workbook. `Mention Mappings` is required and is the primary tab;
+`Localization Details` is optional dictionary/context when present. Then:
 
   Layer 1 — deterministic, instant, free:
     * MISSING        localized value blank
@@ -32,7 +33,7 @@ Usage:
 Env (for --llm):
     MADEYE_API_KEY     required   Madeye API key (sent as Bearer token)
     MADEYE_BASE_URL    required   Madeye OpenAI-compatible base URL
-    MADEYE_MODEL       optional   model id (default claude-opus-4-8)
+    MADEYE_MODEL       optional   model alias (default claude-opus-4-7)
     MADEYE_USER_EMAIL  required   your @pocketfm.com email (Madeye needs metadata.user_email)
 """
 from __future__ import annotations
@@ -88,42 +89,55 @@ def pick(idx, *aliases):
 
 
 # ─── load workbook into structured form ────────────────────────────────────────
+def sheet_by_keyword(wb, *keywords):
+    for name in wb.sheetnames:
+        low = name.lower()
+        if any(k in low for k in keywords):
+            return wb[name]
+    return None
+
 def load(path):
     wb = openpyxl.load_workbook(path, data_only=True)
-    ld = wb["Localization Details"]
-    mm = wb["Mention Mappings"]
-    li = header_index(ld)
+    mm = sheet_by_keyword(wb, "mention mapping", "mention")
+    if mm is None:
+        sys.exit("Workbook must contain a 'Mention Mappings' tab.")
+
+    ld = sheet_by_keyword(wb, "localization detail", "localisation detail", "detail")
     mi = header_index(mm)
 
-    c_id   = pick(li, "ID", "id")
-    c_type = pick(li, "Type", "type")
-    c_orig = pick(li, "Original Name", "original_name", "original name")
-    c_loc  = pick(li, "Localized Name", "localised_name", "localized name", "localised name")
-    c_fno  = pick(li, "First Name (Original)")
-    c_lno  = pick(li, "Last Name (Original)")
-    c_fnl  = pick(li, "First Name (Localized)", "First Name (Localised)")
-    c_lnl  = pick(li, "Last Name (Localized)", "Last Name (Localised)")
-    c_desc = pick(li, "Description", "description")
-
     chars = {}
-    for r in range(2, ld.max_row + 1):
-        cid = ld.cell(r, c_id).value if c_id else None
-        if not cid:
-            continue
-        chars[cid] = {
-            "type": ld.cell(r, c_type).value if c_type else "",
-            "orig": ld.cell(r, c_orig).value if c_orig else "",
-            "loc":  ld.cell(r, c_loc).value if c_loc else "",
-            "of":   norm(ld.cell(r, c_fno).value) if c_fno else "",
-            "ol":   norm(ld.cell(r, c_lno).value) if c_lno else "",
-            "lf":   (ld.cell(r, c_fnl).value or "").strip() if c_fnl else "",
-            "ll":   (ld.cell(r, c_lnl).value or "").strip() if c_lnl else "",
-            "desc": (ld.cell(r, c_desc).value or "") if c_desc else "",
-        }
+    if ld is not None:
+        li = header_index(ld)
+        c_id   = pick(li, "ID", "id")
+        c_type = pick(li, "Type", "type")
+        c_orig = pick(li, "Original Name", "original_name", "original name")
+        c_loc  = pick(li, "Localized Name", "localised_name", "localized name", "localised name")
+        c_fno  = pick(li, "First Name (Original)")
+        c_lno  = pick(li, "Last Name (Original)")
+        c_fnl  = pick(li, "First Name (Localized)", "First Name (Localised)")
+        c_lnl  = pick(li, "Last Name (Localized)", "Last Name (Localised)")
+        c_desc = pick(li, "Description", "description")
+
+        for r in range(2, ld.max_row + 1):
+            cid = ld.cell(r, c_id).value if c_id else None
+            if not cid:
+                continue
+            chars[cid] = {
+                "type": ld.cell(r, c_type).value if c_type else "",
+                "orig": ld.cell(r, c_orig).value if c_orig else "",
+                "loc":  ld.cell(r, c_loc).value if c_loc else "",
+                "of":   norm(ld.cell(r, c_fno).value) if c_fno else "",
+                "ol":   norm(ld.cell(r, c_lno).value) if c_lno else "",
+                "lf":   (ld.cell(r, c_fnl).value or "").strip() if c_fnl else "",
+                "ll":   (ld.cell(r, c_lnl).value or "").strip() if c_lnl else "",
+                "desc": (ld.cell(r, c_desc).value or "") if c_desc else "",
+            }
 
     m_id   = pick(mi, "ID", "id")
     m_orig = pick(mi, "Original Mention", "original_name", "original mention")
     m_loc  = pick(mi, "Localized Mention", "localised_name", "localized mention", "localised mention")
+    if not m_orig:
+        sys.exit("Mention Mappings must contain an 'Original Mention' column.")
 
     mentions = []
     for r in range(2, mm.max_row + 1):
@@ -205,9 +219,9 @@ def _madeye_client():
     base = os.environ.get("MADEYE_BASE_URL", "")
     if not base:
         sys.exit("MADEYE_BASE_URL not set (needed for --llm). Put it in env or .env.")
-    return OpenAI(api_key=key, base_url=base, max_retries=2)
+    return OpenAI(api_key=key, base_url=base, max_retries=2, timeout=60.0)
 
-MADEYE_MODEL = os.environ.get("MADEYE_MODEL", "claude-opus-4-8")
+MADEYE_MODEL = os.environ.get("MADEYE_MODEL", "claude-opus-4-7")
 # Madeye rejects requests without metadata.user_email (400 MADEYE_MISSING_USER).
 MADEYE_USER_EMAIL = os.environ.get("MADEYE_USER_EMAIL", "")
 
@@ -235,13 +249,16 @@ def llm_character(client, c, items, src, tgt):
         f'STORY DESCRIPTION:\n{c["desc"][:4000]}\n\n'
         f'MENTIONS to verify:\n{listing}\n'
     )
-    resp = client.chat.completions.create(
-        model=MADEYE_MODEL,
-        messages=[{"role": "system", "content": system},
-                  {"role": "user", "content": user}],
-        max_tokens=2000, temperature=0.1,
-        extra_body={"metadata": {"user_email": MADEYE_USER_EMAIL}},
-    )
+    request = {
+        "model": MADEYE_MODEL,
+        "messages": [{"role": "system", "content": system},
+                     {"role": "user", "content": user}],
+        "max_tokens": 2000,
+        "extra_body": {"metadata": {"user_email": MADEYE_USER_EMAIL}},
+    }
+    if "opus-4-7" not in MADEYE_MODEL:
+        request["temperature"] = 0.1
+    resp = client.chat.completions.create(**request)
     raw = resp.choices[0].message.content or ""
     m = re.search(r"\{.*\}", raw, re.DOTALL)
     if not m:
@@ -295,7 +312,7 @@ def main():
     args = ap.parse_args()
 
     wb, mm, chars, mentions = load(args.input)
-    print(f"Loaded {len(chars)} characters, {len(mentions)} mentions.")
+    print(f"Loaded {len(chars)} characters, {len(mentions)} mentions.", flush=True)
 
     # Layer 1
     results = []
@@ -311,9 +328,9 @@ def main():
     counts = defaultdict(int)
     for r in results:
         counts[r["status"]] += 1
-    print("\nLayer 1 (deterministic):")
+    print("\nLayer 1 (deterministic):", flush=True)
     for k, v in sorted(counts.items()):
-        print(f"  {k:14s}: {v}")
+        print(f"  {k:14s}: {v}", flush=True)
 
     # Layer 2 — only for rows Layer 1 couldn't safely resolve
     if args.llm:
@@ -326,7 +343,7 @@ def main():
             if r["status"] in ("NEEDS_REVIEW", "MISSING", "MISMATCH"):
                 todo[r["cid"]].append(r)
         print(f"\nLayer 2 (LLM): {sum(len(v) for v in todo.values())} mentions "
-              f"across {len(todo)} characters...")
+              f"across {len(todo)} characters...", flush=True)
         done = 0
         for cid, items in todo.items():
             c = chars.get(cid)
@@ -335,7 +352,7 @@ def main():
             try:
                 res = llm_character(client, c, items, args.src, args.tgt)
             except Exception as e:
-                print(f"  ! {cid}: {e}")
+                print(f"  ! {cid}: {e}", flush=True)
                 continue
             for i, r in enumerate(items):
                 rr = res.get(i)
@@ -348,7 +365,7 @@ def main():
                 r["status"] = "LLM_OK" if same else "LLM_FIX"
             done += 1
             if done % 20 == 0:
-                print(f"  ...{done}/{len(todo)} characters")
+                print(f"  ...{done}/{len(todo)} characters", flush=True)
 
     write_back(mm, results)
     wb.save(args.output)
@@ -357,9 +374,9 @@ def main():
                  if not (r["status"] in ("VERIFIED", "LLM_OK") and r["confidence"] >= 100
                          or r["status"] == "LLM_OK"))
     total = len(results)
-    print(f"\nSaved -> {args.output}")
+    print(f"\nSaved -> {args.output}", flush=True)
     print(f"Human needs to review ~{review}/{total} rows "
-          f"({100*review/total:.0f}%); the rest are auto-verified.")
+          f"({100*review/total:.0f}%); the rest are auto-verified.", flush=True)
 
 
 if __name__ == "__main__":

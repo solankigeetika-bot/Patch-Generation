@@ -1,80 +1,78 @@
-# Install as a Sheets Editor Add-on (not seat-specific)
+# Install As A Sheets Editor Add-on
 
-Instead of pasting code into each sheet, you package this once as a **Google
-Workspace Editor Add-on**. Install it on your account → it appears under
-**Extensions → Localization Verifier** in *every* spreadsheet you open. Click
-it whenever you want to run the verifier or ask a question.
+This packages LS Verifier once so it appears under
+**Extensions → LS Verifier** in every spreadsheet you open.
 
-Files that make up the add-on:
-- `Code.gs` — server logic (verifier, chatbot, canon)
-- `Sidebar.html` — the UI
-- `appsscript.json` — the add-on manifest (this is what makes it an add-on)
+## Create The Add-on Project
 
----
+1. Go to `https://script.google.com` → **New project**.
+2. Rename it to **LS Verifier**.
+3. Project Settings → enable **Show appsscript.json manifest file in editor**.
+4. Paste these repo files into the Apps Script project:
+   - `Code.gs`
+   - `Sidebar.html` as an HTML file named exactly `Sidebar`
+   - `appsscript.json`
+5. Save.
 
-## A. Create the add-on project (one time)
+## Recommended: Zero-config Proxy Mode
 
-1. Go to **https://script.google.com** → **New project**.
-2. Rename it (top-left) to **Localization Verifier**.
-3. **Project Settings** (⚙ gear icon) → check
-   **"Show 'appsscript.json' manifest file in editor"**.
-4. Back in the **Editor** (`< >`):
-   - Open `Code.gs`, select all, paste the contents of this repo's `Code.gs`.
-   - **+ → HTML** → name it exactly **`Sidebar`** → paste `Sidebar.html`.
-   - Open **`appsscript.json`** → select all → paste this repo's `appsscript.json`.
-5. **Save** (Ctrl/Cmd+S).
+Use this for anything shared with a team. The Madeye key stays in the backend,
+not in Apps Script.
 
-## B. Set the Script Properties
+After Cloud Run is deployed, fill these constants at the top of `Code.gs`:
 
-**Project Settings** (⚙) → **Script Properties** → add:
+| Constant | Value |
+|---|---|
+| `BACKEND_URL` | Cloud Run service URL |
+| `BAKED_PROXY_SECRET` | same shared secret configured on the backend |
 
-Direct-to-Argus (testing, just you):
+Then publish the add-on. Localizers do not set Script Properties and never see a
+Madeye key. Their email is read with `Session.getActiveUser().getEmail()` and
+sent through the backend as Madeye `metadata.user_email`.
+
+Script Properties still work as admin/staging overrides:
+
 | Property | Value |
 |---|---|
-| `ARGUS_API_KEY` | your Argus token (`eyJ...`) |
-| `ARGUS_MODEL` | `claude-opus-4.8` |
+| `BACKEND_URL` or `PROXY_URL` | temporary backend override |
+| `PROXY_SECRET` | temporary shared secret override |
+| `SHOW_SLUG` | optional canon slug |
+| `MADEYE_USER_EMAIL` | fallback email if Google does not expose active user email |
 
-Or proxy mode (scalable, the team — see `backend/DEPLOY.md`):
+## Direct Mode For Personal Testing
+
+Only use this for your own test project. The key is stored in Apps Script
+properties, not exposed in the sheet UI.
+
 | Property | Value |
 |---|---|
-| `PROXY_URL` | the Cloud Run service URL |
-| `PROXY_SECRET` | the shared secret |
-| `SHOW_SLUG` | e.g. `twists-of-love-revenge` |
+| `MADEYE_API_KEY` | your Madeye key |
+| `MADEYE_BASE_URL` | Madeye base URL |
+| `MADEYE_MODEL` | `claude-opus-4-7` |
+| `MADEYE_USER_EMAIL` | your PocketFM email |
 
-(When `PROXY_URL` is set, no Argus token is needed in the sheet.)
+## Install For Yourself
 
-## C. Install it on your account (test deployment)
+1. Deploy → **Test deployments**.
+2. Select the Sheets add-on entry → **Install**.
+3. Open or refresh a Google Sheet.
+4. Extensions → LS Verifier → Run Mention Verifier.
+5. Use **Extensions → LS Verifier → Open Assistant** only when you want the
+   chat assistant.
+6. Approve permissions on first run.
 
-1. **Deploy** (top-right) → **Test deployments**.
-2. You'll see a Sheets add-on entry → click **Install** → **Done**.
-3. Open **any** Google Sheet (or refresh one) → **Extensions** menu →
-   **Localization Verifier** → **Open Assistant**.
-4. First run asks for permissions → **Review permissions** → your account →
-   **Allow**.
+The default verifier reads the `Mention Mappings` tab first and checks
+`Original Mention` against `Localized Mention`. `Localization Details` is only
+used as optional dictionary/context when present.
 
-That's it — the assistant is now available in every sheet you open, on demand.
+The deterministic verifier works without Madeye. The chat/LLM review needs
+proxy mode or direct Madeye mode.
 
----
+## Recommended Rollout
 
-## D. Roll it out to the whole team (later)
+Use a Google Workspace Marketplace **internal app** for PocketFM. That gives
+localizers a one-click install path and avoids copy/paste setup in individual
+sheets. A shared Apps Script project is okay for early testing, but it will not
+feel like a real zero-config tool.
 
-Two options, pick one:
-
-- **Each localizer self-installs** the test deployment (repeat step C on their
-  account). Quick, no admin needed.
-- **Publish privately to your domain** via the Google Workspace Marketplace SDK
-  so a Workspace admin can push it to everyone at once (no per-person install).
-  This needs a GCP project + the Marketplace SDK; ask me and I'll write the
-  manifest + listing steps.
-
-For the team, use **proxy mode** (Script Properties `PROXY_URL` + `PROXY_SECRET`)
-so one server-side Argus credential serves everyone and nobody handles tokens.
-
----
-
-## Notes
-- Scope `spreadsheets.currentonly` means the add-on only reads the sheet you
-  currently have open — it can't see your other files.
-- The `doPost`/`doGet` token-sync web app is independent of the add-on; deploy
-  it separately (Deploy → New deployment → Web app) only if you use the
-  Tampermonkey auto-refresh flow.
+See `MARKETPLACE_INTERNAL.md` for the exact internal Marketplace checklist.

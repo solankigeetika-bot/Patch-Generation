@@ -1,47 +1,50 @@
-// ─── Localization Verifier — Google Apps Script (Editor Add-on) ───────────────
+// ─── LS Verifier — Google Apps Script (Editor Add-on) ─────────────────────────
 // Packaged as a Sheets Editor Add-on: install once on your account and it shows
-// up under Extensions → Localization Verifier in EVERY spreadsheet you open.
+// up under Extensions → LS Verifier in EVERY spreadsheet you open.
 // Nothing is pasted per-sheet. See INSTALL_ADDON.md for the install steps.
-// Setup (one time, in the add-on's Apps Script project):
-//   1. Files present: Code.gs, Sidebar.html, appsscript.json (manifest)
-//   2. In Project Settings → Script Properties, set:
-//        ARGUS_API_KEY = sk-...               (Argus / Open WebUI API key)
-//        CANON_SESSION = eyJ...               (canon.pocketfm.ai __session cookie)
-//        SHOW_SLUG     = twists-of-love-revenge  (from the canon URL)
-//      Optional overrides:
-//        ARGUS_BASE_URL = https://argus.pocketfm.org/api   (default)
-//        ARGUS_MODEL    = claude-opus-4.8                  (default)
-//   4. Reload the sheet → you'll see "Localization Verifier" in the menu
+// Setup for the published add-on:
+//   1. Deploy the backend.
+//   2. Fill BACKEND_URL and BAKED_PROXY_SECRET below.
+//   3. Publish/install the add-on. Users do not need Script Properties or keys.
 //
-// NOTE: The chatbot talks to Argus (PocketFM's Open WebUI), which is
-// OpenAI-compatible, so we use the /chat/completions endpoint. Canon is fetched
+// NOTE: The chatbot talks to Madeye, which is OpenAI-compatible, so we use the
+// /chat/completions endpoint. Canon is fetched
 // directly from canon.pocketfm.ai (publicly reachable). The deterministic
 // verifier needs no API key at all.
 
-// ── Scalable path (recommended): route through the internal proxy ─────────────
-var PROXY_URL_PROP      = "PROXY_URL";          // e.g. https://loc-proxy.pocketfm.org
-var PROXY_SECRET_PROP   = "PROXY_SECRET";       // shared secret (matches proxy's PROXY_SECRET)
-// ── Direct-to-Argus path (fallback if no proxy is deployed) ───────────────────
-var ARGUS_API_KEY_PROP  = "ARGUS_API_KEY";      // optional — Argus may allow open access
-var ARGUS_BASE_URL_PROP = "ARGUS_BASE_URL";     // optional override
-var ARGUS_MODEL_PROP    = "ARGUS_MODEL";        // optional override
+// ── Zero-config backend settings for the published add-on ────────────────────
+// Fill these once after Cloud Run is stable. Script Properties with the same
+// names can still override them for staging or emergency backend swaps.
+var BACKEND_URL = "";             // e.g. https://ls-verifier-abc123-uc.a.run.app
+var BAKED_PROXY_SECRET = "";      // shared backend secret, not a user credential
+
+var BACKEND_URL_PROP    = "BACKEND_URL";
+var PROXY_URL_PROP      = "PROXY_URL";          // legacy override name
+var PROXY_SECRET_PROP   = "PROXY_SECRET";       // shared secret (matches backend)
+// ── Direct-to-Madeye path (fallback if no proxy is deployed) ──────────────────
+var MADEYE_API_KEY_PROP    = "MADEYE_API_KEY";
+var MADEYE_BASE_URL_PROP   = "MADEYE_BASE_URL";
+var MADEYE_MODEL_PROP      = "MADEYE_MODEL";
+var MADEYE_USER_EMAIL_PROP = "MADEYE_USER_EMAIL";
+// Legacy names still read for older copied projects.
+var ARGUS_API_KEY_PROP  = "ARGUS_API_KEY";
+var ARGUS_BASE_URL_PROP = "ARGUS_BASE_URL";
+var ARGUS_MODEL_PROP    = "ARGUS_MODEL";
 var CANON_SESSION_PROP  = "CANON_SESSION";      // canon.pocketfm.ai __session cookie
 var SHOW_SLUG_PROP      = "SHOW_SLUG";          // canon.pocketfm.ai show slug
 var REFRESH_SECRET_PROP = "REFRESH_SECRET";     // shared secret for the token-sync web app
 var CANON_HOST          = "https://canon.pocketfm.ai";
-var ARGUS_BASE_URL_DEFAULT = "https://argus.pocketfm.org/api";
-// Model id as it appears in Argus's /api/models list.
-// "as" is the browser UI shorthand; check via listArgusModels() if unsure.
-var ARGUS_MODEL_DEFAULT    = "claude-opus-4.8";
+var MADEYE_MODEL_DEFAULT = "claude-opus-4-7";
 
 // ─── menu (Editor Add-on) ─────────────────────────────────────────────────────
-// As an add-on this lives under Extensions → Localization Verifier in EVERY
+// As an add-on this lives under Extensions → LS Verifier in EVERY
 // spreadsheet you open — nothing is pasted per-sheet. onOpen/onInstall are the
 // add-on lifecycle triggers; createAddonMenu() puts items under the Extensions
 // menu rather than a sheet-specific top-level menu.
 function onOpen(e) {
   SpreadsheetApp.getUi()
     .createAddonMenu()
+    .addItem("Run Mention Verifier", "verifyAndWriteMentions")
     .addItem("Open Assistant", "openSidebar")
     .addToUi();
 }
@@ -52,7 +55,7 @@ function onInstall(e) {
 
 function openSidebar() {
   var html = HtmlService.createHtmlOutputFromFile("Sidebar")
-    .setTitle("Localization Verifier")
+    .setTitle("LS Verifier")
     .setWidth(380);
   SpreadsheetApp.getUi().showSidebar(html);
 }
@@ -60,7 +63,7 @@ function openSidebar() {
 // ─── token-sync web app ───────────────────────────────────────────────────────
 // Deploy this script as a Web App (Deploy → New deployment → Web app,
 // Execute as: Me, Who has access: Anyone). The userscript on argus.pocketfm.org
-// POSTs the fresh 24h token here so ARGUS_API_KEY is always current.
+// Legacy token-sync hook. Proxy mode with a stable Madeye key is preferred.
 // Body (text/plain JSON): {"secret": "...", "token": "eyJ...", "canon": "eyJ..."}
 function doPost(e) {
   var props = PropertiesService.getScriptProperties();
@@ -71,7 +74,7 @@ function doPost(e) {
       return _json({ ok: false, error: "unauthorized" });
     }
     var updated = [];
-    if (body.token) { props.setProperty(ARGUS_API_KEY_PROP, body.token); updated.push("token"); }
+    if (body.token) { props.setProperty(MADEYE_API_KEY_PROP, body.token); updated.push("token"); }
     if (body.canon) { props.setProperty(CANON_SESSION_PROP, body.canon); updated.push("canon"); }
     return _json({ ok: true, updated: updated });
   } catch (err) {
@@ -81,7 +84,7 @@ function doPost(e) {
 
 function doGet() {
   // health check so you can confirm the web app is live in a browser
-  return _json({ ok: true, service: "argus-token-sync" });
+  return _json({ ok: true, service: "madeye-token-sync" });
 }
 
 function _json(obj) {
@@ -97,10 +100,10 @@ function getSheetMeta() {
 }
 
 // ─── token status / save (called directly from the sidebar, no web app) ───────
-// Lets you paste the Argus token straight into the sidebar once a day.
+// Lets you paste a direct API key straight into the sidebar.
 function getTokenStatus() {
   var props = PropertiesService.getScriptProperties();
-  var tok = props.getProperty(ARGUS_API_KEY_PROP) || "";
+  var tok = props.getProperty(MADEYE_API_KEY_PROP) || props.getProperty(ARGUS_API_KEY_PROP) || "";
   var info = { hasToken: !!tok, expiresLabel: "" };
   if (tok) {
     var exp = _jwtExp(tok);
@@ -114,11 +117,36 @@ function getTokenStatus() {
   return info;
 }
 
-function saveArgusToken(token) {
+function saveMadeyeKey(token) {
   token = (token || "").trim().replace(/^Bearer\s+/i, "");
   if (!token) return { ok: false, error: "Empty token." };
-  PropertiesService.getScriptProperties().setProperty(ARGUS_API_KEY_PROP, token);
+  PropertiesService.getScriptProperties().setProperty(MADEYE_API_KEY_PROP, token);
   return getTokenStatus();
+}
+
+// Legacy alias for older copied sidebars/bookmarklets.
+function saveArgusToken(token) {
+  return saveMadeyeKey(token);
+}
+
+function _activeUserEmail(props) {
+  var fallback = props.getProperty(MADEYE_USER_EMAIL_PROP) || "";
+  try {
+    return Session.getActiveUser().getEmail() || fallback;
+  } catch (e) {
+    return fallback;
+  }
+}
+
+function _backendUrl(props) {
+  return (props.getProperty(BACKEND_URL_PROP) ||
+          props.getProperty(PROXY_URL_PROP) ||
+          BACKEND_URL || "").trim();
+}
+
+function _proxySecret(props) {
+  return (props.getProperty(PROXY_SECRET_PROP) ||
+          BAKED_PROXY_SECRET || "").trim();
 }
 
 // Decode a JWT's exp claim without verifying the signature.
@@ -138,10 +166,10 @@ function getSheetData() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var ldSheet = findSheet(ss, ["localization details", "localization detail", "ld"]);
   var mmSheet = findSheet(ss, ["mention mappings", "mention mapping", "mm"]);
-  if (!ldSheet) return { error: "Cannot find 'Localization Details' tab." };
+  if (!mmSheet) return { error: "Cannot find 'Mention Mappings' tab." };
 
-  var ldData = sheetToObjects(ldSheet);
-  var mmData = mmSheet ? sheetToObjects(mmSheet) : [];
+  var ldData = ldSheet ? sheetToObjects(ldSheet) : [];
+  var mmData = sheetToObjects(mmSheet);
   return { ld: ldData, mm: mmData };
 }
 
@@ -175,12 +203,15 @@ function sheetToObjects(sheet) {
   return rows;
 }
 
-// ─── run verifier ─────────────────────────────────────────────────────────────
-// Runs deterministic checks in JS, then LLM layer via Claude API.
+// ─── run Localization Details verifier ───────────────────────────────────────
+// Secondary/admin check. The default localizer workflow is Mention Mappings.
 // Returns array of findings: [{row, id, type, detail, suggestion}]
-function runVerifier(sourceLang, targetLang) {
+function runDetailsVerifier(sourceLang, targetLang) {
   var data = getSheetData();
   if (data.error) return { error: data.error };
+  if (!data.ld || !data.ld.length) {
+    return { error: "Cannot find 'Localization Details' rows for details verification." };
+  }
 
   var ld = data.ld;
   var mm = data.mm;
@@ -333,10 +364,17 @@ function runVerifier(sourceLang, targetLang) {
   return { findings: findings, rowCount: ld.length, mmCount: mm.length };
 }
 
+// Primary localizer workflow: verify Original Mention vs Localized Mention in
+// the Mention Mappings tab. Kept as runVerifier() because the sidebar calls it.
+function runVerifier(sourceLang, targetLang) {
+  return verifyMentions(sourceLang, targetLang);
+}
+
 // ─── Mention Mappings verifier ────────────────────────────────────────────────
 // Checks the "Mention Mappings" tab (Original Mention → Localized Mention)
-// against the master dictionary in "Localization Details". Deterministic; no
-// token required. Produces a concrete suggested localized mention per row.
+// against the master dictionary in "Localization Details" when present.
+// Deterministic; no token required. Produces a concrete suggested localized
+// mention per row.
 function verifyMentions(sourceLang, targetLang) {
   var data = getSheetData();
   if (data.error) return { error: data.error };
@@ -356,8 +394,8 @@ function verifyMentions(sourceLang, targetLang) {
   }
   function escapeRe(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
 
-  // Build master replacement list from Localization Details, longest original
-  // first so multi-word names are replaced before their parts.
+  // Build master replacement list from optional Localization Details, longest
+  // original first so multi-word names are replaced before their parts.
   var pairs = [];
   ld.forEach(function(row) {
     var orig = col(row, ["Original Name","original name","original_name"]);
@@ -413,7 +451,7 @@ function verifyMentions(sourceLang, targetLang) {
     }
   });
 
-  return { findings: findings, rowCount: mm.length };
+  return { findings: findings, rowCount: mm.length, mmCount: mm.length, sourceTab: "Mention Mappings" };
 }
 
 // ─── write findings + confidence scores back to sheet ─────────────────────────
@@ -445,6 +483,15 @@ function _confidenceColor(pct) {
 }
 
 function writeFindingsToSheet(findings) {
+  if (findings && findings.length) {
+    var mentionFinding = findings.some(function(f) {
+      return f.tab === "Mention Mappings" ||
+             f.kind === "MENTION_MASTER_MISMATCH" ||
+             f.kind === "CROSS_MENTION_INCONSISTENCY";
+    });
+    if (mentionFinding) return writeMentionFindingsToSheet(findings);
+  }
+
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var ldSheet = findSheet(ss, ["localization details", "localization detail", "ld"]);
   if (!ldSheet) return { error: "Sheet not found." };
@@ -587,7 +634,7 @@ function writeMentionFindingsToSheet(findings) {
 // Select one of these in the editor's function dropdown and click Run. The
 // deterministic checks + Confidence Score get written straight to the tab.
 function verifyAndWriteDetails() {
-  var res = runVerifier("en", "fr");
+  var res = runDetailsVerifier("en", "fr");
   if (res.error) { Logger.log("ERROR: " + res.error); return res; }
   var out = writeFindingsToSheet(res.findings);
   Logger.log("Localization Details: " + res.findings.length + " findings across "
@@ -687,25 +734,28 @@ function extractCanonContext(html) {
 
 // ─── chatbot ──────────────────────────────────────────────────────────────────
 // Two paths, chosen automatically:
-//   1. If PROXY_URL is set → call the internal/Cloud-Run proxy (scalable; the
-//      proxy holds the Argus credential and fetches canon server-side).
-//   2. Otherwise → call Argus directly (fallback; needs ARGUS_API_KEY here).
+//   1. If BACKEND_URL is set → call the internal/Cloud-Run proxy (scalable; the
+//      proxy holds the Madeye credential and fetches canon server-side).
+//   2. Otherwise → call Madeye directly (fallback; needs MADEYE_API_KEY here).
 function askQuestion(question, sourceLang, targetLang) {
   var props = PropertiesService.getScriptProperties();
 
   var data = getSheetData();
   if (data.error) return { error: data.error };
-  var sheetCtx = buildSheetContext(data.ld, sourceLang, targetLang);
+  var sheetCtx = buildSheetContext(data.mm, data.ld, sourceLang, targetLang);
 
-  var proxyUrl = props.getProperty(PROXY_URL_PROP);
+  var proxyUrl = _backendUrl(props);
   if (proxyUrl) {
     return _askViaProxy(proxyUrl, props, question, sourceLang, targetLang, sheetCtx);
   }
 
-  // ── direct-to-Argus fallback ───────────────────────────────────────────────
-  var apiKey  = props.getProperty(ARGUS_API_KEY_PROP);  // may be null
-  var baseUrl = (props.getProperty(ARGUS_BASE_URL_PROP) || ARGUS_BASE_URL_DEFAULT).replace(/\/+$/, "");
-  var model   = props.getProperty(ARGUS_MODEL_PROP)    || ARGUS_MODEL_DEFAULT;
+  // ── direct-to-Madeye fallback ──────────────────────────────────────────────
+  var apiKey  = props.getProperty(MADEYE_API_KEY_PROP) || props.getProperty(ARGUS_API_KEY_PROP);
+  var baseUrl = (props.getProperty(MADEYE_BASE_URL_PROP) || props.getProperty(ARGUS_BASE_URL_PROP) || "").replace(/\/+$/, "");
+  var model   = props.getProperty(MADEYE_MODEL_PROP) || props.getProperty(ARGUS_MODEL_PROP) || MADEYE_MODEL_DEFAULT;
+  var userEmail = _activeUserEmail(props);
+  if (!apiKey || !baseUrl) return { error: "Madeye direct mode needs MADEYE_API_KEY and MADEYE_BASE_URL, or set BACKEND_URL." };
+  if (!userEmail) return { error: "Madeye needs metadata.user_email. Set MADEYE_USER_EMAIL in Script Properties." };
 
   var canonCtx = getCanonContext();
 
@@ -726,9 +776,12 @@ function askQuestion(question, sourceLang, targetLang) {
       { role: "system", content: system },
       { role: "user",   content: question }
     ],
-    max_tokens: 1024,
-    temperature: 0.2
+    metadata: { user_email: userEmail },
+    max_tokens: 1024
   };
+  if (model.indexOf("opus-4-7") === -1) {
+    payload.temperature = 0.2;
+  }
 
   var options = {
     method: "post",
@@ -744,20 +797,21 @@ function askQuestion(question, sourceLang, targetLang) {
     var json = JSON.parse(response.getContentText());
     if (code !== 200 || json.error) {
       var msg = (json.error && (json.error.message || json.error)) || ("HTTP " + code);
-      return { error: "Argus API error: " + msg };
+      return { error: "Madeye API error: " + msg };
     }
     return { answer: json.choices[0].message.content };
   } catch(e) {
-    return { error: "Argus API error: " + e.message };
+    return { error: "Madeye API error: " + e.message };
   }
 }
 
 // ─── chatbot via proxy (scalable path) ────────────────────────────────────────
-// The proxy holds the Argus credential and fetches canon server-side, so the
+// The proxy holds the Madeye credential and fetches canon server-side, so the
 // sheet only sends the question + a compact sheet summary + the show slug.
 function _askViaProxy(proxyUrl, props, question, sourceLang, targetLang, sheetCtx) {
-  var secret = props.getProperty(PROXY_SECRET_PROP) || "";
+  var secret = _proxySecret(props);
   var slug   = props.getProperty(SHOW_SLUG_PROP) || "";
+  var userEmail = _activeUserEmail(props);
   var url    = proxyUrl.replace(/\/+$/, "") + "/chat";
 
   var options = {
@@ -769,7 +823,8 @@ function _askViaProxy(proxyUrl, props, question, sourceLang, targetLang, sheetCt
       sheet_context: sheetCtx,
       source_lang: sourceLang,
       target_lang: targetLang,
-      show_slug: slug
+      show_slug: slug,
+      user_email: userEmail
     }),
     muteHttpExceptions: true
   };
@@ -787,29 +842,57 @@ function _askViaProxy(proxyUrl, props, question, sourceLang, targetLang, sheetCt
   }
 }
 
-// ─── helper — fetch Argus model list (run from Apps Script editor to find IDs) ─
-// Call this once from the Apps Script editor (Run → listArgusModels) to see
-// the exact model ids available in your Argus instance, then set ARGUS_MODEL.
-function listArgusModels() {
+// ─── helper — fetch model list (run from Apps Script editor to find IDs) ─────
+// Call this once from the Apps Script editor (Run → listMadeyeModels) to see
+// the exact model aliases available, then set MADEYE_MODEL.
+function listMadeyeModels() {
   var props   = PropertiesService.getScriptProperties();
-  var apiKey  = props.getProperty(ARGUS_API_KEY_PROP);
-  var baseUrl = (props.getProperty(ARGUS_BASE_URL_PROP) || ARGUS_BASE_URL_DEFAULT).replace(/\/+$/, "");
+  var apiKey  = props.getProperty(MADEYE_API_KEY_PROP) || props.getProperty(ARGUS_API_KEY_PROP);
+  var baseUrl = (props.getProperty(MADEYE_BASE_URL_PROP) || props.getProperty(ARGUS_BASE_URL_PROP) || "").replace(/\/+$/, "");
   var headers = {};
   if (apiKey) headers["Authorization"] = "Bearer " + apiKey;
   var resp = UrlFetchApp.fetch(baseUrl + "/models", { headers: headers, muteHttpExceptions: true });
   Logger.log(resp.getContentText());
 }
 
+// Legacy alias for old setup docs.
+function listArgusModels() {
+  return listMadeyeModels();
+}
+
 // ─── build sheet context string ───────────────────────────────────────────────
-function buildSheetContext(ld, sourceLang, targetLang) {
+function buildSheetContext(mm, ld, sourceLang, targetLang) {
+  mm = mm || [];
+  ld = ld || [];
+
+  function val(row, names) {
+    var keys = Object.keys(row || {});
+    for (var ni = 0; ni < names.length; ni++) {
+      var target = names[ni].toLowerCase();
+      for (var ki = 0; ki < keys.length; ki++) {
+        if (keys[ki].toLowerCase() === target) return row[keys[ki]] || "";
+      }
+    }
+    return "";
+  }
+
   var context = "Localization sheet: " + sourceLang + " → " + targetLang + ".\n";
-  context += "Rows (Original Name → Localized Name [Type]):\n";
-  var sample = ld.slice(0, 100);
-  sample.forEach(function(row) {
-    var orig = row["Original Name"] || row["original name"] || row["original_name"] || "";
-    var loc  = row["Localized Name"] || row["localized name"] || row["localised name"] || "";
-    var type = row["Type"] || row["type"] || "";
-    if (orig) context += "  " + orig + " → " + loc + " [" + type + "]\n";
+  context += "Mention Mappings (Original Mention → Localized Mention):\n";
+  mm.slice(0, 120).forEach(function(row) {
+    var orig = val(row, ["Original Mention", "original mention", "original_mention"]);
+    var loc  = val(row, ["Localized Mention", "localized mention", "localised mention", "localized_mention"]);
+    if (orig) context += "  " + orig + " → " + loc + "\n";
   });
+
+  if (ld.length) {
+    context += "\nOptional Localization Details dictionary (Original Name → Localized Name [Type]):\n";
+    ld.slice(0, 80).forEach(function(row) {
+      var orig = val(row, ["Original Name", "original name", "original_name"]);
+      var loc  = val(row, ["Localized Name", "localized name", "localised name", "localized_name"]);
+      var type = val(row, ["Type", "type"]);
+      if (orig) context += "  " + orig + " → " + loc + " [" + type + "]\n";
+    });
+  }
+
   return context;
 }

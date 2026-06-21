@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Localization Verifier — Madeye proxy backend.
+LS Verifier — Madeye proxy backend.
 
 Holds ONE Madeye credential and serves every localizer's sheet, so nobody
 pastes tokens. Madeye is PocketFM's OpenAI-compatible LLM gateway (routes to
@@ -13,8 +13,8 @@ Apps Script calls this proxy; the proxy forwards to Madeye.
 
 Environment variables (put in .env or export):
   MADEYE_API_KEY      required   Madeye API key (sent as Bearer token)
-  MADEYE_BASE_URL     required   Madeye base URL (e.g. https://madeye.internal.pocketfm.org)
-  MADEYE_MODEL        optional   model id (default: claude-opus-4-8)
+  MADEYE_BASE_URL     required   Madeye base URL from the AWS secret
+  MADEYE_MODEL        optional   model alias (default: claude-opus-4-7)
   MADEYE_USER_EMAIL   required   @pocketfm.com email (Madeye needs metadata.user_email)
   PROXY_SECRET        required   shared secret Apps Script sends as X-Proxy-Secret
   CANON_SESSION       optional   canon.pocketfm.ai __session cookie (for canon fetch)
@@ -46,13 +46,13 @@ load_dotenv()
 # ─── config ───────────────────────────────────────────────────────────────────
 MADEYE_API_KEY    = os.environ.get("MADEYE_API_KEY", "")
 MADEYE_BASE_URL   = os.environ.get("MADEYE_BASE_URL", "")
-MADEYE_MODEL      = os.environ.get("MADEYE_MODEL", "claude-opus-4-8")
+MADEYE_MODEL      = os.environ.get("MADEYE_MODEL", "claude-opus-4-7")
 MADEYE_USER_EMAIL = os.environ.get("MADEYE_USER_EMAIL", "")
 PROXY_SECRET      = os.environ.get("PROXY_SECRET", "")
 CANON_SESSION     = os.environ.get("CANON_SESSION", "")
 CANON_HOST        = "https://canon.pocketfm.ai"
 
-app = FastAPI(title="Localization Verifier Proxy", version="1.0")
+app = FastAPI(title="LS Verifier Proxy", version="1.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -74,7 +74,7 @@ def _madeye_client() -> OpenAI:
         raise HTTPException(status_code=503, detail="MADEYE_API_KEY not configured.")
     if not MADEYE_BASE_URL:
         raise HTTPException(status_code=503, detail="MADEYE_BASE_URL not configured.")
-    return OpenAI(api_key=MADEYE_API_KEY, base_url=MADEYE_BASE_URL, max_retries=1)
+    return OpenAI(api_key=MADEYE_API_KEY, base_url=MADEYE_BASE_URL, max_retries=1, timeout=60.0)
 
 
 def _ask_madeye(system: str, user: str, max_tokens: int = 1024,
@@ -84,14 +84,16 @@ def _ask_madeye(system: str, user: str, max_tokens: int = 1024,
             status_code=503,
             detail="MADEYE_USER_EMAIL not configured (Madeye requires metadata.user_email).")
     client = _madeye_client()
-    resp = client.chat.completions.create(
-        model=MADEYE_MODEL,
-        messages=[{"role": "system", "content": system},
-                  {"role": "user",   "content": user}],
-        max_tokens=max_tokens,
-        temperature=0.2,
-        extra_body={"metadata": {"user_email": user_email or MADEYE_USER_EMAIL}},
-    )
+    request = {
+        "model": MADEYE_MODEL,
+        "messages": [{"role": "system", "content": system},
+                     {"role": "user",   "content": user}],
+        "max_tokens": max_tokens,
+        "extra_body": {"metadata": {"user_email": user_email or MADEYE_USER_EMAIL}},
+    }
+    if "opus-4-7" not in MADEYE_MODEL:
+        request["temperature"] = 0.2
+    resp = client.chat.completions.create(**request)
     return resp.choices[0].message.content or ""
 
 
@@ -281,7 +283,7 @@ def verify_llm(req: LLMVerifyRequest,
 
     canon_ctx = _canon_context(req.show_slug)
 
-    # pass deterministic findings + sheet to Argus for Bucket D judgment
+    # Pass deterministic findings + sheet to Madeye for Bucket D judgment.
     findings_text = "\n".join(
         f"- [{f.get('kind','?')}] Row {f.get('row','?')}: {f.get('detail','')}"
         for f in req.findings[:50]

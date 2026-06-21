@@ -3,23 +3,25 @@
 LLM-powered localization verifier for PocketFM character/entity sheets.
 
 Combines deterministic rule checks (C0-C3) with an LLM pass (via the OpenAI
-SDK pointed at PocketFM's internal Argus (Open WebUI)) that judges localization
+SDK pointed at PocketFM Madeye) that judges localization
 quality the way a human reviewer would: cultural fit, mistranslation, source
 language leaking into the target, gender/name consistency, register, etc.
 
-The Argus (Open WebUI) is OpenAI-compatible, so we use the official `openai` SDK
-and just override `base_url`.
+Madeye is OpenAI-compatible, so we use the official `openai` SDK and override
+`base_url`.
 
 Configuration (environment variables — never hardcode the key):
-    ARGUS_API_KEY     required   Argus token or sk-... API key
-    ARGUS_BASE_URL    required   https://argus.pocketfm.org/api
-    ARGUS_MODEL       optional   model id served by Argus (default below)
+    MADEYE_API_KEY      required   Madeye API key
+    MADEYE_BASE_URL     required   Madeye base URL
+    MADEYE_MODEL        optional   model alias (default: claude-opus-4-7)
+    MADEYE_USER_EMAIL   required   sent as metadata.user_email
 
 Usage:
     pip install openai
-    export ARGUS_API_KEY=eyJ...           # Argus token or sk-... key
-    export ARGUS_BASE_URL=https://argus.pocketfm.org/api
-    export ARGUS_MODEL=claude-opus-4.8
+    export MADEYE_API_KEY=sk-...
+    export MADEYE_BASE_URL=https://...
+    export MADEYE_MODEL=claude-opus-4-7
+    export MADEYE_USER_EMAIL=your.name@pocketfm.com
 
     python localisation_verifier_llm.py \
         --input TOLR_1-100_source.csv \
@@ -30,7 +32,7 @@ Usage:
     python localisation_verifier_llm.py --input TOLR_1-100_source.csv \
         --output /tmp/out.csv --dry-run
 
-NOTE: Argus (argus.pocketfm.org) is publicly reachable, so this runs anywhere.
+Use --dry-run to skip the LLM step entirely.
 """
 
 from __future__ import annotations
@@ -45,6 +47,12 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Optional
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 # ── Language metadata ─────────────────────────────────────────────────────────
 LANGS = {
@@ -213,13 +221,14 @@ class LLMConfig:
     api_key: str
     base_url: str
     model: str
+    user_email: str = ""
     temperature: float = 0.0
     max_retries: int = 4
 
 
 def build_client(cfg: LLMConfig):
     from openai import OpenAI
-    return OpenAI(api_key=cfg.api_key, base_url=cfg.base_url, max_retries=0)
+    return OpenAI(api_key=cfg.api_key, base_url=cfg.base_url, max_retries=0, timeout=60.0)
 
 
 def llm_verify_row(client, cfg: LLMConfig, row: dict, src: str, tgt: str) -> list[Finding]:
@@ -242,12 +251,16 @@ def llm_verify_row(client, cfg: LLMConfig, row: dict, src: str, tgt: str) -> lis
     last_err = None
     for attempt in range(cfg.max_retries):
         try:
-            resp = client.chat.completions.create(
-                model=cfg.model,
-                messages=messages,
-                temperature=cfg.temperature,
-                response_format={"type": "json_object"},
-            )
+            request = {
+                "model": cfg.model,
+                "messages": messages,
+                "response_format": {"type": "json_object"},
+            }
+            if "opus-4-7" not in cfg.model:
+                request["temperature"] = cfg.temperature
+            if cfg.user_email:
+                request["extra_body"] = {"metadata": {"user_email": cfg.user_email}}
+            resp = client.chat.completions.create(**request)
             content = resp.choices[0].message.content or "{}"
             data = json.loads(content)
             findings: list[Finding] = []
@@ -267,7 +280,7 @@ def llm_verify_row(client, cfg: LLMConfig, row: dict, src: str, tgt: str) -> lis
             time.sleep(2 ** attempt)
     return [Finding("LLM", "info", "llm_error",
                     f"LLM verification failed: {type(last_err).__name__}: {str(last_err)[:120]}",
-                    "Re-run; check Argus connectivity / model name.")]
+                    "Re-run; check Madeye connectivity / model alias.")]
 
 
 # ── Orchestration ─────────────────────────────────────────────────────────────
@@ -294,16 +307,21 @@ def run(args) -> int:
 
     client = cfg = None
     if not args.dry_run:
-        api_key = os.environ.get("ARGUS_API_KEY")
-        base_url = os.environ.get("ARGUS_BASE_URL")
-        model = args.model or os.environ.get("ARGUS_MODEL", "claude-opus-4.8")
+        api_key = os.environ.get("MADEYE_API_KEY") or os.environ.get("ARGUS_API_KEY")
+        base_url = os.environ.get("MADEYE_BASE_URL") or os.environ.get("ARGUS_BASE_URL")
+        model = args.model or os.environ.get("MADEYE_MODEL") or os.environ.get("ARGUS_MODEL") or "claude-opus-4-7"
+        user_email = os.environ.get("MADEYE_USER_EMAIL", "")
         if not api_key or not base_url:
-            print("ERROR: set ARGUS_API_KEY and ARGUS_BASE_URL (or use --dry-run).",
+            print("ERROR: set MADEYE_API_KEY and MADEYE_BASE_URL (or use --dry-run).",
                   file=sys.stderr)
             return 2
-        cfg = LLMConfig(api_key=api_key, base_url=base_url, model=model)
+        if not user_email:
+            print("ERROR: set MADEYE_USER_EMAIL; Madeye requires metadata.user_email.",
+                  file=sys.stderr)
+            return 2
+        cfg = LLMConfig(api_key=api_key, base_url=base_url, model=model, user_email=user_email)
         client = build_client(cfg)
-        print(f"Argus: {base_url}  model={model}", file=sys.stderr)
+        print(f"Madeye: {base_url}  model={model}", file=sys.stderr)
 
     # rule checks for every row (cheap)
     rule_results: list[list[Finding]] = [rule_checks(r, src, tgt) for r in rows]
@@ -356,12 +374,12 @@ def run(args) -> int:
 
 
 def main() -> int:
-    p = argparse.ArgumentParser(description="LLM-powered localization verifier (Argus/OpenAI SDK)")
+    p = argparse.ArgumentParser(description="LLM-powered localization verifier (Madeye/OpenAI SDK)")
     p.add_argument("--input", required=True, help="source CSV (original sheet export)")
     p.add_argument("--output", required=True, help="verified CSV to write")
     p.add_argument("--source-lang", default="de", help="source language code (default de)")
     p.add_argument("--target-lang", default="fr", help="target language code (default fr)")
-    p.add_argument("--model", default=None, help="override ARGUS_MODEL")
+    p.add_argument("--model", default=None, help="override MADEYE_MODEL")
     p.add_argument("--concurrency", type=int, default=4, help="parallel LLM calls (default 4)")
     p.add_argument("--limit", type=int, default=0, help="cap number of main rows LLM-verified")
     p.add_argument("--dry-run", action="store_true",
