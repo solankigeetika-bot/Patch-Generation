@@ -83,16 +83,30 @@ async function getProfileEmail() {
   });
 }
 
-async function googleFetch(url, options = {}) {
+async function googleFetch(url, options = {}, retryAuth = true) {
   const token = await getToken(true);
   const headers = new Headers(options.headers || {});
   headers.set("Authorization", `Bearer ${token}`);
   if (options.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
   const resp = await fetch(url, { ...options, headers });
+  if ((resp.status === 401 || resp.status === 403) && retryAuth) {
+    const text = await resp.clone().text().catch(() => "");
+    const needsFreshToken = resp.status === 401 || /insufficient|scope|permission/i.test(text);
+    if (needsFreshToken) {
+      await removeCachedToken(token);
+      return googleFetch(url, options, false);
+    }
+  }
   if (resp.status === 401) {
     chrome.identity.removeCachedAuthToken({ token }, () => {});
   }
   return resp;
+}
+
+async function removeCachedToken(token) {
+  return new Promise((resolve) => {
+    chrome.identity.removeCachedAuthToken({ token }, resolve);
+  });
 }
 
 async function activeTab() {
