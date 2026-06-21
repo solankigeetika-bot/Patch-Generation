@@ -91,6 +91,27 @@ Expected health:
 
 From the **repo root**:
 
+### Recommended local helper
+
+Fill `.env` with the real values, then run:
+
+```bash
+scripts/deploy-cloud-run.sh
+```
+
+Optional overrides:
+
+```bash
+GCP_PROJECT_ID=your-project REGION=asia-south1 SERVICE=loc-proxy scripts/deploy-cloud-run.sh
+```
+
+The script deploys the current checkout and prints the permanent Cloud Run URL.
+Use that URL as `BACKEND_URL` when publishing the Sheets add-on.
+
+### Raw gcloud command
+
+From the **repo root**:
+
 ```bash
 gcloud run deploy loc-proxy \
   --source . \

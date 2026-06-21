@@ -26,6 +26,19 @@ After Cloud Run is deployed, fill these constants at the top of `Code.gs`:
 | `BACKEND_URL` | Cloud Run service URL |
 | `BAKED_PROXY_SECRET` | same shared secret configured on the backend |
 
+For CLI publishing, do **not** commit those values to git. Use the helper from
+the repo root instead:
+
+```bash
+SCRIPT_ID=your_apps_script_project_id \
+BACKEND_URL=https://your-cloud-run-url \
+PROXY_SECRET=the_backend_proxy_secret \
+scripts/push-apps-script.sh
+```
+
+The helper injects `BACKEND_URL` and `BAKED_PROXY_SECRET` into a temporary upload
+copy, pushes it with `clasp`, and creates a new Apps Script version.
+
 Then publish the add-on. Localizers do not set Script Properties and never see a
 Madeye key. Their email is read with `Session.getActiveUser().getEmail()` and
 sent through the backend as Madeye `metadata.user_email`.
