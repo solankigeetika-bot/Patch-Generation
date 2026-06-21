@@ -36,7 +36,8 @@ Expected health shape:
 
 ## Cloud Run
 
-From the `backend/` folder:
+Run from the **repo root** (the `Dockerfile` there copies both `backend/` and
+the `frontend/` it serves):
 
 ```bash
 gcloud run deploy loc-proxy \
@@ -52,7 +53,9 @@ gcloud run deploy loc-proxy \
 ```
 
 Cloud Run prints a service URL like
-`https://loc-proxy-xxxxx-el.a.run.app`. That is the Apps Script `BACKEND_URL`.
+`https://loc-proxy-xxxxx-el.a.run.app`. **Open that URL in a browser** — it
+serves the LS Verifier web app. It's also the `BACKEND_URL` for the canon
+bookmarklet.
 
 ## Apps Script Properties
 

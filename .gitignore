@@ -4,3 +4,10 @@ __pycache__/
 backend/.venv/
 *.pyc
 verified_output*.xlsx
+
+# runtime artifacts
+*.db
+corrections.db
+canon_session.txt
+*_annotated.xlsx
+*_final.xlsx

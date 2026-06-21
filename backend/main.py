@@ -32,6 +32,11 @@ import sys
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+# Ensure sibling modules (verify_ls, corrections_store) import regardless of
+# whether uvicorn is launched as `main:app` (from backend/) or `backend.main:app`
+# (from the repo root) or inside a container.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from typing import Optional
 from uuid import uuid4
 
@@ -332,9 +337,15 @@ async def verify_upload(
         "created_at":   datetime.now(timezone.utc),
     }
 
-    # results list: make cid a string for JSON safety
+    # results list: stringify cid for JSON safety and expose the
+    # frontend's vocabulary (original / current) alongside the engine's.
     safe_results = [
-        {**r, "cid": str(r["cid"]) if r["cid"] is not None else None}
+        {
+            **r,
+            "cid":      str(r["cid"]) if r["cid"] is not None else None,
+            "original": r.get("orig", ""),
+            "current":  r.get("loc", ""),
+        }
         for r in result["results"]
     ]
 
@@ -475,9 +486,11 @@ def get_canon(req: CanonRequest, x_proxy_secret: str = Header(default="")):
 
 
 # ─── static frontend (must be last — catches everything else) ─────────────────
-_FRONTEND = Path(__file__).parent.parent / "frontend"
-if _FRONTEND.exists():
-    app.mount("/", StaticFiles(directory=str(_FRONTEND), html=True), name="frontend")
+_HERE = Path(__file__).resolve().parent
+for _cand in (_HERE.parent / "frontend", _HERE / "frontend"):
+    if _cand.exists():
+        app.mount("/", StaticFiles(directory=str(_cand), html=True), name="frontend")
+        break
 
 
 if __name__ == "__main__":
