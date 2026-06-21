@@ -8,6 +8,12 @@
     "https://www.googleapis.com/auth/script.container.ui",
     "https://www.googleapis.com/auth/script.external_request"
   ],
+  "urlFetchWhitelist": [
+    "https://*.run.app/",
+    "https://*.trycloudflare.com/",
+    "https://madeye.internal.pocketfm.org/",
+    "https://canon.pocketfm.ai/"
+  ],
   "addOns": {
     "common": {
       "name": "LS Verifier",
