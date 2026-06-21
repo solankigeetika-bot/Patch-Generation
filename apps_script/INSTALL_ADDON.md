@@ -38,6 +38,15 @@ scripts/push-apps-script.sh
 
 The helper injects `BACKEND_URL` and `BAKED_PROXY_SECRET` into a temporary upload
 copy, pushes it with `clasp`, and creates a new Apps Script version.
+To also create a pinned deployment for the new version, add `DEPLOY=1`:
+
+```bash
+SCRIPT_ID=your_apps_script_project_id \
+BACKEND_URL=https://your-cloud-run-url \
+PROXY_SECRET=the_backend_proxy_secret \
+DEPLOY=1 \
+scripts/push-apps-script.sh
+```
 
 Then publish the add-on. Localizers do not set Script Properties and never see a
 Madeye key. Their email is read with `Session.getActiveUser().getEmail()` and

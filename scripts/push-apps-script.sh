@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SCRIPT_ID="${SCRIPT_ID:-}"
 VERSION_DESC="${VERSION_DESC:-LS Verifier update}"
 ENV_FILE="${ENV_FILE:-$ROOT/.env}"
+DEPLOY_DESC="${DEPLOY_DESC:-$VERSION_DESC}"
 
 if [[ -f "$ENV_FILE" ]]; then
   set -a
@@ -92,7 +93,16 @@ fi
 (
   cd "$tmp"
   clasp push --force
-  clasp version "$VERSION_DESC"
+  version_output="$(clasp version "$VERSION_DESC")"
+  echo "$version_output"
+  version_number="$(printf "%s\n" "$version_output" | sed -n 's/.*Created version \([0-9][0-9]*\).*/\1/p' | tail -1)"
+  if [[ "${DEPLOY:-}" == "1" ]]; then
+    if [[ -z "$version_number" ]]; then
+      echo "Could not determine created Apps Script version number." >&2
+      exit 1
+    fi
+    clasp deploy -V "$version_number" -d "$DEPLOY_DESC"
+  fi
 )
 
 echo "Apps Script source pushed and versioned."
