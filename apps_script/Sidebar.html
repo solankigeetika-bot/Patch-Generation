@@ -86,7 +86,7 @@
 <div class="header">
   <div class="logo">⚡</div>
   <div>
-    <div class="title">Localization Verifier</div>
+    <div class="title">LS Verifier</div>
     <div class="subtitle">PocketFM · LSV3 Agent</div>
   </div>
 </div>
@@ -118,23 +118,23 @@
   </div>
 </div>
 
-<!-- ── Section 2: Run Verifier ──────────────────────────────────────── -->
+<!-- ── Section 2: Run Mention Verifier ──────────────────────────────── -->
 <div class="section">
-  <div class="section-header">▶ Run Verifier</div>
+  <div class="section-header">▶ Verify Mention Mappings</div>
   <div class="section-body">
     <button class="btn btn-primary" id="btnVerify" onclick="runVerifier()">
-      Run All Checks
+      Verify Original vs Localized Mentions
     </button>
     <div id="verifyStatus" style="font-size:12px;color:#666;margin-top:8px;display:none;"></div>
     <div class="stats" id="statsRow" style="display:none;">
       <div class="stat"><div class="num" id="statTotal">0</div><div class="label">Issues found</div></div>
-      <div class="stat"><div class="num" id="statRows">0</div><div class="label">Rows checked</div></div>
-      <div class="stat"><div class="num" id="statMM">0</div><div class="label">Mentions</div></div>
+      <div class="stat"><div class="num" id="statRows">0</div><div class="label">Mentions checked</div></div>
+      <div class="stat"><div class="num" id="statMM">0</div><div class="label">Mention rows</div></div>
     </div>
     <div class="results" id="findingsList"></div>
     <button class="btn btn-write" id="btnWrite" onclick="writeBack()"
             style="display:none;">
-      Write Issues to Sheet
+      Write Issues to Mention Mappings
     </button>
     <div id="writeStatus"></div>
   </div>
@@ -192,7 +192,7 @@ function runVerifier() {
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner"></span> Running…';
   status.style.display = 'block';
-  status.textContent = 'Reading sheet…';
+  status.textContent = 'Reading Mention Mappings…';
 
   var src = document.getElementById('srcLang').value;
   var tgt = document.getElementById('tgtLang').value;
@@ -200,7 +200,7 @@ function runVerifier() {
   google.script.run
     .withSuccessHandler(function(result) {
       btn.disabled = false;
-      btn.textContent = 'Run All Checks';
+      btn.textContent = 'Verify Original vs Localized Mentions';
       if (result.error) {
         status.textContent = '⚠ ' + result.error;
         return;
@@ -210,7 +210,7 @@ function runVerifier() {
     })
     .withFailureHandler(function(err) {
       btn.disabled = false;
-      btn.textContent = 'Run All Checks';
+      btn.textContent = 'Verify Original vs Localized Mentions';
       status.textContent = '⚠ Error: ' + err.message;
     })
     .runVerifier(src, tgt);
@@ -255,7 +255,7 @@ function writeBack() {
   google.script.run
     .withSuccessHandler(function(res) {
       btn.disabled = false;
-      btn.textContent = 'Write Issues to Sheet';
+      btn.textContent = 'Write Issues to Mention Mappings';
       var s = document.getElementById('writeStatus');
       if (res.error) {
         s.innerHTML = '<div class="error-msg">' + res.error + '</div>';
@@ -264,7 +264,7 @@ function writeBack() {
                       '✓ ' + res.written + ' row(s) updated.</div>';
       }
     })
-    .writeFindingsToSheet(lastFindings);
+    .writeMentionFindingsToSheet(lastFindings);
 }
 
 // ── chatbot ──────────────────────────────────────────────────────────────────

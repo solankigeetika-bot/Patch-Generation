@@ -1,2 +1,6 @@
 .env
 __pycache__/
+.venv/
+backend/.venv/
+*.pyc
+verified_output*.xlsx

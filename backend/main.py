@@ -16,7 +16,7 @@ Serves the static frontend at / and all API endpoints:
 Environment:
   MADEYE_API_KEY      required
   MADEYE_BASE_URL     required
-  MADEYE_MODEL        optional  default claude-opus-4-8
+  MADEYE_MODEL        optional  default claude-opus-4-7
   MADEYE_USER_EMAIL   required
   PROXY_SECRET        required  (bookmarklet + Apps Script auth)
   CANON_SESSION       optional  canon.pocketfm.ai __session cookie
@@ -50,7 +50,7 @@ load_dotenv()
 # ─── config ───────────────────────────────────────────────────────────────────
 MADEYE_API_KEY    = os.environ.get("MADEYE_API_KEY", "")
 MADEYE_BASE_URL   = os.environ.get("MADEYE_BASE_URL", "")
-MADEYE_MODEL      = os.environ.get("MADEYE_MODEL", "claude-opus-4-8")
+MADEYE_MODEL      = os.environ.get("MADEYE_MODEL", "claude-opus-4-7")
 MADEYE_USER_EMAIL = os.environ.get("MADEYE_USER_EMAIL", "")
 PROXY_SECRET      = os.environ.get("PROXY_SECRET", "")
 CANON_HOST        = "https://canon.pocketfm.ai"
@@ -85,7 +85,7 @@ def _madeye_client() -> OpenAI:
         raise HTTPException(503, "MADEYE_API_KEY not configured.")
     if not MADEYE_BASE_URL:
         raise HTTPException(503, "MADEYE_BASE_URL not configured.")
-    return OpenAI(api_key=MADEYE_API_KEY, base_url=MADEYE_BASE_URL, max_retries=1)
+    return OpenAI(api_key=MADEYE_API_KEY, base_url=MADEYE_BASE_URL, max_retries=1, timeout=60.0)
 
 
 def _ask_madeye(system: str, user: str, max_tokens: int = 1024, user_email: str = "") -> str:
@@ -93,14 +93,16 @@ def _ask_madeye(system: str, user: str, max_tokens: int = 1024, user_email: str 
     if not email:
         raise HTTPException(503, "MADEYE_USER_EMAIL not configured.")
     client = _madeye_client()
-    resp = client.chat.completions.create(
-        model=MADEYE_MODEL,
-        messages=[{"role": "system", "content": system},
-                  {"role": "user",   "content": user}],
-        max_tokens=max_tokens,
-        temperature=0.2,
-        extra_body={"metadata": {"user_email": email}},
-    )
+    req_body: dict = {
+        "model":      MADEYE_MODEL,
+        "messages":   [{"role": "system", "content": system},
+                       {"role": "user",   "content": user}],
+        "max_tokens": max_tokens,
+        "extra_body": {"metadata": {"user_email": email}},
+    }
+    if "opus-4-7" not in MADEYE_MODEL:
+        req_body["temperature"] = 0.2
+    resp = client.chat.completions.create(**req_body)
     return resp.choices[0].message.content or ""
 
 

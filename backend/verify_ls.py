@@ -92,42 +92,56 @@ def ensure_col(ws, label):
 
 
 # ─── workbook loader ───────────────────────────────────────────────────────────
+def sheet_by_keyword(wb, *keywords):
+    for name in wb.sheetnames:
+        low = name.lower()
+        if any(k in low for k in keywords):
+            return wb[name]
+    return None
+
+
 def load(path):
     wb = openpyxl.load_workbook(path, data_only=True)
-    ld = wb["Localization Details"]
-    mm = wb["Mention Mappings"]
-    li = header_index(ld)
+    mm = sheet_by_keyword(wb, "mention mapping", "mention")
+    if mm is None:
+        sys.exit("Workbook must contain a 'Mention Mappings' tab.")
+
+    ld = sheet_by_keyword(wb, "localization detail", "localisation detail", "detail")
     mi = header_index(mm)
 
-    c_id   = pick(li, "ID", "id")
-    c_type = pick(li, "Type", "type")
-    c_orig = pick(li, "Original Name", "original_name", "original name")
-    c_loc  = pick(li, "Localized Name", "localised_name", "localized name", "localised name")
-    c_fno  = pick(li, "First Name (Original)")
-    c_lno  = pick(li, "Last Name (Original)")
-    c_fnl  = pick(li, "First Name (Localized)", "First Name (Localised)")
-    c_lnl  = pick(li, "Last Name (Localized)", "Last Name (Localised)")
-    c_desc = pick(li, "Description", "description")
-
     chars: dict = {}
-    for r in range(2, ld.max_row + 1):
-        cid = ld.cell(r, c_id).value if c_id else None
-        if not cid:
-            continue
-        chars[cid] = {
-            "type": ld.cell(r, c_type).value if c_type else "",
-            "orig": ld.cell(r, c_orig).value if c_orig else "",
-            "loc":  ld.cell(r, c_loc).value if c_loc else "",
-            "of":   norm(ld.cell(r, c_fno).value) if c_fno else "",
-            "ol":   norm(ld.cell(r, c_lno).value) if c_lno else "",
-            "lf":   (ld.cell(r, c_fnl).value or "").strip() if c_fnl else "",
-            "ll":   (ld.cell(r, c_lnl).value or "").strip() if c_lnl else "",
-            "desc": (ld.cell(r, c_desc).value or "") if c_desc else "",
-        }
+    if ld is not None:
+        li = header_index(ld)
+        c_id   = pick(li, "ID", "id")
+        c_type = pick(li, "Type", "type")
+        c_orig = pick(li, "Original Name", "original_name", "original name")
+        c_loc  = pick(li, "Localized Name", "localised_name", "localized name", "localised name")
+        c_fno  = pick(li, "First Name (Original)")
+        c_lno  = pick(li, "Last Name (Original)")
+        c_fnl  = pick(li, "First Name (Localized)", "First Name (Localised)")
+        c_lnl  = pick(li, "Last Name (Localized)", "Last Name (Localised)")
+        c_desc = pick(li, "Description", "description")
+
+        for r in range(2, ld.max_row + 1):
+            cid = ld.cell(r, c_id).value if c_id else None
+            if not cid:
+                continue
+            chars[cid] = {
+                "type": ld.cell(r, c_type).value if c_type else "",
+                "orig": ld.cell(r, c_orig).value if c_orig else "",
+                "loc":  ld.cell(r, c_loc).value if c_loc else "",
+                "of":   norm(ld.cell(r, c_fno).value) if c_fno else "",
+                "ol":   norm(ld.cell(r, c_lno).value) if c_lno else "",
+                "lf":   (ld.cell(r, c_fnl).value or "").strip() if c_fnl else "",
+                "ll":   (ld.cell(r, c_lnl).value or "").strip() if c_lnl else "",
+                "desc": (ld.cell(r, c_desc).value or "") if c_desc else "",
+            }
 
     m_id   = pick(mi, "ID", "id")
     m_orig = pick(mi, "Original Mention", "original_name", "original mention")
     m_loc  = pick(mi, "Localized Mention", "localised_name", "localized mention", "localised mention")
+    if not m_orig:
+        sys.exit("Mention Mappings must contain an 'Original Mention' column.")
 
     mentions = []
     for r in range(2, mm.max_row + 1):
@@ -197,7 +211,7 @@ def _name_parts(c, orig):
 
 
 # ─── Layer 2: Madeye LLM ───────────────────────────────────────────────────────
-MADEYE_MODEL = os.environ.get("MADEYE_MODEL", "claude-opus-4-8")
+MADEYE_MODEL = os.environ.get("MADEYE_MODEL", "claude-opus-4-7")
 MADEYE_USER_EMAIL = os.environ.get("MADEYE_USER_EMAIL", "")
 
 
@@ -211,7 +225,7 @@ def _madeye_client(raise_on_missing: bool = False):
     if not base:
         msg = "MADEYE_BASE_URL not set"
         raise RuntimeError(msg) if raise_on_missing else sys.exit(msg)
-    return OpenAI(api_key=key, base_url=base, max_retries=2)
+    return OpenAI(api_key=key, base_url=base, max_retries=2, timeout=60.0)
 
 
 def llm_character(client, c, items, src, tgt, *, canon_ctx: str = "", user_email: str = ""):
@@ -251,14 +265,16 @@ def llm_character(client, c, items, src, tgt, *, canon_ctx: str = "", user_email
         f'MENTIONS to verify:\n{listing}\n'
     )
     email = user_email or MADEYE_USER_EMAIL
-    resp = client.chat.completions.create(
-        model=MADEYE_MODEL,
-        messages=[{"role": "system", "content": system},
-                  {"role": "user",   "content": user}],
-        max_tokens=2000,
-        temperature=0.1,
-        extra_body={"metadata": {"user_email": email}},
-    )
+    req_body: dict = {
+        "model":      MADEYE_MODEL,
+        "messages":   [{"role": "system", "content": system},
+                       {"role": "user",   "content": user}],
+        "max_tokens": 2000,
+        "extra_body": {"metadata": {"user_email": email}},
+    }
+    if "opus-4-7" not in MADEYE_MODEL:
+        req_body["temperature"] = 0.1
+    resp = client.chat.completions.create(**req_body)
     raw = resp.choices[0].message.content or ""
     m = re.search(r"\{.*\}", raw, re.DOTALL)
     if not m:

@@ -10,7 +10,7 @@
   ],
   "addOns": {
     "common": {
-      "name": "Localization Verifier",
+      "name": "LS Verifier",
       "logoUrl": "https://www.gstatic.com/images/branding/product/2x/sheets_2020q4_48dp.png",
       "homepageTrigger": {
         "runFunction": "openSidebar",
