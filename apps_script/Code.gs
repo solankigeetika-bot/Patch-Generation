@@ -117,6 +117,30 @@ function getTokenStatus() {
   return info;
 }
 
+function getCanonBookmarklet() {
+  var props = PropertiesService.getScriptProperties();
+  var backend = _backendUrl(props).replace(/\/+$/, "");
+  var secret = _proxySecret(props);
+  if (!backend || !secret) {
+    return {
+      ok: false,
+      error: "Set BACKEND_URL and PROXY_SECRET first."
+    };
+  }
+  var endpoint = backend + "/update-canon-session";
+  var code = "javascript:(function(){"
+    + "var W=" + JSON.stringify(endpoint) + ",S=" + JSON.stringify(secret) + ";"
+    + "if(location.hostname.indexOf('canon')<0){alert('Open canon.pocketfm.ai first.');return;}"
+    + "var m=document.cookie.match(/(?:^|;\\s*)__session=([^;]+)/);"
+    + "if(!m){alert('__session is HttpOnly or missing. Use manual canon paste in LS Verifier.');return;}"
+    + "fetch(W,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({secret:S,canon:decodeURIComponent(m[1])})})"
+    + ".then(function(r){return r.json();})"
+    + ".then(function(d){alert(d.message||'Story Canon connected ✓');})"
+    + ".catch(function(e){alert('Failed: '+e);});"
+    + "})();";
+  return { ok: true, bookmarklet: code, backend: backend };
+}
+
 function saveMadeyeKey(token) {
   token = (token || "").trim().replace(/^Bearer\s+/i, "");
   if (!token) return { ok: false, error: "Empty token." };

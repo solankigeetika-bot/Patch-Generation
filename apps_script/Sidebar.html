@@ -87,6 +87,14 @@
   .empty { text-align: center; color: #999; font-size: 12px; padding: 20px 0; }
   .error-msg { background: #fce8e6; color: #d93025; padding: 8px 10px;
                border-radius: 6px; font-size: 12px; margin-top: 8px; }
+  .bookmarklet-link { display:inline-block; padding:7px 10px; border-radius:6px;
+                      background:#1a73e8; color:#fff; text-decoration:none;
+                      font-weight:600; font-size:12px; margin:6px 0; }
+  .bookmarklet-link.disabled { background:#ccc; pointer-events:none; }
+  .bookmarklet-code { width:100%; min-height:58px; padding:7px; border:1px solid #ddd;
+                      border-radius:6px; font-family:Consolas,monospace; font-size:11px;
+                      resize:vertical; }
+  .mini-note { font-size:11px; color:#666; line-height:1.45; margin-top:5px; }
 </style>
 </head>
 <body>
@@ -151,7 +159,27 @@
   </div>
 </div>
 
-<!-- ── Section 3: Ask Questions ─────────────────────────────────────── -->
+<!-- ── Section 3: Connect Story Canon ───────────────────────────────── -->
+<div class="section">
+  <div class="section-header">🔗 Connect Story Canon</div>
+  <div class="section-body">
+    <button class="btn btn-primary" id="btnCanonBookmarklet" onclick="loadCanonBookmarklet()">
+      Build Story Canon Bookmarklet
+    </button>
+    <div id="canonBookmarkletBox" style="display:none;margin-top:8px;">
+      <a id="canonBookmarkletLink" class="bookmarklet-link" href="#">Connect Story Canon</a>
+      <textarea id="canonBookmarkletCode" class="bookmarklet-code" readonly></textarea>
+      <button class="btn btn-write" onclick="copyCanonBookmarklet()">Copy Bookmarklet</button>
+      <div class="mini-note">
+        Drag the blue link to your bookmarks bar, or copy the code into a bookmark URL.
+        Then open canon.pocketfm.ai and click it.
+      </div>
+      <div id="canonBookmarkletStatus" class="mini-note"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Section 4: Ask Questions ─────────────────────────────────────── -->
 <div class="section">
   <div class="section-header">💬 Ask About Characters / Entities</div>
   <div class="section-body">
@@ -286,6 +314,46 @@ function writeBack() {
       }
     })
     .writeMentionFindingsToSheet(lastFindings);
+}
+
+function loadCanonBookmarklet() {
+  var btn = document.getElementById('btnCanonBookmarklet');
+  var status = document.getElementById('canonBookmarkletStatus');
+  btn.disabled = true;
+  btn.textContent = 'Building…';
+  google.script.run
+    .withSuccessHandler(function(res) {
+      btn.disabled = false;
+      btn.textContent = 'Build Story Canon Bookmarklet';
+      var box = document.getElementById('canonBookmarkletBox');
+      box.style.display = 'block';
+      if (!res || !res.ok) {
+        status.textContent = '⚠ ' + ((res && res.error) || 'Could not build bookmarklet.');
+        return;
+      }
+      document.getElementById('canonBookmarkletLink').href = res.bookmarklet;
+      document.getElementById('canonBookmarkletCode').value = res.bookmarklet;
+      status.textContent = 'Ready. Drag the blue link to bookmarks bar.';
+    })
+    .withFailureHandler(function(err) {
+      btn.disabled = false;
+      btn.textContent = 'Build Story Canon Bookmarklet';
+      status.textContent = '⚠ Error: ' + err.message;
+    })
+    .getCanonBookmarklet();
+}
+
+function copyCanonBookmarklet() {
+  var code = document.getElementById('canonBookmarkletCode');
+  var status = document.getElementById('canonBookmarkletStatus');
+  code.focus();
+  code.select();
+  try {
+    document.execCommand('copy');
+    status.textContent = 'Copied. Create a bookmark and paste it as the URL.';
+  } catch(e) {
+    status.textContent = 'Select the code and copy it manually.';
+  }
 }
 
 // ── chatbot ──────────────────────────────────────────────────────────────────
