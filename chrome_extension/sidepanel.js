@@ -47,12 +47,12 @@ document.addEventListener("DOMContentLoaded", async () => {
 
 async function getSettings() {
   return new Promise((resolve) => {
-    chrome.storage.sync.get(DEFAULTS, resolve);
+    chrome.storage.local.get(DEFAULTS, resolve);
   });
 }
 
 async function setSettings(next) {
-  return new Promise((resolve) => chrome.storage.sync.set(next, resolve));
+  return new Promise((resolve) => chrome.storage.local.set(next, resolve));
 }
 
 async function saveSettingsFromUi() {

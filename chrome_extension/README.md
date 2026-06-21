@@ -23,6 +23,8 @@ the browser.
 - It does not store `MADEYE_API_KEY`.
 - It does not call Madeye directly.
 - It still needs a backend that can reach Madeye.
+- It stores the backend URL/proxy secret in Chrome local extension storage on
+  the current machine, not synced browser storage.
 
 ## Local install for testing
 
