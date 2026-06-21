@@ -48,3 +48,24 @@ curl -fsS -X POST "${BASE_URL}/chat" \
 }
 JSON
 echo
+
+echo "4) /verify-mentions (no LLM smoke test)"
+curl -fsS -X POST "${BASE_URL}/verify-mentions" \
+  -H "Content-Type: application/json" \
+  -H "X-Proxy-Secret: ${proxy_secret}" \
+  --data @- <<JSON
+{
+  "ld": [
+    {"ID": "1", "Type": "Character", "Original Name": "Alice Miller", "Localized Name": "Alicia Barnier"}
+  ],
+  "mm": [
+    {"ID": "1", "Original Mention": "Alice", "Localized Mention": "Alice"},
+    {"ID": "1", "Original Mention": "Mr Alice", "Localized Mention": "Monsieur Alicia"}
+  ],
+  "source_lang": "en",
+  "target_lang": "fr",
+  "user_email": "${USER_EMAIL}",
+  "run_llm": false
+}
+JSON
+echo

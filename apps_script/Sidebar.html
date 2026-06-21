@@ -43,6 +43,14 @@
   .finding.SAME_FIRST_NAME_COLLISION { background: #fef7e0; border-left: 3px solid #f9ab00; }
   .finding.SAME_LAST_NAME_COLLISION { background: #fef7e0; border-left: 3px solid #f9ab00; }
   .finding.CROSS_CHARACTER_INCONSISTENCY { background: #e8f0fe; border-left: 3px solid #1a73e8; }
+  .finding.CROSS_MENTION_INCONSISTENCY { background: #e8f0fe; border-left: 3px solid #1a73e8; }
+  .finding.MENTION_MASTER_MISMATCH { background: #fff7ed; border-left: 3px solid #f97316; }
+  .finding.FAMILY_SURNAME_MISMATCH { background: #fff7ed; border-left: 3px solid #f97316; }
+  .finding.CHARACTER_CONTEXT_MISMATCH { background: #f3e8fd; border-left: 3px solid #9334e6; }
+  .finding.ENTITY_COMPONENT_INCONSISTENCY { background: #f3e8fd; border-left: 3px solid #9334e6; }
+  .finding.STRUCTURAL_INCONSISTENCY { background: #f3e8fd; border-left: 3px solid #9334e6; }
+  .finding.TARGET_CULTURE_MISMATCH { background: #f3e8fd; border-left: 3px solid #9334e6; }
+  .finding.REGISTER_MISMATCH { background: #f3e8fd; border-left: 3px solid #9334e6; }
   .finding.CULTURAL_CONTEXT_INAPPROPRIATE { background: #f3e8fd; border-left: 3px solid #9334e6; }
   .kind { font-weight: 700; font-size: 11px; }
   .row-tag { float: right; font-size: 10px; color: #888; }
@@ -206,7 +214,7 @@ function runVerifier() {
         return;
       }
       lastFindings = result.findings || [];
-      renderFindings(lastFindings, result.rowCount, result.mmCount);
+      renderFindings(lastFindings, result.rowCount, result.mmCount, result.warning, result.canon, result.llm);
     })
     .withFailureHandler(function(err) {
       btn.disabled = false;
@@ -216,7 +224,7 @@ function runVerifier() {
     .runVerifier(src, tgt);
 }
 
-function renderFindings(findings, rowCount, mmCount) {
+function renderFindings(findings, rowCount, mmCount, warning, canon, llm) {
   var status = document.getElementById('verifyStatus');
   var list   = document.getElementById('findingsList');
   var stats  = document.getElementById('statsRow');
@@ -228,13 +236,13 @@ function renderFindings(findings, rowCount, mmCount) {
   stats.style.display = 'flex';
 
   if (findings.length === 0) {
-    status.textContent = '✓ No issues found.';
+    status.textContent = '✓ No issues found.' + renderRunNote(warning, canon, llm);
     list.innerHTML = '<div class="empty">All checks passed.</div>';
     btnW.style.display = 'none';
     return;
   }
 
-  status.textContent = findings.length + ' issue(s) found.';
+  status.textContent = findings.length + ' issue(s) found.' + renderRunNote(warning, canon, llm);
   btnW.style.display = 'block';
 
   list.innerHTML = findings.map(function(f) {
@@ -246,6 +254,16 @@ function renderFindings(findings, rowCount, mmCount) {
            '<span class="row-tag">' + rowLabel + '</span><br>' +
            f.detail + sugg + '</div>';
   }).join('');
+}
+
+function renderRunNote(warning, canon, llm) {
+  var bits = [];
+  if (canon && canon.slug) {
+    bits.push(canon.available ? ('Canon on: ' + canon.characters + ' chars') : 'Canon unavailable');
+  }
+  if (llm && llm.ran === false) bits.push('LLM not needed/skipped');
+  if (warning) bits.push(warning);
+  return bits.length ? ' · ' + bits.join(' · ') : '';
 }
 
 function writeBack() {

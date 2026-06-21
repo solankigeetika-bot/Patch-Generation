@@ -17,8 +17,10 @@ Usage (CLI):
 Env (for --llm):
     MADEYE_API_KEY     required
     MADEYE_BASE_URL    required
-    MADEYE_MODEL       optional  (default claude-opus-4-8)
+    MADEYE_MODEL       optional  (default claude-opus-4-7)
     MADEYE_USER_EMAIL  required  (Madeye needs metadata.user_email)
+    CANON_SESSION      optional  canon.pocketfm.ai __session cookie for --show-slug
+    CANON_HOST         optional  defaults to https://canon.pocketfm.ai
 """
 from __future__ import annotations
 
@@ -32,6 +34,11 @@ from collections import defaultdict
 
 import openpyxl
 from openpyxl.styles import Font, PatternFill
+
+try:
+    from canon_client import CanonGraph
+except Exception:  # pragma: no cover - CLI still works without canon_client.
+    CanonGraph = None
 
 try:
     from dotenv import load_dotenv
@@ -213,6 +220,52 @@ def _name_parts(c, orig):
 # ─── Layer 2: Madeye LLM ───────────────────────────────────────────────────────
 MADEYE_MODEL = os.environ.get("MADEYE_MODEL", "claude-opus-4-7")
 MADEYE_USER_EMAIL = os.environ.get("MADEYE_USER_EMAIL", "")
+CANON_HOST = os.environ.get("CANON_HOST", "https://canon.pocketfm.ai").rstrip("/")
+
+
+def fetch_canon_context(slug: str) -> str:
+    if not slug:
+        return ""
+    if CanonGraph is None:
+        print("Story Canon skipped: canon_client.py could not be imported.", flush=True)
+        return ""
+    session = os.environ.get("CANON_SESSION", "")
+    if not session:
+        print("Story Canon skipped: CANON_SESSION is not set.", flush=True)
+        return ""
+    try:
+        graph = CanonGraph.from_web(slug, session_cookie=session, host=CANON_HOST)
+    except Exception as e:
+        print(f"Story Canon skipped: {type(e).__name__}: {str(e)[:160]}", flush=True)
+        return ""
+
+    lines = [
+        f"Show: {graph.show_title or slug}",
+        f"Source language: {graph.source_lang}",
+    ]
+    if graph.families:
+        fam_bits = []
+        for family, members in sorted(graph.families.items())[:30]:
+            fam_bits.append(f"{family}: {', '.join(members[:10])}")
+        lines.append("Families: " + " | ".join(fam_bits))
+    for c in list(graph.characters.values())[:80]:
+        line = f"- {c.name}"
+        if c.aliases:
+            line += f" (aka {', '.join(c.aliases[:4])})"
+        if c.family:
+            line += f" | family: {c.family}"
+        if c.relationships:
+            rels = []
+            for rel in c.relationships[:5]:
+                rels.append(f"{rel.get('type') or 'related'}:{rel.get('name')}")
+            line += f" | relationships: {', '.join(rels)}"
+        if c.description:
+            line += f" | {c.description[:220]}"
+        lines.append(line)
+    print(f"Story Canon loaded: {graph.show_title or slug} "
+          f"({len(graph.characters)} characters, {len(graph.families)} families).",
+          flush=True)
+    return "\n".join(lines)
 
 
 def _madeye_client(raise_on_missing: bool = False):
@@ -427,6 +480,7 @@ def main():
     ap.add_argument("--llm", action="store_true", help="run LLM layer (needs MADEYE_API_KEY)")
     ap.add_argument("--src", default="de/en")
     ap.add_argument("--tgt", default="fr")
+    ap.add_argument("--show-slug", default="", help="Story Canon slug, e.g. twists-of-love-revenge")
     args = ap.parse_args()
 
     corrections_lookup: dict = {}
@@ -441,12 +495,15 @@ def main():
     if args.llm and not os.environ.get("MADEYE_USER_EMAIL"):
         sys.exit("MADEYE_USER_EMAIL not set — Madeye requires metadata.user_email.")
 
+    canon_ctx = fetch_canon_context(args.show_slug) if args.llm else ""
+
     result = run_verification(
         args.input, args.output,
         use_llm=args.llm,
         src=args.src,
         tgt=args.tgt,
         corrections_lookup=corrections_lookup,
+        canon_ctx=canon_ctx,
         user_email=os.environ.get("MADEYE_USER_EMAIL", ""),
     )
 

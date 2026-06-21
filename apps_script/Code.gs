@@ -367,7 +367,54 @@ function runDetailsVerifier(sourceLang, targetLang) {
 // Primary localizer workflow: verify Original Mention vs Localized Mention in
 // the Mention Mappings tab. Kept as runVerifier() because the sidebar calls it.
 function runVerifier(sourceLang, targetLang) {
-  return verifyMentions(sourceLang, targetLang);
+  return verifyMentionsAgent(sourceLang, targetLang);
+}
+
+// Backend agent path: deterministic checks + Story Canon + Madeye reasoning.
+// Falls back to local deterministic checks when no backend URL is configured.
+function verifyMentionsAgent(sourceLang, targetLang) {
+  var props = PropertiesService.getScriptProperties();
+  var proxyUrl = _backendUrl(props);
+  if (!proxyUrl) return verifyMentions(sourceLang, targetLang);
+
+  var data = getSheetData();
+  if (data.error) return { error: data.error };
+
+  var url = proxyUrl.replace(/\/+$/, "") + "/verify-mentions";
+  var payload = {
+    ld: data.ld || [],
+    mm: data.mm || [],
+    source_lang: sourceLang || "en",
+    target_lang: targetLang || "fr",
+    show_slug: props.getProperty(SHOW_SLUG_PROP) || "",
+    user_email: _activeUserEmail(props),
+    run_llm: true
+  };
+  var options = {
+    method: "post",
+    contentType: "application/json",
+    headers: { "X-Proxy-Secret": _proxySecret(props) },
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true
+  };
+
+  try {
+    var response = UrlFetchApp.fetch(url, options);
+    var code = response.getResponseCode();
+    var text = response.getContentText();
+    var json = {};
+    try { json = JSON.parse(text); }
+    catch(e) { return { error: "Backend agent returned non-JSON: " + text.substring(0, 200) }; }
+    if (code !== 200) {
+      return { error: "Backend agent error (" + code + "): " + (json.detail || json.error || text) };
+    }
+    json.rowCount = json.rowCount || (data.mm || []).length;
+    json.mmCount = json.mmCount || (data.mm || []).length;
+    json.sourceTab = "Mention Mappings";
+    return json;
+  } catch(e) {
+    return { error: "Backend agent error: " + e.message };
+  }
 }
 
 // ─── Mention Mappings verifier ────────────────────────────────────────────────
@@ -459,19 +506,32 @@ function verifyMentions(sourceLang, targetLang) {
 // Severity weights: MISSING/SOURCE_NOT_LOCALIZED = -100, COLLISION = -40,
 //   INCONSISTENCY = -30, CULTURAL = -20, LLM_UNCONFIRMED = -15.
 function _confidenceScore(rowFindings) {
+  var explicit = null;
   var penalty = 0;
   var WEIGHTS = {
     "MISSING_LOCALISATION": 100,
     "SOURCE_NAME_NOT_LOCALIZED": 100,
+    "MENTION_MASTER_MISMATCH": 30,
+    "FAMILY_SURNAME_MISMATCH": 45,
+    "CHARACTER_CONTEXT_MISMATCH": 35,
+    "ENTITY_COMPONENT_INCONSISTENCY": 30,
+    "STRUCTURAL_INCONSISTENCY": 25,
+    "TARGET_CULTURE_MISMATCH": 25,
+    "REGISTER_MISMATCH": 20,
     "SAME_FIRST_NAME_COLLISION": 40,
     "SAME_LAST_NAME_COLLISION": 40,
     "CROSS_CHARACTER_INCONSISTENCY": 30,
+    "CROSS_MENTION_INCONSISTENCY": 30,
     "CULTURAL_CONTEXT_INAPPROPRIATE": 20,
     "LLM_UNCONFIRMED": 15
   };
   rowFindings.forEach(function(f) {
+    if (typeof f.confidence === "number") {
+      explicit = explicit === null ? f.confidence : Math.min(explicit, f.confidence);
+    }
     penalty += (WEIGHTS[f.kind] || 20);
   });
+  if (explicit !== null) return Math.max(0, Math.min(100, explicit));
   return Math.max(0, 100 - penalty);
 }
 
@@ -643,7 +703,7 @@ function verifyAndWriteDetails() {
 }
 
 function verifyAndWriteMentions() {
-  var res = verifyMentions("en", "fr");
+  var res = runVerifier("en", "fr");
   if (res.error) { Logger.log("ERROR: " + res.error); return res; }
   var out = writeMentionFindingsToSheet(res.findings);
   Logger.log("Mention Mappings: " + res.findings.length + " findings across "
