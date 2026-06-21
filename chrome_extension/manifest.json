@@ -3,6 +3,7 @@
   "name": "LS Verifier Agent",
   "description": "PocketFM LS verifier for Google Sheets and Story Canon.",
   "version": "0.1.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAzQN4VkmlhWlP31fnNwQesaef7Q26pTMO5YUWpwJhRJ2y7gV1tzCkERX2M97LXV4CsPW+QVGtQ4zDui+VR2PJM3bwLoMIHLga+eRLyUEnu3WFyJ8LyAHr2Y/jhUJ/BQ9TDNKmlw3uA0Fn+L9PA8wXZMmYS6obS4IYomk9wIhyMUsoRcniR/HbXQr/TmPPrSCKScmx38vvSr8Ca+EpsYqxZFAkCvtwkt3DTWhT9AIEsAmcwbEwvG7THy8RPjnRTUEfwkQcBAplKAHabd1goOSjwAKt31pl+HWxxbKMXMAHYa3Y9JVSN2zmkuUMiAwv8jgB8zp43a2CxGpYtFt13jpN4QIDAQAB",
   "action": {
     "default_title": "LS Verifier"
   },
@@ -29,7 +30,7 @@
     "http://127.0.0.1/*"
   ],
   "oauth2": {
-    "client_id": "PASTE_CHROME_EXTENSION_OAUTH_CLIENT_ID.apps.googleusercontent.com",
+    "client_id": "32076645715-ppnpquqaslefjrut3dsb55l36uvmcfjq.apps.googleusercontent.com",
     "scopes": [
       "openid",
       "email",
