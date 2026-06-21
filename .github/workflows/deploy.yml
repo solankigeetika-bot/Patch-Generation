@@ -1,0 +1,49 @@
+name: Deploy to Cloud Run
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: Build & Deploy
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy loc-proxy \
+            --project="${{ secrets.GCP_PROJECT_ID }}" \
+            --source . \
+            --region asia-south1 \
+            --allow-unauthenticated \
+            --set-env-vars "MADEYE_BASE_URL=${{ secrets.MADEYE_BASE_URL }}" \
+            --set-env-vars "MADEYE_MODEL=claude-opus-4-7" \
+            --set-env-vars "MADEYE_API_KEY=${{ secrets.MADEYE_API_KEY }}" \
+            --set-env-vars "MADEYE_USER_EMAIL=${{ secrets.MADEYE_USER_EMAIL }}" \
+            --set-env-vars "PROXY_SECRET=${{ secrets.PROXY_SECRET }}" \
+            --set-env-vars "CANON_SESSION=${{ secrets.CANON_SESSION }}"
+
+      - name: Print service URL
+        run: |
+          URL=$(gcloud run services describe loc-proxy \
+            --project="${{ secrets.GCP_PROJECT_ID }}" \
+            --region asia-south1 \
+            --format "value(status.url)")
+          echo "### Deployed ✓" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**URL:** $URL" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Open $URL in a browser to use the LS Verifier." >> "$GITHUB_STEP_SUMMARY"

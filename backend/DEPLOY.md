@@ -1,8 +1,6 @@
-# Deploy The LS Verifier Proxy (Madeye)
+# Deploy The LS Verifier
 
-The proxy holds one Madeye credential server-side. Google Sheets calls this
-proxy with a shared `PROXY_SECRET`, and the proxy calls Madeye with
-`metadata.user_email` so individual usage is attributed correctly.
+The backend holds all credentials server-side. Localizers open the web app URL — no login, no per-user setup, nothing to install.
 
 ## Required Env Vars
 
@@ -12,32 +10,86 @@ proxy with a shared `PROXY_SECRET`, and the proxy calls Madeye with
 | `MADEYE_BASE_URL` | Madeye base URL from Secrets Manager |
 | `MADEYE_MODEL` | `claude-opus-4-7` for the current Geetika/localizer key |
 | `MADEYE_USER_EMAIL` | fallback `@pocketfm.com` email for `metadata.user_email` |
-| `PROXY_SECRET` | long random string; also put this in Apps Script properties |
-| `CANON_SESSION` | optional canon.pocketfm.ai `__session` cookie |
+| `PROXY_SECRET` | long random string; also bake into the canon bookmarklet |
+| `CANON_SESSION` | optional — canon bookmarklet keeps this fresh at runtime |
 
-## Local Test
+---
+
+## Auto-deploy via GitHub Actions (recommended)
+
+Push to `main` → the workflow in `.github/workflows/deploy.yml` builds and deploys automatically. The Cloud Run URL appears in the Actions job summary.
+
+### One-time setup (5 min)
+
+**1. Create a GCP service account**
+
+```bash
+gcloud iam service-accounts create github-deployer \
+  --display-name "GitHub Actions deployer"
+
+SA="github-deployer@YOUR_PROJECT.iam.gserviceaccount.com"
+
+# Roles needed: build the image, deploy the service, write to GCS
+gcloud projects add-iam-policy-binding YOUR_PROJECT \
+  --member="serviceAccount:$SA" --role="roles/run.admin"
+gcloud projects add-iam-policy-binding YOUR_PROJECT \
+  --member="serviceAccount:$SA" --role="roles/cloudbuild.builds.editor"
+gcloud projects add-iam-policy-binding YOUR_PROJECT \
+  --member="serviceAccount:$SA" --role="roles/storage.admin"
+gcloud projects add-iam-policy-binding YOUR_PROJECT \
+  --member="serviceAccount:$SA" --role="roles/iam.serviceAccountUser"
+
+# Download the JSON key
+gcloud iam service-accounts keys create sa-key.json --iam-account="$SA"
+```
+
+**2. Add GitHub Secrets**
+
+In the repo: **Settings → Secrets and variables → Actions → New repository secret**
+
+| Secret | Value |
+|--------|-------|
+| `GCP_SA_KEY` | contents of `sa-key.json` (the entire JSON) |
+| `GCP_PROJECT_ID` | your GCP project ID (e.g. `pocketfm-prod`) |
+| `MADEYE_API_KEY` | from AWS Secrets Manager |
+| `MADEYE_BASE_URL` | from AWS Secrets Manager |
+| `MADEYE_USER_EMAIL` | `solanki.geetika@pocketfm.com` |
+| `PROXY_SECRET` | any long random string |
+| `CANON_SESSION` | leave blank — bookmarklet updates this at runtime |
+
+After adding, **delete `sa-key.json`** from your machine.
+
+**3. Merge to main**
+
+The deploy job runs automatically on every push to `main`. Check the **Actions tab** for the job summary which prints the live URL.
+
+You can also trigger a deploy manually: Actions → "Deploy to Cloud Run" → Run workflow.
+
+---
+
+## Local test
 
 ```bash
 cd backend
-python3 -m venv .venv
-source .venv/bin/activate
+python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
 # fill .env with real Madeye values
 uvicorn main:app --host 0.0.0.0 --port 8000
-curl http://localhost:8000/health
 ```
 
-Expected health shape:
+Open http://localhost:8000 — the full web app loads. Layer 1 (deterministic) works without credentials. LLM and canon require the network + real keys.
 
+Expected health:
 ```json
 {"status":"ok","madeye":true,"user_email":true,"canon_session":false}
 ```
 
-## Cloud Run
+---
 
-Run from the **repo root** (the `Dockerfile` there copies both `backend/` and
-the `frontend/` it serves):
+## Manual Cloud Run deploy (if not using Actions)
+
+From the **repo root**:
 
 ```bash
 gcloud run deploy loc-proxy \
@@ -48,24 +100,7 @@ gcloud run deploy loc-proxy \
   --set-env-vars MADEYE_MODEL=claude-opus-4-7 \
   --set-env-vars MADEYE_API_KEY=PASTE_MADEYE_API_KEY \
   --set-env-vars MADEYE_USER_EMAIL=your.name@pocketfm.com \
-  --set-env-vars PROXY_SECRET=PASTE_PROXY_SECRET \
-  --set-env-vars CANON_SESSION=PASTE_CANON_COOKIE
+  --set-env-vars PROXY_SECRET=PASTE_PROXY_SECRET
 ```
 
-Cloud Run prints a service URL like
-`https://loc-proxy-xxxxx-el.a.run.app`. **Open that URL in a browser** — it
-serves the LS Verifier web app. It's also the `BACKEND_URL` for the canon
-bookmarklet.
-
-## Apps Script Properties
-
-In the Apps Script project, set:
-
-| Property | Value |
-|---|---|
-| `BACKEND_URL` | Cloud Run service URL |
-| `PROXY_SECRET` | same secret as the proxy |
-| `SHOW_SLUG` | optional canon slug, e.g. `twists-of-love-revenge` |
-| `MADEYE_USER_EMAIL` | optional fallback if active user email is blank |
-
-When `PROXY_URL` is set, no Madeye key is stored in Apps Script.
+The service URL (e.g. `https://loc-proxy-xxxxx-el.a.run.app`) is also the `BACKEND_URL` for the canon bookmarklet in `apps_script/canon_bookmarklet.md`.
