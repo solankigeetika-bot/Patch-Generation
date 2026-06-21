@@ -206,7 +206,14 @@ async function loadActiveSheet() {
 
 async function jsonOrThrow(resp) {
   const text = await resp.text();
-  const json = text ? JSON.parse(text) : {};
+  let json = {};
+  if (text) {
+    try {
+      json = JSON.parse(text);
+    } catch {
+      json = { error: text };
+    }
+  }
   if (!resp.ok) {
     throw new Error(json.error?.message || json.detail || json.error || resp.statusText);
   }
