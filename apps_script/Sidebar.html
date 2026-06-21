@@ -163,18 +163,18 @@
 <div class="section">
   <div class="section-header">🔗 Connect Story Canon</div>
   <div class="section-body">
-    <button class="btn btn-primary" id="btnCanonBookmarklet" onclick="loadCanonBookmarklet()">
-      Build Story Canon Bookmarklet
+    <a id="canonBookmarkletLink" class="bookmarklet-link disabled" href="#">Loading…</a>
+    <button class="btn btn-write" id="btnCanonBookmarklet" onclick="loadCanonBookmarklet()">
+      Refresh Link
     </button>
-    <div id="canonBookmarkletBox" style="display:none;margin-top:8px;">
-      <a id="canonBookmarkletLink" class="bookmarklet-link" href="#">Connect Story Canon</a>
+    <div id="canonBookmarkletBox" style="margin-top:8px;">
       <textarea id="canonBookmarkletCode" class="bookmarklet-code" readonly></textarea>
       <button class="btn btn-write" onclick="copyCanonBookmarklet()">Copy Bookmarklet</button>
       <div class="mini-note">
-        Drag the blue link to your bookmarks bar, or copy the code into a bookmark URL.
-        Then open canon.pocketfm.ai and click it.
+        Drag the blue “Connect Story Canon” link to your bookmarks bar.
+        Then open canon.pocketfm.ai and click that bookmark.
       </div>
-      <div id="canonBookmarkletStatus" class="mini-note"></div>
+      <div id="canonBookmarkletStatus" class="mini-note">Preparing bookmarklet…</div>
     </div>
   </div>
 </div>
@@ -199,6 +199,8 @@ var lastFindings = [];
 
 // ── language detection from sheet name ──────────────────────────────────────
 window.onload = function() {
+  loadCanonBookmarklet();
+
   google.script.run
     .withSuccessHandler(function(info) {
       if (info && info.sheetName) {
@@ -319,25 +321,29 @@ function writeBack() {
 function loadCanonBookmarklet() {
   var btn = document.getElementById('btnCanonBookmarklet');
   var status = document.getElementById('canonBookmarkletStatus');
-  btn.disabled = true;
-  btn.textContent = 'Building…';
+  var link = document.getElementById('canonBookmarkletLink');
+  if (btn) btn.disabled = true;
+  status.textContent = 'Preparing bookmarklet…';
+  link.textContent = 'Loading…';
+  link.href = '#';
+  link.classList.add('disabled');
   google.script.run
     .withSuccessHandler(function(res) {
-      btn.disabled = false;
-      btn.textContent = 'Build Story Canon Bookmarklet';
-      var box = document.getElementById('canonBookmarkletBox');
-      box.style.display = 'block';
+      if (btn) btn.disabled = false;
       if (!res || !res.ok) {
         status.textContent = '⚠ ' + ((res && res.error) || 'Could not build bookmarklet.');
+        link.textContent = 'Connect Story Canon';
         return;
       }
-      document.getElementById('canonBookmarkletLink').href = res.bookmarklet;
+      link.href = res.bookmarklet;
+      link.textContent = 'Connect Story Canon';
+      link.classList.remove('disabled');
       document.getElementById('canonBookmarkletCode').value = res.bookmarklet;
-      status.textContent = 'Ready. Drag the blue link to bookmarks bar.';
+      status.textContent = 'Ready. Drag the blue link to your bookmarks bar.';
     })
     .withFailureHandler(function(err) {
-      btn.disabled = false;
-      btn.textContent = 'Build Story Canon Bookmarklet';
+      if (btn) btn.disabled = false;
+      link.textContent = 'Connect Story Canon';
       status.textContent = '⚠ Error: ' + err.message;
     })
     .getCanonBookmarklet();
