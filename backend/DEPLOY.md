@@ -2,6 +2,13 @@
 
 The backend holds all credentials server-side. Localizers open the web app URL — no login, no per-user setup, nothing to install.
 
+Important: the deployed runtime must be able to reach `MADEYE_BASE_URL`. For
+the current PocketFM Madeye URL (`https://madeye.internal.pocketfm.org`), this
+means the backend must run in-network or in infrastructure allowed to call that
+internal host. A public serverless host can serve `/health` while still failing
+the real Opus path if it cannot reach Madeye. Always verify `/madeye-ping`
+before baking a URL into Apps Script.
+
 ## Required Env Vars
 
 | Env var | Value |
@@ -125,3 +132,28 @@ gcloud run deploy loc-proxy \
 ```
 
 The service URL (e.g. `https://loc-proxy-xxxxx-el.a.run.app`) is also the `BACKEND_URL` for the canon bookmarklet in `apps_script/canon_bookmarklet.md`.
+
+---
+
+## Vercel fallback
+
+Vercel can host the FastAPI app with the root `main.py` entrypoint:
+
+```bash
+scripts/deploy-vercel.sh
+```
+
+This creates/uses the stable alias:
+
+```text
+https://ls-verifier.vercel.app
+```
+
+Do **not** use this URL for the published Sheets add-on unless this check passes:
+
+```bash
+curl "https://ls-verifier.vercel.app/madeye-ping?user_email=solanki.geetika@pocketfm.com"
+```
+
+If it returns `{"ok":false,"error":"Request timed out."}`, the host cannot
+reach internal Madeye and is only useful for deterministic endpoints.

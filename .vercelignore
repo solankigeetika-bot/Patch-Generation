@@ -1,0 +1,13 @@
+.git
+.env
+backend/.venv
+__pycache__
+*.pyc
+*.xlsx
+*.db
+corrections.db
+canon_session.txt
+canon_snapshot.json
+*_annotated.xlsx
+*_final.xlsx
+node_modules

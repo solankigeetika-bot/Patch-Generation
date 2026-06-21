@@ -10,6 +10,7 @@
   ],
   "urlFetchWhitelist": [
     "https://*.run.app/",
+    "https://*.vercel.app/",
     "https://*.trycloudflare.com/",
     "https://madeye.internal.pocketfm.org/",
     "https://canon.pocketfm.ai/"
