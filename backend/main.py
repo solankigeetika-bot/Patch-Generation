@@ -440,6 +440,10 @@ def _last_token(s: str) -> str:
     return parts[-1] if parts else ""
 
 
+def _tokens(s: str) -> list[str]:
+    return re.findall(r"[\wÀ-ÿ'-]+", s or "")
+
+
 def _replace_last_token(text: str, old: str, new: str) -> str:
     if not text or not old or not new:
         return text
@@ -461,11 +465,30 @@ def _dictionary_pairs(ld_rows: list[dict]) -> list[tuple[str, str]]:
     return pairs
 
 
-def _expected_localized(orig_mention: str, pairs: list[tuple[str, str]]) -> str:
+def _localized_title_patterns(target_lang: str) -> list[tuple[str, str]]:
+    if _target_lang_key(target_lang) != "fr":
+        return []
+    return [
+        (r"(?<!\w)mr\.?(?!\w)|\bmister\b|\bherr\b", "Monsieur"),
+        (r"(?<!\w)mrs\.?(?!\w)|(?<!\w)ms\.?(?!\w)|\bfrau\b", "Madame"),
+        (r"\bmiss\b", "Mademoiselle"),
+        (r"(?<!\w)dr\.?(?!\w)|\bdoctor\b", "Docteur"),
+    ]
+
+
+def _localize_source_titles(text: str, target_lang: str) -> str:
+    out = text or ""
+    for pattern, replacement in _localized_title_patterns(target_lang):
+        out = re.sub(pattern, replacement, out, flags=re.I)
+    return out
+
+
+def _expected_localized(orig_mention: str, pairs: list[tuple[str, str]],
+                        target_lang: str = "") -> str:
     out = orig_mention or ""
     for orig, loc in pairs:
         out = re.sub(r"\b" + _escape_re(orig) + r"\b", loc, out, flags=re.I)
-    return out
+    return _localize_source_titles(out, target_lang)
 
 
 def _ld_indexes(ld_rows: list[dict], graph) -> dict:
@@ -552,7 +575,10 @@ def _base_mention_findings(ld_rows: list[dict], mm_rows: list[dict], graph,
         if not orig:
             continue
 
-        expected = _expected_localized(orig, pairs)
+        expected_without_titles = _expected_localized(orig, pairs)
+        expected = _localize_source_titles(expected_without_titles, target_lang)
+        has_dictionary_replacement = _norm_text(expected_without_titles) != _norm_text(orig)
+        has_expected_change = _norm_text(expected) != _norm_text(orig)
         if include_mechanical and not loc:
             findings.append({
                 "tab": "Mention Mappings", "row": row_num,
@@ -562,14 +588,14 @@ def _base_mention_findings(ld_rows: list[dict], mm_rows: list[dict], graph,
             })
             continue
 
-        if include_mechanical and _norm_text(orig) == _norm_text(loc) and _norm_text(expected) != _norm_text(orig):
+        if include_mechanical and _norm_text(orig) == _norm_text(loc) and has_expected_change:
             findings.append({
                 "tab": "Mention Mappings", "row": row_num,
                 "kind": "SOURCE_NAME_NOT_LOCALIZED",
                 "detail": f"'{loc}' is unchanged from source.",
                 "suggestion": expected, "confidence": 0, "source": "deterministic",
             })
-        elif include_mechanical and _norm_text(expected) != _norm_text(orig) and _norm_text(loc) != _norm_text(expected):
+        elif include_mechanical and has_dictionary_replacement and _norm_text(loc) != _norm_text(expected):
             findings.append({
                 "tab": "Mention Mappings", "row": row_num,
                 "kind": "MENTION_MASTER_MISMATCH",
@@ -737,6 +763,34 @@ def _add_target_culture_finding(findings: list[dict], row_num: int, row: dict,
         return
     original = _cell(row, ["Original Mention", "original mention", "original_mention"])
     english = _cell(row, ["English Translated Mention", "english translated mention"])
+    if _target_lang_key(target_lang) == "fr":
+        canonical = _cell(row, ["Canonical Name", "canonical name", "canonical_name"])
+        loc_tokens = _tokens(loc)
+        english_tokens = _tokens(english)
+        canonical_first = (_tokens(canonical) or [""])[0]
+        if (
+            len(loc_tokens) >= 3
+            and len(english_tokens) >= 3
+            and _norm_text(loc_tokens[0]) == "madame"
+            and _norm_text(english_tokens[0]).rstrip(".") == "mrs"
+            and _norm_text(loc_tokens[1]) == _norm_text(english_tokens[1])
+            and _norm_text(canonical_first) != _norm_text(english_tokens[1])
+        ):
+            surname = loc_tokens[-1]
+            findings.append({
+                "tab": "Mention Mappings",
+                "row": row_num,
+                "kind": "REGISTER_MISMATCH",
+                "detail": (
+                    f"'{loc}' carries over the husband's/associated male first name "
+                    f"from '{english}', which sounds unnatural as a French address form."
+                ),
+                "suggestion": f"Madame {surname}",
+                "confidence": 85,
+                "source": "deterministic_culture",
+                "evidence": f"{canonical} | {original} | {loc} | {english}",
+            })
+            return
     for pattern, suggestion_hint in _target_culture_terms(target_lang):
         if not re.search(pattern, loc, flags=re.I):
             continue
@@ -812,6 +866,21 @@ def _dedupe_findings(findings: list[dict]) -> list[dict]:
         seen.add(key)
         out.append(f)
     return out
+
+
+def _extract_json_object(text: str) -> dict:
+    decoder = json.JSONDecoder()
+    raw = text or ""
+    for i, ch in enumerate(raw):
+        if ch != "{":
+            continue
+        try:
+            obj, _end = decoder.raw_decode(raw[i:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict):
+            return obj
+    raise ValueError("No JSON object found.")
 
 
 def _candidate_rows_for_llm(mm_rows: list[dict], findings: list[dict], limit: int) -> list[dict]:
@@ -959,12 +1028,9 @@ Respond STRICTLY as JSON:
     except Exception as e:
         return [], f"LLM skipped: {type(e).__name__}: {str(e)[:180]}"
 
-    m = re.search(r"\{.*\}", raw, re.DOTALL)
-    if not m:
-        return [], "LLM returned non-JSON output."
     try:
-        data = json.loads(m.group(0))
-    except json.JSONDecodeError as e:
+        data = _extract_json_object(raw)
+    except ValueError as e:
         return [], f"LLM JSON parse failed: {str(e)[:120]}"
 
     out = []

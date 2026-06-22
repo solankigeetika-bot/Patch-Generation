@@ -456,10 +456,21 @@ async function runVerifier(mode) {
     state.findings = result.findings || [];
     renderFindings(result);
     $("writeBtn").disabled = state.findings.length === 0;
-    setStatus("runStatus", `${state.findings.length} issue(s) found.`, true);
+    setStatus("runStatus", verifierStatus(result, state.findings.length), !result.warning);
   } catch (err) {
     setStatus("runStatus", err.message, false);
   }
+}
+
+function verifierStatus(result, issueCount) {
+  const llm = result.llm || {};
+  const parts = [`${issueCount} issue(s) found.`];
+  if (llm.ran) {
+    parts.push(`Opus ran on up to ${llm.limit || "configured"} candidate rows.`);
+  } else if (result.warning) {
+    parts.push(result.warning);
+  }
+  return parts.join(" ");
 }
 
 function renderFindings(result) {
