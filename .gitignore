@@ -5,6 +5,7 @@ backend/.venv/
 *.pyc
 verified_output*.xlsx
 .backend-url
+chrome_extension/sidepanel_secret.js
 
 # runtime artifacts
 *.db

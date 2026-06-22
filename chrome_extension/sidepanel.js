@@ -1,8 +1,10 @@
 "use strict";
 
+const BUNDLED_PROXY_SECRET = String(globalThis.LS_VERIFIER_PROXY_SECRET || "").trim();
+
 const DEFAULTS = {
   backendUrl: "http://127.0.0.1:8000",
-  proxySecret: "",
+  proxySecret: BUNDLED_PROXY_SECRET,
 };
 const DEAD_DEFAULT_BACKENDS = new Set([
   "https://confidentiality-latino-nelson-depend.trycloudflare.com",
@@ -28,8 +30,12 @@ document.addEventListener("DOMContentLoaded", async () => {
   if (migratedBackend) {
     await setSettings({ ...settings, backendUrl });
   }
+  const proxySecret = BUNDLED_PROXY_SECRET || settings.proxySecret || "";
+  if (settings.proxySecret !== proxySecret) {
+    await setSettings({ ...settings, backendUrl, proxySecret });
+  }
   $("backendUrl").value = backendUrl;
-  $("proxySecret").value = settings.proxySecret || "";
+  $("proxySecret").value = proxySecret;
 
   $("saveSettings").addEventListener("click", saveSettingsFromUi);
   $("healthBtn").addEventListener("click", checkHealth);
@@ -403,7 +409,7 @@ async function jsonOrThrow(resp) {
 async function backendFetch(path, body) {
   const settings = await getSettings();
   const base = cleanBaseUrl(settings.backendUrl);
-  const secret = settings.proxySecret || "";
+  const secret = BUNDLED_PROXY_SECRET || settings.proxySecret || "";
   if (!base) throw new Error("Set Backend URL first.");
   const headers = {
     "X-Proxy-Secret": secret,
