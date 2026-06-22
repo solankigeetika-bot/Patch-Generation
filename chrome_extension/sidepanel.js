@@ -35,6 +35,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("healthBtn").addEventListener("click", checkHealth);
   $("refreshBtn").addEventListener("click", loadActiveSheet);
   $("loadSheetBtn").addEventListener("click", loadActiveSheet);
+  $("authGoogleBtn").addEventListener("click", authorizeGoogleSheets);
   $("runAllBtn").addEventListener("click", () => runVerifier("all"));
   $("runCultureBtn").addEventListener("click", () => runVerifier("culture"));
   $("writeBtn").addEventListener("click", writeFindings);
@@ -69,7 +70,11 @@ function cleanBaseUrl(value) {
 
 async function getToken(interactive = true) {
   return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error("Google auth did not finish. Reload the extension, click Authorize Google, and approve the Google access prompt."));
+    }, 120000);
     chrome.identity.getAuthToken({ interactive }, (token) => {
+      clearTimeout(timer);
       const err = chrome.runtime.lastError;
       if (err || !token) reject(new Error(err ? err.message : "Google auth failed."));
       else resolve(token);
@@ -109,13 +114,31 @@ async function removeCachedToken(token) {
   });
 }
 
+async function clearCachedTokens() {
+  if (!chrome.identity.clearAllCachedAuthTokens) return;
+  return new Promise((resolve) => {
+    chrome.identity.clearAllCachedAuthTokens(resolve);
+  });
+}
+
 async function activeTab() {
-  const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-  return tabs[0];
+  const activeTabs = await chrome.tabs.query({ active: true, currentWindow: true });
+  const active = activeTabs[0];
+  if (spreadsheetIdFromUrl(active?.url)) return active;
+
+  const sheetTabs = await chrome.tabs.query({ url: "https://docs.google.com/spreadsheets/*" });
+  if (!sheetTabs.length) return active;
+  const activeSheet = sheetTabs.find((tab) => tab.active);
+  return activeSheet || sheetTabs[0];
 }
 
 function spreadsheetIdFromUrl(url) {
   const match = String(url || "").match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+  return match ? match[1] : "";
+}
+
+function gidFromUrl(url) {
+  const match = String(url || "").match(/[?#&]gid=([0-9]+)/);
   return match ? match[1] : "";
 }
 
@@ -160,7 +183,8 @@ function findSheetName(names, candidates) {
   return "";
 }
 
-async function loadActiveSheet() {
+async function loadActiveSheet(options = {}) {
+  const forceApi = options.forceApi === true;
   try {
     const tab = await activeTab();
     state.spreadsheetId = spreadsheetIdFromUrl(tab && tab.url);
@@ -170,6 +194,35 @@ async function loadActiveSheet() {
     }
 
     setStatus("sheetStatus", "Loading sheet...");
+    try {
+      await loadSheetViaApi();
+    } catch (err) {
+      if (forceApi) throw err;
+      setStatus("sheetStatus", "Google auth unavailable; reading sheet directly...");
+      await loadSheetViaCsvExport(tab);
+    }
+  } catch (err) {
+    setStatus("sheetStatus", err.message, false);
+  }
+}
+
+async function authorizeGoogleSheets() {
+  try {
+    setStatus("sheetStatus", "Opening Google authorization...");
+    await clearCachedTokens();
+    await getToken(true);
+    setStatus("sheetStatus", "Google authorized. Loading sheet with write access...", true);
+    await loadActiveSheet({ forceApi: true });
+  } catch (err) {
+    setStatus(
+      "sheetStatus",
+      `Google authorization failed: ${err.message}`,
+      false,
+    );
+  }
+}
+
+async function loadSheetViaApi() {
     const metaUrl = `https://sheets.googleapis.com/v4/spreadsheets/${state.spreadsheetId}?fields=properties.title,sheets.properties.title`;
     const metaResp = await googleFetch(metaUrl);
     const meta = await jsonOrThrow(metaResp);
@@ -199,9 +252,133 @@ async function loadActiveSheet() {
     state.mm = objectsFromValues(mmValues);
     state.ld = objectsFromValues(ldValues);
     setStatus("sheetStatus", `Loaded ${state.spreadsheetTitle}: ${state.mm.length} mention rows.`, true);
-  } catch (err) {
-    setStatus("sheetStatus", err.message, false);
+}
+
+async function loadSheetViaCsvExport(tab) {
+  const currentGid = gidFromUrl(tab?.url);
+  let mmValues = [];
+  let mmName = "Mention Mappings";
+  try {
+    mmValues = await fetchCsvSheet("Mention Mappings");
+  } catch (_err) {
+    if (!currentGid) throw new Error("Google auth failed and no sheet gid is visible in the URL.");
+    mmValues = await fetchCsvSheet("", currentGid);
+    mmName = "Mention Mappings";
   }
+  if (!looksLikeMentionMappings(mmValues)) {
+    throw new Error("Could not read Mention Mappings. Click the Mention Mappings tab, then click Load Sheet again.");
+  }
+
+  let ldValues = [];
+  try {
+    ldValues = await fetchCsvSheet("Localization Details");
+  } catch (_err) {
+    ldValues = [];
+  }
+  state.spreadsheetTitle = "Active Google Sheet";
+  state.sheets = {
+    mmName,
+    ldName: ldValues.length ? "Localization Details" : "",
+    mmValues,
+    ldValues,
+    readOnly: true,
+  };
+  state.mm = objectsFromValues(mmValues);
+  state.ld = objectsFromValues(ldValues);
+  setStatus(
+    "sheetStatus",
+    `Loaded ${state.mm.length} mention rows. Direct-read mode: writing back still needs Google auth.`,
+    true,
+  );
+}
+
+function looksLikeMentionMappings(values) {
+  const headers = normalizedHeaders(values);
+  return (
+    headers.includes("original mention")
+    && (headers.includes("localized mention") || headers.includes("localised mention"))
+  );
+}
+
+async function fetchCsvSheet(sheetName, gid = "") {
+  const urls = csvExportUrls(sheetName, gid);
+  const failures = [];
+  for (const url of urls) {
+    try {
+      const resp = await fetch(url, { credentials: "include" });
+      const text = await resp.text();
+      if (!resp.ok || /<html|<!doctype/i.test(text)) {
+        failures.push(`${resp.status} ${resp.statusText}`.trim());
+        continue;
+      }
+      const rows = parseCsv(text);
+      if (rows.length) return rows;
+      failures.push("empty csv");
+    } catch (err) {
+      failures.push(err.message);
+    }
+  }
+  throw new Error(`Could not export ${sheetName || gid}: ${failures.filter(Boolean).join("; ")}`);
+}
+
+function csvExportUrls(sheetName, gid = "") {
+  const urls = [];
+  if (gid) {
+    const exportParams = new URLSearchParams({ format: "csv", gid, single: "true" });
+    urls.push(`https://docs.google.com/spreadsheets/d/${state.spreadsheetId}/export?${exportParams}`);
+
+    const gvizParams = new URLSearchParams({ tqx: "out:csv", gid });
+    urls.push(`https://docs.google.com/spreadsheets/d/${state.spreadsheetId}/gviz/tq?${gvizParams}`);
+  }
+  if (sheetName) {
+    const gvizParams = new URLSearchParams({ tqx: "out:csv", sheet: sheetName });
+    urls.push(`https://docs.google.com/spreadsheets/d/${state.spreadsheetId}/gviz/tq?${gvizParams}`);
+
+    const exportParams = new URLSearchParams({ format: "csv", sheet: sheetName, single: "true" });
+    urls.push(`https://docs.google.com/spreadsheets/d/${state.spreadsheetId}/export?${exportParams}`);
+  }
+  return urls;
+}
+
+function parseCsv(text) {
+  const rows = [];
+  let row = [];
+  let cell = "";
+  let quoted = false;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    const next = text[i + 1];
+    if (quoted) {
+      if (ch === '"' && next === '"') {
+        cell += '"';
+        i += 1;
+      } else if (ch === '"') {
+        quoted = false;
+      } else {
+        cell += ch;
+      }
+    } else if (ch === '"') {
+      quoted = true;
+    } else if (ch === ",") {
+      row.push(cell);
+      cell = "";
+    } else if (ch === "\n") {
+      row.push(cell);
+      rows.push(row);
+      row = [];
+      cell = "";
+    } else if (ch !== "\r") {
+      cell += ch;
+    }
+  }
+  row.push(cell);
+  if (row.some((value) => value)) rows.push(row);
+  return rows;
+}
+
+function normalizedHeaders(values) {
+  return (values?.[0] || [])
+    .map((h) => String(h || "").trim().toLowerCase().replace(/\s+/g, " "));
 }
 
 async function jsonOrThrow(resp) {

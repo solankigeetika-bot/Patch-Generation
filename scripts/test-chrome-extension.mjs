@@ -56,7 +56,7 @@ function makeElement(id) {
 const elements = new Map();
 const elementIds = [
   "backendUrl", "proxySecret", "saveSettings", "healthBtn", "refreshBtn",
-  "loadSheetBtn", "runAllBtn", "runCultureBtn", "writeBtn",
+  "loadSheetBtn", "authGoogleBtn", "runAllBtn", "runCultureBtn", "writeBtn",
   "previewReplaceBtn", "applyReplaceBtn", "connectCanonBtn", "sheetStatus",
   "connectionStatus", "runStatus", "sourceLang", "targetLang", "stats",
   "issueCount", "rowCount", "mentionCount", "findings", "replaceFind",
@@ -69,6 +69,7 @@ elements.get("targetLang").value = "French";
 const documentListeners = {};
 const tokenCalls = [];
 const removedTokens = [];
+let clearedTokens = 0;
 const fetchCalls = [];
 const storage = {
   backendUrl: "https://confidentiality-latino-nelson-depend.trycloudflare.com",
@@ -86,6 +87,8 @@ const sandbox = {
   Number,
   Boolean,
   Promise,
+  setTimeout,
+  clearTimeout,
   document: {
     addEventListener(type, fn) {
       documentListeners[type] = fn;
@@ -96,7 +99,17 @@ const sandbox = {
     },
   },
   chrome: {
-    runtime: { lastError: null },
+    runtime: {
+      lastError: null,
+      getManifest() {
+        return {
+          oauth2: {
+            client_id: "test-client.apps.googleusercontent.com",
+            scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+          },
+        };
+      },
+    },
     storage: {
       local: {
         get(defaults, cb) {
@@ -117,6 +130,10 @@ const sandbox = {
       },
       removeCachedAuthToken({ token }, cb) {
         removedTokens.push(token);
+        cb();
+      },
+      clearAllCachedAuthTokens(cb) {
+        clearedTokens += 1;
         cb();
       },
       getProfileUserInfo(cb) {
@@ -211,5 +228,9 @@ await elements.get("runCultureBtn").listeners.click();
 assert.equal(elements.get("issueCount").textContent, "1");
 assert.equal(elements.get("writeBtn").disabled, false);
 assert.match(elements.get("findings").innerHTML, /TARGET_CULTURE_MISMATCH/);
+
+await elements.get("authGoogleBtn").listeners.click();
+assert.equal(clearedTokens, 1);
+assert.match(elements.get("sheetStatus").textContent, /Loaded TOLR_1-100_Non-reviewed/);
 
 console.log("chrome extension harness ok");

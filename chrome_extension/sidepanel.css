@@ -82,7 +82,11 @@ button:disabled {
   gap: 8px;
   margin-top: 10px;
 }
-.row button { flex: 1; }
+.row button {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+}
 .grid2 {
   display: grid;
   grid-template-columns: 1fr 1fr;
