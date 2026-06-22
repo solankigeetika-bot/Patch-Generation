@@ -388,6 +388,9 @@ async function jsonOrThrow(resp) {
     try {
       json = JSON.parse(text);
     } catch {
+      if (/<html|<!doctype/i.test(text)) {
+        throw new Error("Backend returned a tunnel warning page. Reload the extension and try again, or use a deployed HTTPS backend.");
+      }
       json = { error: text };
     }
   }
@@ -402,11 +405,14 @@ async function backendFetch(path, body) {
   const base = cleanBaseUrl(settings.backendUrl);
   const secret = settings.proxySecret || "";
   if (!base) throw new Error("Set Backend URL first.");
+  const headers = {
+    "X-Proxy-Secret": secret,
+    "bypass-tunnel-reminder": "ls-verifier-agent",
+  };
+  if (body) headers["Content-Type"] = "application/json";
   const resp = await fetch(`${base}${path}`, {
     method: body ? "POST" : "GET",
-    headers: body
-      ? { "Content-Type": "application/json", "X-Proxy-Secret": secret }
-      : { "X-Proxy-Secret": secret },
+    headers,
     body: body ? JSON.stringify(body) : undefined,
   });
   return jsonOrThrow(resp);

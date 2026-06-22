@@ -186,10 +186,12 @@ const sandbox = {
     }
     if (target === "http://127.0.0.1:8000/health") {
       assert.equal(options.headers["X-Proxy-Secret"], "test-secret");
+      assert.equal(options.headers["bypass-tunnel-reminder"], "ls-verifier-agent");
       return new MockResponse({ status: "ok", madeye: true, user_email: true });
     }
     if (target === "http://127.0.0.1:8000/verify-mentions") {
       assert.equal(options.headers["X-Proxy-Secret"], "test-secret");
+      assert.equal(options.headers["bypass-tunnel-reminder"], "ls-verifier-agent");
       const payload = JSON.parse(options.body);
       assert.equal(payload.check_mode, "culture");
       assert.equal(payload.user_email, "solanki.geetika@pocketfm.com");
