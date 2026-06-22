@@ -138,9 +138,24 @@ async function activeTab() {
   return activeSheet || sheetTabs[0];
 }
 
+async function activeCanonTab() {
+  const activeTabs = await chrome.tabs.query({ active: true, currentWindow: true });
+  const active = activeTabs[0];
+  if (isCanonUrl(active?.url)) return active;
+
+  const canonTabs = await chrome.tabs.query({ url: "https://canon.pocketfm.ai/*" });
+  if (!canonTabs.length) return active;
+  const activeCanon = canonTabs.find((tab) => tab.active);
+  return activeCanon || canonTabs[0];
+}
+
 function spreadsheetIdFromUrl(url) {
   const match = String(url || "").match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
   return match ? match[1] : "";
+}
+
+function isCanonUrl(url) {
+  return String(url || "").includes("canon.pocketfm.ai");
 }
 
 function gidFromUrl(url) {
@@ -673,14 +688,14 @@ function collectReplacementUpdates({ sheetName, values, columns, re, replaceText
 
 async function connectStoryCanon() {
   try {
-    const tab = await activeTab();
-    if (!tab?.id || !String(tab.url || "").includes("canon.pocketfm.ai")) {
+    const tab = await activeCanonTab();
+    if (!tab?.id || !isCanonUrl(tab.url)) {
       throw new Error("Open the Story Canon show tab first.");
     }
-    const canon = await chrome.tabs.sendMessage(tab.id, { type: "LSV_CAPTURE_CANON" });
+    const canon = await captureCanonFromTab(tab.id);
     if (!canon || !canon.wiki) throw new Error("Story Canon data not found on this page.");
     const result = await backendFetch("/update-canon-session", {
-      secret: (await getSettings()).proxySecret || "",
+      secret: BUNDLED_PROXY_SECRET || (await getSettings()).proxySecret || "",
       slug: canon.slug,
       url: canon.url,
       wiki: canon.wiki,
@@ -689,6 +704,21 @@ async function connectStoryCanon() {
     setStatus("canonStatus", `${result.message || "Story Canon connected."} ${result.slug || ""}`, true);
   } catch (err) {
     setStatus("canonStatus", err.message, false);
+  }
+}
+
+async function captureCanonFromTab(tabId) {
+  try {
+    return await chrome.tabs.sendMessage(tabId, { type: "LSV_CAPTURE_CANON" });
+  } catch (_err) {
+    if (chrome.scripting?.executeScript) {
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        files: ["content_canon.js"],
+      });
+      return chrome.tabs.sendMessage(tabId, { type: "LSV_CAPTURE_CANON" });
+    }
+    throw new Error("Reload the Story Canon tab, then click Connect Story Canon again.");
   }
 }
 

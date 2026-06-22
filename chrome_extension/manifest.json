@@ -17,6 +17,7 @@
     "activeTab",
     "identity",
     "identity.email",
+    "scripting",
     "sidePanel",
     "storage",
     "tabs"

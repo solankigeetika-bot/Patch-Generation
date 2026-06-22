@@ -71,6 +71,7 @@ const tokenCalls = [];
 const removedTokens = [];
 let clearedTokens = 0;
 const fetchCalls = [];
+const tabMessages = [];
 const storage = {
   backendUrl: "https://confidentiality-latino-nelson-depend.trycloudflare.com",
   proxySecret: "test-secret",
@@ -141,15 +142,32 @@ const sandbox = {
       },
     },
     tabs: {
-      async query() {
+      async query(opts = {}) {
+        if (opts.url === "https://canon.pocketfm.ai/*") {
+          return [{
+            id: 2,
+            active: false,
+            url: "https://canon.pocketfm.ai/twists-of-love-revenge/",
+          }];
+        }
         return [{
           id: 1,
+          active: true,
           url: "https://docs.google.com/spreadsheets/d/testSheetId/edit?gid=333958024",
         }];
       },
-      async sendMessage() {
-        return { slug: "test", url: "https://canon.pocketfm.ai/test", wiki: {}, show: {} };
+      async sendMessage(tabId, message) {
+        tabMessages.push({ tabId, message });
+        return {
+          slug: "twists-of-love-revenge",
+          url: "https://canon.pocketfm.ai/twists-of-love-revenge/",
+          wiki: { show_title: "Twists of Love & Revenge" },
+          show: { title: "Twists of Love & Revenge" },
+        };
       },
+    },
+    scripting: {
+      async executeScript() {},
     },
   },
   async fetch(url, options = {}) {
@@ -209,6 +227,19 @@ const sandbox = {
         mmCount: 1,
       });
     }
+    if (target === "http://127.0.0.1:8000/update-canon-session") {
+      assert.equal(options.headers["X-Proxy-Secret"], "test-secret");
+      assert.equal(options.headers["bypass-tunnel-reminder"], "ls-verifier-agent");
+      const payload = JSON.parse(options.body);
+      assert.equal(payload.secret, "test-secret");
+      assert.equal(payload.slug, "twists-of-love-revenge");
+      assert.equal(payload.wiki.show_title, "Twists of Love & Revenge");
+      return new MockResponse({
+        ok: true,
+        message: "Story Canon connected.",
+        slug: "twists-of-love-revenge",
+      });
+    }
     throw new Error(`Unexpected fetch: ${target}`);
   },
 };
@@ -234,5 +265,12 @@ assert.match(elements.get("findings").innerHTML, /TARGET_CULTURE_MISMATCH/);
 await elements.get("authGoogleBtn").listeners.click();
 assert.equal(clearedTokens, 1);
 assert.match(elements.get("sheetStatus").textContent, /Loaded TOLR_1-100_Non-reviewed/);
+
+await elements.get("connectCanonBtn").listeners.click();
+assert.equal(JSON.stringify(tabMessages), JSON.stringify([{
+  tabId: 2,
+  message: { type: "LSV_CAPTURE_CANON" },
+}]));
+assert.match(elements.get("canonStatus").textContent, /Story Canon connected/);
 
 console.log("chrome extension harness ok");
