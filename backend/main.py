@@ -30,6 +30,7 @@ import os
 import re
 import sys
 import tempfile
+import unicodedata
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -444,6 +445,111 @@ def _tokens(s: str) -> list[str]:
     return re.findall(r"[\wÀ-ÿ'-]+", s or "")
 
 
+def _plain_token(token: str) -> str:
+    plain = unicodedata.normalize("NFKD", (token or "").replace("ß", "ss"))
+    plain = "".join(ch for ch in plain if not unicodedata.combining(ch))
+    return re.sub(r"[^a-z0-9]+", "", plain.lower())
+
+
+_TITLE_WORDS = {
+    "mr", "mrs", "ms", "miss", "mister", "herr", "frau", "dr", "doctor",
+    "prof", "professor", "captain", "sir", "madam", "madame",
+    "mademoiselle", "monsieur", "senor", "senora", "senorita",
+}
+
+_COMMON_MENTION_WORDS = {
+    *(_TITLE_WORDS),
+    "mother", "father", "mom", "mum", "mama", "mommy", "dad", "daddy",
+    "sister", "brother", "sibling", "wife", "husband", "son", "daughter",
+    "uncle", "aunt", "auntie", "grandfather", "grandmother", "grandpa",
+    "grandma", "grandson", "granddaughter", "cousin", "niece", "nephew",
+    "family", "parents", "parent", "child", "children", "baby", "dear",
+    "darling", "sweetheart", "beloved", "friend", "boss", "director",
+    "manager", "doctor", "nurse", "lawyer", "judge", "teacher",
+    "principal", "president", "chairman", "ceo", "secretary", "assistant",
+    "driver", "maid", "servant", "guard", "bodyguard", "owner", "heir",
+    "heiress", "girl", "boy", "man", "woman", "lady", "gentleman",
+    "frau", "herr", "mutter", "vater", "mama", "papa", "schwester",
+    "bruder", "schwesterchen", "bruderchen", "grossvater", "grosvater",
+    "großvater", "grossmutter", "großmutter", "oma", "opa", "onkel",
+    "tante", "ehefrau", "ehemann", "sohn", "tochter", "schwagerin",
+    "schwager", "schatz", "liebling", "arzt", "arztin", "ärztin",
+    "geschaftsfuhrer", "geschaftsfuhrerin", "geschäftsfuhrer",
+    "geschäftsführerin", "soeur", "frere", "mere", "pere", "maman",
+    "papa", "grandpere", "grandmere", "tante", "oncle", "cousine",
+    "cousin", "epouse", "mari", "femme", "fils", "fille", "cher",
+    "chere", "cheri", "cherie", "docteur", "medecin", "directeur",
+    "directrice", "juge", "maitre", "mademoiselle",
+}
+
+
+def _mention_tokens(value: str) -> list[str]:
+    out = []
+    for token in _tokens(value):
+        plain = _plain_token(token)
+        if not plain:
+            continue
+        if plain.endswith("s") and len(plain) > 3:
+            out.append(plain[:-1])
+        out.append(plain)
+    return out
+
+
+def _meaningful_tokens(value: str) -> list[str]:
+    return [
+        token for token in _mention_tokens(value)
+        if token not in _COMMON_MENTION_WORDS and len(token) > 1
+    ]
+
+
+def _is_common_noun_mention(row: dict) -> bool:
+    fields = [
+        _cell(row, ["Original Mention", "original mention", "original_mention"]),
+        _cell(row, ["English Translated Mention", "english translated mention"]),
+    ]
+    for value in fields:
+        tokens = _mention_tokens(value)
+        if tokens and all(t in _COMMON_MENTION_WORDS for t in tokens):
+            return True
+    return False
+
+
+def _is_derived_canonical_mention(row: dict) -> bool:
+    canonical = _cell(row, ["Canonical Name", "canonical name", "canonical_name"])
+    canonical_tokens = set(_meaningful_tokens(canonical))
+    if not canonical_tokens:
+        return False
+    initials = "".join(token[0] for token in _meaningful_tokens(canonical) if token)
+
+    def mention_name_tokens(value: str) -> list[str]:
+        out = []
+        for token in _tokens(value):
+            plain = _plain_token(token)
+            if not plain or plain in _COMMON_MENTION_WORDS or len(plain) <= 1:
+                continue
+            if plain.endswith("s") and plain[:-1] in canonical_tokens:
+                plain = plain[:-1]
+            out.append(plain)
+        return out
+
+    for value in (
+        _cell(row, ["Original Mention", "original mention", "original_mention"]),
+        _cell(row, ["English Translated Mention", "english translated mention"]),
+    ):
+        mention_tokens = mention_name_tokens(value)
+        if not mention_tokens:
+            continue
+        if set(mention_tokens).issubset(canonical_tokens):
+            return True
+        if initials and "".join(mention_tokens) == initials:
+            return True
+    return False
+
+
+def _is_low_value_entity_row(row: dict) -> bool:
+    return _is_common_noun_mention(row) or _is_derived_canonical_mention(row)
+
+
 def _replace_last_token(text: str, old: str, new: str) -> str:
     if not text or not old or not new:
         return text
@@ -603,7 +709,7 @@ def _base_mention_findings(ld_rows: list[dict], mm_rows: list[dict], graph,
                 "suggestion": expected, "confidence": 70, "source": "deterministic",
             })
 
-        if include_mechanical:
+        if include_mechanical and not _is_common_noun_mention(row):
             key = _norm_text(orig)
             if key not in seen:
                 seen[key] = loc
@@ -929,11 +1035,15 @@ def _candidate_rows_for_llm(mm_rows: list[dict], findings: list[dict], limit: in
         re.I,
     )
     for i, row in enumerate(mm_rows):
+        if _is_low_value_entity_row(row) and i + 2 not in finding_rows:
+            continue
         orig = _cell(row, ["Original Mention", "original mention", "original_mention"])
         loc = _cell(row, ["Localized Mention", "localized mention", "localised mention"])
         if context_markers.search(f"{orig} {loc}"):
             add(i, row, "context marker")
     for i, row in enumerate(mm_rows):
+        if _is_low_value_entity_row(row) and i + 2 not in finding_rows:
+            continue
         add(i, row, "coverage sample")
     return candidates
 
@@ -985,6 +1095,9 @@ G. Geography/institution swaps: flag when a source real-world place or instituti
 
 Do NOT flag proper names just because they are foreign.
 Do NOT require a word-for-word translation.
+Do NOT treat common nouns or simple derived mentions of the canonical name as separate entities.
+For example, sister/doctor/grandfather or Emily/Emily's/E.K. rows are low-value unless
+there is source-language leakage, register/title damage, or a concrete correction.
 If unsure, do not flag.
 
 Return STRICTLY JSON:
@@ -1010,6 +1123,9 @@ C. Source fidelity.
 D. Target appropriateness.
 
 Do not invent rows. Return issues only when there is a concrete correction.
+Do not treat common nouns or simple derived mentions of the canonical name as separate entities.
+For example, sister/doctor/grandfather or Emily/Emily's/E.K. rows are low-value unless
+there is a concrete consistency, register, or source-leakage correction.
 Respond STRICTLY as JSON:
 {{"findings":[{{"row":31,"kind":"FAMILY_SURNAME_MISMATCH","detail":"one sentence","suggestion":"correct localized mention","confidence":88}}]}}
 

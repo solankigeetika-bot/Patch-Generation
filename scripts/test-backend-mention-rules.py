@@ -50,6 +50,50 @@ bad_all_findings = main._base_mention_findings(
 )
 assert "MENTION_MASTER_MISMATCH" not in kinds(bad_all_findings), bad_all_findings
 
+common_noun_rows = [
+    {
+        "Canonical Name": "emily kaiser",
+        "Original Mention": "doctor",
+        "Localized Mention": "docteur",
+        "English Translated Mention": "doctor",
+    },
+    {
+        "Canonical Name": "emily kaiser",
+        "Original Mention": "doctor",
+        "Localized Mention": "medecin",
+        "English Translated Mention": "doctor",
+    },
+]
+common_findings = main._base_mention_findings(
+    ld, common_noun_rows, None, target_lang="fr", include_mechanical=True, include_culture=False
+)
+assert "CROSS_MENTION_INCONSISTENCY" not in kinds(common_findings), common_findings
+
+low_value_candidates = common_noun_rows[:1] + [
+    {
+        "Canonical Name": "emily kaiser",
+        "Original Mention": "emilys",
+        "Localized Mention": "d'Émilie",
+        "English Translated Mention": "Emily's",
+    },
+    bad_married_title[0],
+]
+candidates = main._candidate_rows_for_llm(low_value_candidates, [], 10)
+assert [c["row"] for c in candidates] == [4], candidates
+
+source_leak_common = [{
+    "Canonical Name": "emily kaiser",
+    "Original Mention": "oma",
+    "Localized Mention": "Oma",
+    "English Translated Mention": "Grandmother",
+}]
+source_leak_findings = main._base_mention_findings(
+    ld, source_leak_common, None, target_lang="fr", include_mechanical=False, include_culture=True
+)
+assert "TARGET_CULTURE_MISMATCH" in kinds(source_leak_findings), source_leak_findings
+source_leak_candidates = main._candidate_rows_for_llm(source_leak_common, source_leak_findings, 10)
+assert [c["row"] for c in source_leak_candidates] == [2], source_leak_candidates
+
 assert main._extract_json_object('prefix {"findings": []} suffix') == {"findings": []}
 
 print("backend mention rules ok")
