@@ -56,7 +56,7 @@ function makeElement(id) {
 const elements = new Map();
 const elementIds = [
   "backendUrl", "proxySecret", "saveSettings", "healthBtn", "refreshBtn",
-  "loadSheetBtn", "authGoogleBtn", "runAllBtn", "runCultureBtn", "writeBtn",
+  "loadSheetBtn", "authGoogleBtn", "runAllBtn", "runCultureBtn", "applyReuseBtn", "writeBtn",
   "previewReplaceBtn", "applyReplaceBtn", "connectCanonBtn", "sheetStatus",
   "connectionStatus", "runStatus", "sourceLang", "targetLang", "stats",
   "issueCount", "rowCount", "mentionCount", "autoClearedCount", "findings", "replaceFind",
@@ -202,6 +202,15 @@ const sandbox = {
         ],
       });
     }
+    if (target.includes("/values:batchUpdate")) {
+      const body = JSON.parse(options.body);
+      assert.equal(body.valueInputOption, "USER_ENTERED");
+      assert.deepEqual(body.data, [{
+        range: "'Mention Mappings'!E3",
+        values: [["Émilie Lempereur"]],
+      }]);
+      return new MockResponse({ totalUpdatedCells: 1 });
+    }
     if (target === "http://127.0.0.1:8000/health") {
       assert.equal(options.headers["X-Proxy-Secret"], "test-secret");
       assert.equal(options.headers["bypass-tunnel-reminder"], "ls-verifier-agent");
@@ -215,17 +224,29 @@ const sandbox = {
       assert.equal(payload.user_email, "solanki.geetika@pocketfm.com");
       assert.equal(payload.mm.length, 1);
       return new MockResponse({
-        findings: [{
-          tab: "Mention Mappings",
-          row: 2,
-          kind: "TARGET_CULTURE_MISMATCH",
-          detail: "Oma is German.",
-          suggestion: "Mamie",
-          confidence: 90,
-        }],
+        findings: [
+          {
+            tab: "Mention Mappings",
+            row: 2,
+            kind: "TARGET_CULTURE_MISMATCH",
+            detail: "Oma is German.",
+            suggestion: "Mamie",
+            confidence: 90,
+          },
+          {
+            tab: "Mention Mappings",
+            row: 3,
+            kind: "APPROVED_REUSE_MISMATCH",
+            detail: "Reuse approved exact match.",
+            suggestion: "Émilie Lempereur",
+            confidence: 100,
+            source: "approved_reuse",
+          },
+        ],
         rowCount: 1,
         mmCount: 1,
         autoCleared: { lowValueEntityRows: 12, sample: [] },
+        approvedReuse: { rows: 1, approvedMaxChapter: 101, targetMinChapter: 101 },
       });
     }
     if (target === "http://127.0.0.1:8000/update-canon-session") {
@@ -259,10 +280,15 @@ await elements.get("healthBtn").listeners.click();
 assert.match(elements.get("connectionStatus").textContent, /Backend ok/);
 
 await elements.get("runCultureBtn").listeners.click();
-assert.equal(elements.get("issueCount").textContent, "1");
+assert.equal(elements.get("issueCount").textContent, "2");
 assert.equal(elements.get("autoClearedCount").textContent, "12");
+assert.equal(elements.get("applyReuseBtn").disabled, false);
 assert.equal(elements.get("writeBtn").disabled, false);
 assert.match(elements.get("findings").innerHTML, /TARGET_CULTURE_MISMATCH/);
+
+await elements.get("applyReuseBtn").listeners.click();
+assert.match(elements.get("runStatus").textContent, /Applied 1 exact approved match/);
+assert.equal(elements.get("applyReuseBtn").disabled, true);
 
 await elements.get("authGoogleBtn").listeners.click();
 assert.equal(clearedTokens, 1);

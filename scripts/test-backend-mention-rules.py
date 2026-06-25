@@ -137,6 +137,43 @@ auto_cleared = main._auto_cleared_low_value_rows(place_object_rows, [])
 assert len(auto_cleared) == len(place_object_rows), auto_cleared
 assert {row["reason"] for row in auto_cleared} == {"common_noun"}, auto_cleared
 
+approved_reuse_rows = [
+    {
+        "Canonical Name": "aaketi's castle",
+        "Original Mention": "aaketi's castle",
+        "Localized Mention": "le château d'Arketi",
+        "English Translated Mention": "aaketi's castle",
+        "Chapter Numbers": "24",
+    },
+    {
+        "Canonical Name": "aaketi's castle",
+        "Original Mention": "aaketi's castle",
+        "Localized Mention": "le palais d'Arketi",
+        "English Translated Mention": "aaketi's castle",
+        "Chapter Numbers": "145",
+    },
+    {
+        "Canonical Name": "aaketi's castle dining room",
+        "Original Mention": "the dining room",
+        "Localized Mention": "",
+        "English Translated Mention": "the dining room",
+        "Chapter Numbers": "160",
+    },
+    {
+        "Canonical Name": "aaketi's castle dining room",
+        "Original Mention": "the dining room",
+        "Localized Mention": "la salle à manger",
+        "English Translated Mention": "the dining room",
+        "Chapter Numbers": "62",
+    },
+]
+approved_reuse = main._approved_reuse_findings(approved_reuse_rows)
+assert [(f["row"], f["suggestion"]) for f in approved_reuse] == [
+    (3, "le château d'Arketi"),
+    (4, "la salle à manger"),
+], approved_reuse
+assert not main._candidate_rows_for_llm(approved_reuse_rows, approved_reuse, 10), approved_reuse
+
 assert main._extract_json_object('prefix {"findings": []} suffix') == {"findings": []}
 
 print("backend mention rules ok")

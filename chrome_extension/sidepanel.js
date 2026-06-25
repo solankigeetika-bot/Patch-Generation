@@ -44,6 +44,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("authGoogleBtn").addEventListener("click", authorizeGoogleSheets);
   $("runAllBtn").addEventListener("click", () => runVerifier("all"));
   $("runCultureBtn").addEventListener("click", () => runVerifier("culture"));
+  $("applyReuseBtn").addEventListener("click", applyApprovedReuse);
   $("writeBtn").addEventListener("click", writeFindings);
   $("previewReplaceBtn").addEventListener("click", () => replaceAcrossSheet(true));
   $("applyReplaceBtn").addEventListener("click", () => replaceAcrossSheet(false));
@@ -471,6 +472,7 @@ async function runVerifier(mode) {
     state.findings = result.findings || [];
     renderFindings(result);
     $("writeBtn").disabled = state.findings.length === 0;
+    $("applyReuseBtn").disabled = approvedReuseFindings().length === 0;
     setStatus("runStatus", verifierStatus(result, state.findings.length), !result.warning);
   } catch (err) {
     setStatus("runStatus", err.message, false);
@@ -480,7 +482,11 @@ async function runVerifier(mode) {
 function verifierStatus(result, issueCount) {
   const llm = result.llm || {};
   const cleared = result.autoCleared?.lowValueEntityRows || 0;
+  const reuse = result.approvedReuse?.rows || approvedReuseFindings().length;
   const parts = [`${issueCount} issue(s) found.`];
+  if (reuse) {
+    parts.push(`${reuse} exact approved match(es) ready to apply.`);
+  }
   if (cleared) {
     parts.push(`${cleared} low-value entity row(s) auto-cleared.`);
   }
@@ -490,6 +496,10 @@ function verifierStatus(result, issueCount) {
     parts.push(result.warning);
   }
   return parts.join(" ");
+}
+
+function approvedReuseFindings() {
+  return state.findings.filter((f) => f.source === "approved_reuse" && f.suggestion);
 }
 
 function renderFindings(result) {
@@ -514,6 +524,34 @@ function renderFindings(result) {
       ${f.suggestion ? `<div class="suggestion">→ ${escapeHtml(f.suggestion)}</div>` : ""}
     </div>
   `).join("");
+}
+
+async function applyApprovedReuse() {
+  try {
+    const fixes = approvedReuseFindings();
+    if (!fixes.length) return;
+    const sheetName = state.sheets.mmName;
+    const headers = (state.sheets.mmValues[0] || []).map(String);
+    const localizedCol = findHeader(headers, [
+      "Localized Mention",
+      "Localised Mention",
+      "localized mention",
+      "localised mention",
+      "localized_mention",
+    ]);
+    if (localizedCol < 0) throw new Error("Could not find Localized Mention column.");
+
+    const updates = fixes.map((finding) => ({
+      range: `${quoteSheet(sheetName)}!${colName(localizedCol)}${Number(finding.row)}`,
+      values: [[finding.suggestion]],
+    }));
+    await sheetsValuesBatchUpdate(updates);
+    setStatus("runStatus", `Applied ${updates.length} exact approved match(es).`, true);
+    $("applyReuseBtn").disabled = true;
+    await loadActiveSheet({ forceApi: true });
+  } catch (err) {
+    setStatus("runStatus", err.message, false);
+  }
 }
 
 function confidenceFor(rowFindings) {

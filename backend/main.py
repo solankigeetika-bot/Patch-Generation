@@ -68,6 +68,8 @@ MADEYE_USER_EMAIL = os.environ.get("MADEYE_USER_EMAIL", "")
 PROXY_SECRET      = os.environ.get("PROXY_SECRET", "")
 CANON_HOST        = os.environ.get("CANON_HOST", "https://canon.pocketfm.ai").rstrip("/")
 LLM_VERIFY_LIMIT  = int(os.environ.get("LLM_VERIFY_LIMIT", "80"))
+APPROVED_REUSE_MAX_CHAPTER = int(os.environ.get("APPROVED_REUSE_MAX_CHAPTER", "101"))
+APPROVED_REUSE_TARGET_MIN_CHAPTER = int(os.environ.get("APPROVED_REUSE_TARGET_MIN_CHAPTER", "101"))
 
 # CANON_SESSION: env var, then persisted file (legacy bookmarklet writes this).
 # CANON_SNAPSHOT: latest Story Canon page data pushed by the bookmarklet. This
@@ -561,6 +563,89 @@ def _is_low_value_entity_row(row: dict) -> bool:
     return _is_common_noun_mention(row) or _is_derived_canonical_mention(row)
 
 
+def _chapter_numbers(row: dict) -> list[int]:
+    raw = _cell(row, ["Chapter Numbers", "chapter numbers", "chapter_numbers"])
+    return [int(n) for n in re.findall(r"\d+", raw or "")]
+
+
+def _localized_mention(row: dict) -> str:
+    return _cell(row, [
+        "Localized Mention", "Localised Mention", "localized mention",
+        "localised mention", "localized_mention",
+    ])
+
+
+def _reuse_keys(row: dict) -> list[tuple[str, str]]:
+    original = _cell(row, ["Original Mention", "original mention", "original_mention"])
+    english = _cell(row, [
+        "English Translated Mention", "english translated mention",
+        "english_translated_mention",
+    ])
+    canonical = _cell(row, ["Canonical Name", "canonical name", "canonical_name"])
+    rid = _cell(row, ["ID", "id"])
+    keys = []
+    if canonical and original:
+        keys.append(("canonical_original", f"{_norm_text(canonical)}|{_norm_text(original)}"))
+    if rid and original:
+        keys.append(("id_original", f"{_norm_text(rid)}|{_norm_text(original)}"))
+    if original:
+        keys.append(("original", _norm_text(original)))
+    if canonical and english:
+        keys.append(("canonical_english", f"{_norm_text(canonical)}|{_norm_text(english)}"))
+    if english:
+        keys.append(("english", _norm_text(english)))
+    return [(kind, key) for kind, key in keys if key]
+
+
+def _approved_reuse_findings(
+    mm_rows: list[dict],
+    approved_max_chapter: int = APPROVED_REUSE_MAX_CHAPTER,
+    target_min_chapter: int = APPROVED_REUSE_TARGET_MIN_CHAPTER,
+) -> list[dict]:
+    approved: dict[tuple[str, str], Counter] = defaultdict(Counter)
+    for row in mm_rows:
+        chapters = _chapter_numbers(row)
+        loc = _localized_mention(row)
+        if not chapters or not loc:
+            continue
+        if max(chapters) > approved_max_chapter:
+            continue
+        for key in _reuse_keys(row):
+            approved[key][loc] += 1
+
+    findings = []
+    for i, row in enumerate(mm_rows):
+        row_num = i + 2
+        chapters = _chapter_numbers(row)
+        if not chapters or min(chapters) < target_min_chapter:
+            continue
+        loc = _localized_mention(row)
+        expected = ""
+        matched_kind = ""
+        for key in _reuse_keys(row):
+            options = approved.get(key)
+            if options:
+                expected = options.most_common(1)[0][0]
+                matched_kind = key[0]
+                break
+        if not expected or _norm_text(loc) == _norm_text(expected):
+            continue
+        findings.append({
+            "tab": "Mention Mappings",
+            "row": row_num,
+            "kind": "APPROVED_REUSE_MISMATCH",
+            "detail": (
+                f"Exact match found in approved chapters <= {approved_max_chapter}; "
+                f"reuse that approved localized mention for chapters >= {target_min_chapter}."
+            ),
+            "suggestion": expected,
+            "confidence": 100,
+            "source": "approved_reuse",
+            "evidence": matched_kind,
+        })
+    return findings
+
+
 def _low_value_entity_reason(row: dict) -> str:
     if _is_common_noun_mention(row):
         return "common_noun"
@@ -1036,7 +1121,14 @@ def _extract_json_object(text: str) -> dict:
 
 
 def _candidate_rows_for_llm(mm_rows: list[dict], findings: list[dict], limit: int) -> list[dict]:
-    finding_rows = {f.get("row") for f in findings if isinstance(f.get("row"), int)}
+    reuse_rows = {
+        f.get("row") for f in findings
+        if isinstance(f.get("row"), int) and f.get("source") == "approved_reuse"
+    }
+    finding_rows = {
+        f.get("row") for f in findings
+        if isinstance(f.get("row"), int) and f.get("source") != "approved_reuse"
+    }
     candidates = []
     used = set()
 
@@ -1072,6 +1164,8 @@ def _candidate_rows_for_llm(mm_rows: list[dict], findings: list[dict], limit: in
         candidates.append(item)
 
     for i, row in enumerate(mm_rows):
+        if i + 2 in reuse_rows:
+            continue
         if i + 2 in finding_rows:
             add(i, row, "deterministic finding")
     context_markers = re.compile(
@@ -1081,6 +1175,8 @@ def _candidate_rows_for_llm(mm_rows: list[dict], findings: list[dict], limit: in
         re.I,
     )
     for i, row in enumerate(mm_rows):
+        if i + 2 in reuse_rows:
+            continue
         if _is_low_value_entity_row(row) and i + 2 not in finding_rows:
             continue
         orig = _cell(row, ["Original Mention", "original mention", "original_mention"])
@@ -1088,6 +1184,8 @@ def _candidate_rows_for_llm(mm_rows: list[dict], findings: list[dict], limit: in
         if context_markers.search(f"{orig} {loc}"):
             add(i, row, "context marker")
     for i, row in enumerate(mm_rows):
+        if i + 2 in reuse_rows:
+            continue
         if _is_low_value_entity_row(row) and i + 2 not in finding_rows:
             continue
         add(i, row, "coverage sample")
@@ -1511,9 +1609,12 @@ def verify_mentions(req: MentionVerifyRequest, x_proxy_secret: str = Header(defa
         include_mechanical=not culture_only,
         include_culture=True,
     )
+    reuse_findings = _approved_reuse_findings(req.mm)
+    base_findings = _dedupe_findings(base_findings + reuse_findings)
     llm_findings, warning = _llm_mention_findings(req, base_findings, canon_ctx)
     findings = _dedupe_findings(base_findings + llm_findings)
     auto_cleared = _auto_cleared_low_value_rows(req.mm, findings)
+    approved_reuse_count = sum(1 for f in findings if f.get("source") == "approved_reuse")
     llm_ran = bool(
         req.run_llm and req.mm and MADEYE_API_KEY and MADEYE_BASE_URL
         and (req.user_email or MADEYE_USER_EMAIL) and not warning
@@ -1526,6 +1627,11 @@ def verify_mentions(req: MentionVerifyRequest, x_proxy_secret: str = Header(defa
         "autoCleared": {
             "lowValueEntityRows": len(auto_cleared),
             "sample": auto_cleared[:20],
+        },
+        "approvedReuse": {
+            "rows": approved_reuse_count,
+            "approvedMaxChapter": APPROVED_REUSE_MAX_CHAPTER,
+            "targetMinChapter": APPROVED_REUSE_TARGET_MIN_CHAPTER,
         },
         "sourceTab": "Mention Mappings",
         "canon": {
