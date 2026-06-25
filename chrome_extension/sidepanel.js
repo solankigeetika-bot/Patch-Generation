@@ -479,7 +479,11 @@ async function runVerifier(mode) {
 
 function verifierStatus(result, issueCount) {
   const llm = result.llm || {};
+  const cleared = result.autoCleared?.lowValueEntityRows || 0;
   const parts = [`${issueCount} issue(s) found.`];
+  if (cleared) {
+    parts.push(`${cleared} low-value entity row(s) auto-cleared.`);
+  }
   if (llm.ran) {
     parts.push(`Opus ran on up to ${llm.limit || "configured"} candidate rows.`);
   } else if (result.warning) {
@@ -493,10 +497,13 @@ function renderFindings(result) {
   $("issueCount").textContent = String((result.findings || []).length);
   $("rowCount").textContent = String(result.rowCount || 0);
   $("mentionCount").textContent = String(result.mmCount || 0);
+  $("autoClearedCount").textContent = String(result.autoCleared?.lowValueEntityRows || 0);
   const box = $("findings");
   const findings = result.findings || [];
   if (!findings.length) {
-    box.innerHTML = '<div class="status ok">No issues found.</div>';
+    const cleared = result.autoCleared?.lowValueEntityRows || 0;
+    const suffix = cleared ? ` ${cleared} low-value entity row(s) were auto-cleared.` : "";
+    box.innerHTML = `<div class="status ok">No issues found.${escapeHtml(suffix)}</div>`;
     return;
   }
   box.innerHTML = findings.slice(0, 80).map((f) => `

@@ -59,7 +59,7 @@ const elementIds = [
   "loadSheetBtn", "authGoogleBtn", "runAllBtn", "runCultureBtn", "writeBtn",
   "previewReplaceBtn", "applyReplaceBtn", "connectCanonBtn", "sheetStatus",
   "connectionStatus", "runStatus", "sourceLang", "targetLang", "stats",
-  "issueCount", "rowCount", "mentionCount", "findings", "replaceFind",
+  "issueCount", "rowCount", "mentionCount", "autoClearedCount", "findings", "replaceFind",
   "replaceWith", "replaceStatus", "canonStatus",
 ];
 for (const id of elementIds) elements.set(id, makeElement(id));
@@ -225,6 +225,7 @@ const sandbox = {
         }],
         rowCount: 1,
         mmCount: 1,
+        autoCleared: { lowValueEntityRows: 12, sample: [] },
       });
     }
     if (target === "http://127.0.0.1:8000/update-canon-session") {
@@ -259,6 +260,7 @@ assert.match(elements.get("connectionStatus").textContent, /Backend ok/);
 
 await elements.get("runCultureBtn").listeners.click();
 assert.equal(elements.get("issueCount").textContent, "1");
+assert.equal(elements.get("autoClearedCount").textContent, "12");
 assert.equal(elements.get("writeBtn").disabled, false);
 assert.match(elements.get("findings").innerHTML, /TARGET_CULTURE_MISMATCH/);
 

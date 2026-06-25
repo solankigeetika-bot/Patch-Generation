@@ -133,6 +133,9 @@ place_object_rows = [
     },
 ]
 assert not main._candidate_rows_for_llm(place_object_rows, [], 10), place_object_rows
+auto_cleared = main._auto_cleared_low_value_rows(place_object_rows, [])
+assert len(auto_cleared) == len(place_object_rows), auto_cleared
+assert {row["reason"] for row in auto_cleared} == {"common_noun"}, auto_cleared
 
 assert main._extract_json_object('prefix {"findings": []} suffix') == {"findings": []}
 

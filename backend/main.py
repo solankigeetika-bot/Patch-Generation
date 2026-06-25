@@ -561,6 +561,41 @@ def _is_low_value_entity_row(row: dict) -> bool:
     return _is_common_noun_mention(row) or _is_derived_canonical_mention(row)
 
 
+def _low_value_entity_reason(row: dict) -> str:
+    if _is_common_noun_mention(row):
+        return "common_noun"
+    if _is_derived_canonical_mention(row):
+        return "derived_canonical_name"
+    return ""
+
+
+def _auto_cleared_low_value_rows(mm_rows: list[dict], findings: list[dict]) -> list[dict]:
+    finding_rows = {f.get("row") for f in findings if isinstance(f.get("row"), int)}
+    cleared = []
+    for i, row in enumerate(mm_rows):
+        row_num = i + 2
+        if row_num in finding_rows:
+            continue
+        reason = _low_value_entity_reason(row)
+        if not reason:
+            continue
+        cleared.append({
+            "row": row_num,
+            "reason": reason,
+            "canonical_name": _cell(row, ["Canonical Name", "canonical name", "canonical_name"]),
+            "original_mention": _cell(row, ["Original Mention", "original mention", "original_mention"]),
+            "localized_mention": _cell(row, [
+                "Localized Mention", "Localised Mention", "localized mention",
+                "localised mention", "localized_mention",
+            ]),
+            "english_translated_mention": _cell(row, [
+                "English Translated Mention", "english translated mention",
+                "english_translated_mention",
+            ]),
+        })
+    return cleared
+
+
 def _replace_last_token(text: str, old: str, new: str) -> str:
     if not text or not old or not new:
         return text
@@ -1478,6 +1513,7 @@ def verify_mentions(req: MentionVerifyRequest, x_proxy_secret: str = Header(defa
     )
     llm_findings, warning = _llm_mention_findings(req, base_findings, canon_ctx)
     findings = _dedupe_findings(base_findings + llm_findings)
+    auto_cleared = _auto_cleared_low_value_rows(req.mm, findings)
     llm_ran = bool(
         req.run_llm and req.mm and MADEYE_API_KEY and MADEYE_BASE_URL
         and (req.user_email or MADEYE_USER_EMAIL) and not warning
@@ -1487,6 +1523,10 @@ def verify_mentions(req: MentionVerifyRequest, x_proxy_secret: str = Header(defa
         "findings": findings,
         "rowCount": len(req.mm),
         "mmCount": len(req.mm),
+        "autoCleared": {
+            "lowValueEntityRows": len(auto_cleared),
+            "sample": auto_cleared[:20],
+        },
         "sourceTab": "Mention Mappings",
         "canon": {
             "configured": bool(CANON_SESSION),
