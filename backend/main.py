@@ -480,6 +480,17 @@ _COMMON_MENTION_WORDS = {
     "cousin", "epouse", "mari", "femme", "fils", "fille", "cher",
     "chere", "cheri", "cherie", "docteur", "medecin", "directeur",
     "directrice", "juge", "maitre", "mademoiselle",
+    "a", "an", "the", "this", "that", "these", "those", "my", "your",
+    "his", "her", "its", "our", "their", "expansive", "ornate",
+    "ornately", "decorated", "richly", "golden", "large", "small", "old",
+    "new", "main", "private", "public", "royal", "family", "castle",
+    "palace", "moat", "throne", "room", "dining", "hall", "bedroom",
+    "bathroom", "kitchen", "office", "study", "library", "garden",
+    "courtyard", "gate", "tower", "wing", "floor", "stairs", "staircase",
+    "house", "home", "mansion", "estate", "villa", "apartment",
+    "building", "school", "university", "institute", "company", "hotel",
+    "hospital", "restaurant", "club", "bar", "city", "town", "village",
+    "country", "kingdom", "empire", "court",
 }
 
 
@@ -489,7 +500,7 @@ def _mention_tokens(value: str) -> list[str]:
         plain = _plain_token(token)
         if not plain:
             continue
-        if plain.endswith("s") and len(plain) > 3:
+        if plain.endswith("s") and len(plain) > 4 and plain not in _COMMON_MENTION_WORDS:
             out.append(plain[:-1])
         out.append(plain)
     return out

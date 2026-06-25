@@ -94,6 +94,46 @@ assert "TARGET_CULTURE_MISMATCH" in kinds(source_leak_findings), source_leak_fin
 source_leak_candidates = main._candidate_rows_for_llm(source_leak_common, source_leak_findings, 10)
 assert [c["row"] for c in source_leak_candidates] == [2], source_leak_candidates
 
+place_object_rows = [
+    {
+        "Canonical Name": "aaketi's castle",
+        "Original Mention": "the castle",
+        "Localized Mention": "le château",
+        "English Translated Mention": "the castle",
+    },
+    {
+        "Canonical Name": "aaketi's castle",
+        "Original Mention": "this castle",
+        "Localized Mention": "ce château",
+        "English Translated Mention": "this castle",
+    },
+    {
+        "Canonical Name": "aaketi's castle moat",
+        "Original Mention": "an expansive moat",
+        "Localized Mention": "des douves étendues",
+        "English Translated Mention": "an expansive moat",
+    },
+    {
+        "Canonical Name": "aaketi's castle throne room",
+        "Original Mention": "an ornately decorated throne room",
+        "Localized Mention": "une salle du trône richement décorée",
+        "English Translated Mention": "an ornately decorated throne room",
+    },
+    {
+        "Canonical Name": "aaketi's golden throne",
+        "Original Mention": "his throne",
+        "Localized Mention": "son trône",
+        "English Translated Mention": "his throne",
+    },
+    {
+        "Canonical Name": "aaketi's castle dining room",
+        "Original Mention": "the dining room",
+        "Localized Mention": "la salle à manger",
+        "English Translated Mention": "the dining room",
+    },
+]
+assert not main._candidate_rows_for_llm(place_object_rows, [], 10), place_object_rows
+
 assert main._extract_json_object('prefix {"findings": []} suffix') == {"findings": []}
 
 print("backend mention rules ok")
